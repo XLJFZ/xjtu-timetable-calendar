@@ -200,10 +200,24 @@ def _semester_from_dict(raw: dict[str, Any]) -> Semester:
         key=key,
         name=name,
         first_week_monday=first_monday,
-        total_weeks=int(raw.get("total_weeks", 20)),
+        total_weeks=_optional_int(raw.get("total_weeks"), "semester.total_weeks"),
         start_date=_optional_date(raw.get("start_date")),
         end_date=_optional_date(raw.get("end_date")),
     )
+
+
+def _optional_int(value: Any, label: str) -> int | None:
+    """把配置值转成 int；缺省（``None`` / ``""``）时返回 ``None``。
+
+    ``total_weeks`` 是可选的：留空表示「不做周次上限过滤」。
+    填错比留空更危险 —— 越界周次会被判为脏数据在导出阶段报错终止。
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ParseError(f"{label} 必须是正整数或留空，实际为 {value!r}") from exc
 
 
 def _parse_date(value: Any, label: str) -> date:

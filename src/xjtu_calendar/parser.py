@@ -106,6 +106,12 @@ class ParseReport:
         return "；".join(parts)
 
 
+#: 未从校历拿到总周数时，周次解析使用的兜底上限。
+#: 只影响裸「单周 / 双周」的展开与位掩码的截断，与导出阶段的校验无关
+#: —— 导出侧由 :func:`xjtu_calendar.exporter.build_events` 独立把关。
+DEFAULT_MAX_WEEK = 30
+
+
 class TimetableParser:
     """把 eHall 课表响应解析成标准化模型。
 
@@ -113,9 +119,10 @@ class TimetableParser:
     ----------
     max_week:
         学期总周数，用于裁剪周次与展开裸「单周/双周」。
+        校历未给出总周数时传 :data:`DEFAULT_MAX_WEEK`。
     """
 
-    def __init__(self, *, max_week: int = 30) -> None:
+    def __init__(self, *, max_week: int = DEFAULT_MAX_WEEK) -> None:
         self.max_week = max_week
         self.report = ParseReport()
 

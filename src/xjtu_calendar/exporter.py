@@ -113,6 +113,10 @@ def build_events(
 
     处理流程（对每个 :class:`CourseMeeting` 的每个教学周）：
 
+    0. **周次校验（fail-closed）**：``week < 1`` 或（``total_weeks`` 有值时）
+       ``week > total_weeks`` 一律抛 :class:`CalendarExportError` 终止导出，
+       **绝不静默跳过**。``total_weeks is None`` 时不做上限过滤，
+       完全按 ``meeting.weeks`` 原样展开；
     1. ``week + weekday`` -> 具体日期（:class:`AcademicCalendar`）；
     2. 若该日期在停课集合中 -> 丢弃；
     3. 若该日期存在覆盖规则且命中本课程 -> 丢弃；
@@ -137,6 +141,7 @@ def build_events(
         按开始时间升序排列的事件列表。
     """
     semester = calendar.semester
+    total_weeks = semester.total_weeks
     events: list[CalendarEvent] = []
     seen_uids: set[str] = set()
 
@@ -144,9 +149,24 @@ def build_events(
         sorted_periods = sorted(set(meeting.periods))
 
         for week in sorted(set(meeting.weeks)):
-            if week < 1 or week > semester.total_weeks:
-                # 超出学期总周数的脏数据直接跳过，不生成幽灵事件
-                continue
+            # 周次合法性：绝不静默跳过。
+            # 静默丢弃的后果是「ICS 生成成功、但悄悄缺课」——
+            # 用户会拿着一份看起来正常、实则少了几周的日历去上课，
+            # 这比直接报错危险得多。
+            if week < 1:
+                raise CalendarExportError(
+                    f"课程「{meeting.course_name}」出现非法周次 {week}："
+                    f"教学周必须 >= 1。请检查课表原始数据或 parser 的周次解析。"
+                )
+            if total_weeks is not None and week > total_weeks:
+                raise CalendarExportError(
+                    f"课程「{meeting.course_name}」的周次 {week} 超出学期总周数 "
+                    f"{total_weeks}（学期：{semester.key}）。\n"
+                    f"  可能原因：校历的 total_weeks 填小了，或课表确实包含超出该范围的周次。\n"
+                    f"  处理方式：核对校历后填写正确的 total_weeks；"
+                    f"若无法确认，把 total_weeks 留空（省略该字段），"
+                    f"导出将完全按课表自身周次展开。"
+                )
 
             day = calendar.week_to_date(week, meeting.weekday)
 

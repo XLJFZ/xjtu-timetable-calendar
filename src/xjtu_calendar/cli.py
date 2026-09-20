@@ -39,7 +39,7 @@ from .errors import (
 )
 from .exporter import DEFAULT_CALENDAR_NAME, build_events, render_ics, summarize
 from .logging_setup import get_logger, setup_logging
-from .parser import TimetableParser
+from .parser import DEFAULT_MAX_WEEK, TimetableParser
 from .schedules import ScheduleTable
 
 __all__ = ["build_parser", "main"]
@@ -287,7 +287,12 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     logger.info("作息表：%d 套作息、%d 个生效区间", len(schedules.profiles), len(schedules.periods))
 
     # --- 解析 ---
-    parser = TimetableParser(max_week=academic.semester.total_weeks)
+    # total_weeks 可省略：校历没给就用解析侧的兜底上限。
+    # 注意别把「解析上限」和「导出校验」混为一谈 ——
+    # 导出侧的越界判定在 build_events 里独立进行，且是 fail-closed。
+    parser = TimetableParser(
+        max_week=academic.semester.total_weeks or DEFAULT_MAX_WEEK
+    )
     courses, meetings = parser.parse(payload)
     logger.info("已解析：%d 门课程、%d 条课程安排", len(courses), len(meetings))
     logger.info("解析报告：%s", parser.report.summary())

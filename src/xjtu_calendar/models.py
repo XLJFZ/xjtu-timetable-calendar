@@ -54,7 +54,16 @@ class Semester:
             第 1 教学周的星期一不一定等于开学报到日，也不一定是学期首日。
             这里存的必须是从校历确认过的「第 1 周的周一」。
     total_weeks:
-        学期总周数，用于裁剪周次与展开裸「单周/双周」。
+        学期总周数。**可选**，默认 ``None``。
+
+        - ``None``（或配置里省略该字段）：不做任何周次上限过滤，
+          导出时完全按每门课自己的 ``CourseMeeting.weeks`` 展开。
+        - 有值：作为**校验上限**。课表里出现 ``week > total_weeks`` 的周次时，
+          导出阶段**直接报错终止**（fail-closed），绝不静默丢弃。
+
+        .. warning::
+            这里存的是**校历确认过的**总周数。没有官方依据时**宁可留空** ——
+            填一个猜来的数字会让越界周次被判为「脏数据」，反而丢课。
     start_date / end_date:
         学期整体起止日期，仅用于展示与校验，不参与逐事件计算。
     """
@@ -62,7 +71,7 @@ class Semester:
     key: str
     name: str
     first_week_monday: date
-    total_weeks: int = 20
+    total_weeks: int | None = None
     start_date: date | None = None
     end_date: date | None = None
 
@@ -72,12 +81,23 @@ class Semester:
                 f"first_week_monday 必须是星期一，实际是 "
                 f"{self.first_week_monday.isoformat()}（weekday={self.first_week_monday.weekday()}）"
             )
-        if self.total_weeks <= 0:
-            raise ValueError(f"total_weeks 必须为正整数，实际为 {self.total_weeks}")
+        if self.total_weeks is not None and self.total_weeks <= 0:
+            raise ValueError(f"total_weeks 必须为正整数或省略，实际为 {self.total_weeks}")
 
     @property
     def last_week_sunday(self) -> date:
-        """最后一个教学周的星期日。"""
+        """最后一个教学周的星期日。
+
+        Raises
+        ------
+        ValueError
+            ``total_weeks`` 为 ``None`` 时无法定义学期末日。
+        """
+        if self.total_weeks is None:
+            raise ValueError(
+                "total_weeks 未设置，无法确定最后一个教学周；"
+                "请在校历配置中填写 total_weeks，或改用不依赖学期末日的接口。"
+            )
         return self.week_to_date(self.total_weeks, 7)
 
     def week_to_date(self, week: int, weekday: int) -> date:

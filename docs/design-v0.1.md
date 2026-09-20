@@ -76,7 +76,7 @@ class CourseMeeting:
 
 | 模型 | 位置 | 职责 |
 |---|---|---|
-| `Semester` | `models.py` | 学期标识 + `first_week_monday`（第 1 教学周周一，唯一日期锚点）+ `total_weeks` |
+| `Semester` | `models.py` | 学期标识 + `first_week_monday`（第 1 教学周周一，唯一日期锚点）+ `total_weeks`（**可选**，仅作校验上限，见 §6.0.2） |
 | `Course` | `models.py` | 课程元信息（与上课时间无关） |
 | `ScheduleProfile` | `models.py` | 一套作息：节次序号 → `("HH:MM", "HH:MM")` |
 | `SchedulePeriod` | `models.py` | 作息生效区间 `[start, end]` → `profile` |
@@ -484,6 +484,48 @@ ruff check .  → All checks passed!
 mypy src      → Success: no issues found in 16 source files
 ```
 
+### 6.0.2 修复记录（2026-09-21 P0：越界周次 fail-closed）
+
+**动机**：`build_events` 原先对「超出 `total_weeks` 的周次」执行 `continue` 静默跳过。
+这会造成**最危险的一类故障**：程序退出码 0、`.ics` 正常生成、日历应用正常导入，
+但**少了几周的课**，且全程无任何提示。用户会拿着一份看起来完整的日历去上课。
+按风险排序，「静默生成错误结果」优先于「功能不够强」，故排在 C1 之前。
+
+**契约（已冻结）**
+
+| `total_weeks` | 导出行为 |
+|---|---|
+| `None`（省略 / `null`） | 完全依据 `CourseMeeting.weeks` 展开，**不做上限过滤** |
+| 有值，且出现 `week > total_weeks` | 抛 `CalendarExportError` **终止导出**（fail-closed） |
+| 有值，且出现 `week < 1` | 抛 `CalendarExportError`（非法数据） |
+| 任意情况 | **绝不 `continue` 静默吞掉** |
+
+报错信息必须包含：课程名、越界周次、当前 `total_weeks`、以及
+「核对校历 / 留空 `total_weeks`」的处理指引 —— 否则用户只知道失败，不知道改哪里。
+
+**连带变更**
+
+| 位置 | 变更 |
+|---|---|
+| `models.py` | `Semester.total_weeks` 改为 `int \| None`，默认 `None`；`<= 0` 校验仅在有值时生效；`last_week_sunday` 在 `None` 时抛 `ValueError`（学期末日无定义，不给默认值） |
+| `academic_calendar.py` | 新增 `_optional_int()`；`total_weeks` 缺省（`None` / 空串）为 `None`，非数字报 `ParseError` |
+| `parser.py` | 新增 `DEFAULT_MAX_WEEK = 30` 常量 —— 解析侧的兜底上限**只**用于裸「单周/双周」展开与位掩码截断，与导出校验解耦 |
+| `cli.py` | `max_week=total_weeks or DEFAULT_MAX_WEEK`，不再把 `None` 直接传给解析器 |
+| `README.md` / 示例配置 | 说明 `total_weeks` 可选及其三态行为，强调「没有官方依据时宁可留空」 |
+
+**⚠️ 顺带发现、本轮未处理**：`weeks.py` 的 `parse_weeks` / `parse_week_mask`
+末尾也有 `if 1 <= w <= max_week` 的**静默截断**，属同一类问题，但作用在解析阶段。
+是否同样改为 fail-closed 需单独决策（它会影响「单双周」这类文本的展开语义）。
+
+**验收**
+
+```
+pytest -q     → 270 passed（新增 5 项：越界报错 / None 全量展开 / week<1 报错 /
+                无静默丢弃守卫 / 配置省略与非法值）
+ruff check .  → All checks passed!
+mypy src      → Success: no issues found in 16 source files
+```
+
 ### 6-1 `.gitignore` 静默排除作息表模板 【严重度：高】
 
 `examples/schedule.example.json` 命中 `.gitignore:17` 的 `schedule*.json` 规则而被排除。排除规则中的否定项 `!tests/fixtures/*.json` 只覆盖 `tests/fixtures/`，**不覆盖 `examples/`**。
@@ -692,7 +734,7 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 | 2 | 修 `.gitignore`（补 `!examples/*.example.json`、排除 `.workbuddy/`），`git rm --cached` 清理暂存区 | D5 | ✅ 完成 |
 | 3 | 示例数据清洗：README / tests / src docstring 中的真实课程名与教室号 → 占位值 | D6 | ✅ 完成 |
 | 4 | 修正 README 的测试数 / 项目结构 / 路线图；重写 `_notes/structure.md`；清理 `pyproject.toml` 死配置 | D7 | ✅ 完成 |
-| 5 | 全量回归：`pytest`（应仍为 263 passed） | 2–4 | ✅ 263 passed |
+| 5 | 全量回归：`pytest` | 2–4 | ✅ 263 passed（P0 后为 270，见 §6.0.2） |
 | 6 | 新增 `.gitattributes`（`eol=lf` + 二进制排除） | D10 | ✅ 完成 |
 | 7 | 开发工具链一致性：`dev` 补 ruff / mypy；配置 `RUF001-003`；修掉 44 处 lint 与 3 处 mypy | D11 | ✅ 三条 gate 全绿 |
 | 8 | 删 `_notes/demo.ics`；用户级 skills 目录的旧副本移出扫描范围 | D12 | ✅ 完成 |
@@ -700,9 +742,11 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 | 10 | 起草校历配置（`cxjcs.do` 的 `XQKSRQ`）+ 人工核对第 1 教学周周一 | D8 | ✅ 已核实：`week_1_monday = 2026-09-14`（§4.4） |
 | 11 | 补齐作息表钟点 | D9 | ✅ 数据已提供：夏秋 / 冬春两套 profile + `effective_from`（§4.4） |
 | 12 | 跑通真实 `export`，用日历客户端导入验证（UID 更新语义、时区、跨作息切换） | 9–11 | ⬜ **下一步**。验收必须包含：① 10-01 前后同一节次钟点正确切换；② 09-20 / 10-10 两个调课日被**显式报出**而非静默忽略（§4.3） |
-| 13 | 推送：以远端 `main` **现有 HEAD**（`af6bfa3`）为 parent 做原子提交，`force:false`（git 协议在本机不通）。**绝不 force 覆盖远端已有的 Initial commit** | 9 | ⬜ 等 token |
-| 14 | 门户按 D3 处理「开发中」标注 | 12–13 | ⬜ |
-| 15 | v0.2 设计：补 `SEQUENCE`（B1）、补课能力 `add_meetings`（C1/D4） | 12 | ⬜ |
+| 13 | 推送：以远端 `main` **现有 HEAD**（`af6bfa3`）为 parent 做原子提交，`force:false`（git 协议在本机不通）。**绝不 force 覆盖远端已有的 Initial commit** | 9 | ✅ 已完成：远端 `b81fa79`，parent = `af6bfa3`，推送后四项验证全绿 |
+| 14 | **P0：越界周次 fail-closed**（`total_weeks` 改可选 + 删除静默 `continue`） | — | ✅ 已完成（§6.0.2），提交 `fix(export): fail closed on out-of-range course weeks` |
+| 15 | 首次真实 `export` 穿透 | 12 | ⬜ **下一步**（P0 已解除「静默缺课」风险） |
+| 16 | v0.2 设计：`CalendarAdjustment`（`CancelDate` / `ReplaceTeachingDay` / `AddMeeting`）取代「给 `DateOverride` 打补丁」的思路 | 15 | ⬜ |
+| 17 | 门户按 D3 处理「开发中」标注 | 13–14 | ⬜ |
 
 > **第 2–8 步已于 2026-09-20 第二、三轮完成**，见 §6.0 与 §6.0.1。本批提交信息建议：
 > `chore(repo): clean public fixtures and documentation`
@@ -717,7 +761,7 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 | 结论 | 验证命令 / 方式 |
 |---|---|
-| 263 项测试通过 | `python -m pytest -q`（`cv-project0` 环境） |
+| 270 项测试通过（P0 后） | `python -m pytest -q`（`cv-project0` 环境） |
 | `ruff` 全绿 | `python -m ruff check .` → `All checks passed!` |
 | `mypy` 全绿 | `python -m mypy src` → `Success: no issues found in 16 source files` |
 | 远端无代码 | `GET https://api.github.com/repos/XLJFZ/xjtu-timetable-calendar/contents/` → 3 项 |

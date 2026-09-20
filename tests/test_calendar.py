@@ -321,6 +321,39 @@ def test_academic_calendar_from_dict_round_trip() -> None:
     assert oct10.cancel is False
 
 
+def test_academic_calendar_total_weeks_omitted_is_none() -> None:
+    """total_weeks 可省略：省略 = 不做周次上限过滤。
+
+    没有官方校历依据时宁可留空 —— 填一个猜来的数字会让合法周次被判越界。
+    """
+    cal = AcademicCalendar.from_dict(
+        {"semester": {"key": "x", "first_week_monday": "2026-09-07"}}
+    )
+    assert cal.semester.total_weeks is None
+
+
+def test_academic_calendar_total_weeks_empty_string_is_none() -> None:
+    cal = AcademicCalendar.from_dict(
+        {"semester": {"key": "x", "first_week_monday": "2026-09-07", "total_weeks": ""}}
+    )
+    assert cal.semester.total_weeks is None
+
+
+def test_academic_calendar_bad_total_weeks_raises() -> None:
+    with pytest.raises(ParseError, match="total_weeks"):
+        AcademicCalendar.from_dict(
+            {"semester": {"key": "x", "first_week_monday": "2026-09-07",
+                          "total_weeks": "十六"}}
+        )
+
+
+def test_semester_last_week_sunday_requires_total_weeks() -> None:
+    """total_weeks 留空时学期末日无定义，必须明确报错而不是给个默认值。"""
+    semester = Semester("x", "测试", WEEK1_MONDAY, total_weeks=None)
+    with pytest.raises(ValueError, match="total_weeks"):
+        _ = semester.last_week_sunday
+
+
 def test_academic_calendar_missing_semester_raises() -> None:
     with pytest.raises(ParseError, match="semester"):
         AcademicCalendar.from_dict({})

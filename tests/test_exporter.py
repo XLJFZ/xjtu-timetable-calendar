@@ -85,6 +85,31 @@ def schedules() -> ScheduleTable:
 
 
 @pytest.fixture
+def schedules_wide() -> ScheduleTable:
+    """覆盖到第 20 周之后的作息表，供「无上限展开」用例使用。
+
+    上面的 ``schedules`` 固件只覆盖到 2027-01-10，第 20 周（2027-01-15 起）
+    会命中「作息未配置」而报错 —— 那是正确行为，但会掩盖本用例要验证的点。
+    """
+    return ScheduleTable.from_dict(
+        {
+            "profiles": {
+                "all-year": {
+                    "name": "全年作息",
+                    "periods": {
+                        "1": ["08:00", "08:50"],
+                        "2": ["09:00", "09:50"],
+                    },
+                }
+            },
+            "periods": [
+                {"start": "2026-09-01", "end": "2027-03-31", "profile": "all-year"}
+            ],
+        }
+    )
+
+
+@pytest.fixture
 def sample_meeting() -> CourseMeeting:
     """示例课程安排。课程名/教师/地点/课程编号均为虚构占位值，不含真实个人信息。"""
     return CourseMeeting(
@@ -316,15 +341,76 @@ def test_build_events_can_disable_override_notes(
     assert "备注" not in (target.description or "")
 
 
-def test_build_events_skips_weeks_beyond_semester(
-    sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable
+def test_build_events_fails_closed_on_out_of_range_week(
+    calendar: AcademicCalendar, schedules: ScheduleTable
 ) -> None:
-    """周次超出学期总周数时不应生成幽灵事件。"""
-    long_meeting = CourseMeeting(
-        "LONG", "超长课程", 5, [1, 2], list(range(1, 21))
+    """total_weeks 有值 + 出现越界周次 -> 显式报错，绝不静默丢周。
+
+    这是 P0 的核心契约：旧行为是 ``continue`` 跳过，会产出
+    「生成成功但悄悄缺课」的 ICS，比报错危险得多。
+    """
+    long_meeting = CourseMeeting("LONG", "超长课程", 5, [1, 2], list(range(1, 21)))
+
+    with pytest.raises(CalendarExportError) as excinfo:
+        build_events([long_meeting], calendar, schedules)
+
+    message = str(excinfo.value)
+    assert "17" in message            # 第一个越界周次
+    assert "16" in message            # 学期总周数
+    assert "超长课程" in message       # 必须指名是哪门课，方便定位
+    assert "total_weeks" in message   # 必须给出处理指引
+
+
+def test_build_events_expands_all_weeks_when_total_weeks_is_none(
+    schedules_wide: ScheduleTable,
+) -> None:
+    """total_weeks 为 None -> 完全按 meeting.weeks 原样展开，不做上限过滤。"""
+    open_calendar = AcademicCalendar(
+        Semester(
+            key="2026-fall",
+            name="2026-2027 学年秋季学期",
+            first_week_monday=WEEK1_MONDAY,
+            total_weeks=None,
+        )
     )
-    events = build_events([long_meeting], calendar, schedules)
-    assert len(events) == 16
+    long_meeting = CourseMeeting("LONG", "超长课程", 5, [1, 2], list(range(1, 21)))
+
+    events = build_events([long_meeting], open_calendar, schedules_wide)
+    assert len(events) == 20          # 20 周一次不落，包括超出 16 的部分
+
+
+def test_build_events_raises_on_non_positive_week(
+    calendar: AcademicCalendar, schedules: ScheduleTable
+) -> None:
+    """周次 < 1 是非法数据，同样显式报错而非跳过。"""
+    broken = CourseMeeting("BAD", "错误周次课程", 5, [1, 2], [0, 1, 2])
+
+    with pytest.raises(CalendarExportError) as excinfo:
+        build_events([broken], calendar, schedules)
+
+    assert "错误周次课程" in str(excinfo.value)
+
+
+def test_build_events_never_silently_drops_weeks(
+    calendar: AcademicCalendar, schedules_wide: ScheduleTable
+) -> None:
+    """回归守卫：越界时要么报错，要么全量展开，不允许第三种（静默丢弃）。
+
+    前半段断言「有上限时报错」，后半段断言「无上限时全出」，
+    两者共同把「生成成功但周数变少」这条路堵死。
+    """
+    long_meeting = CourseMeeting("LONG", "超长课程", 5, [1, 2], list(range(1, 21)))
+
+    with pytest.raises(CalendarExportError):
+        build_events([long_meeting], calendar, schedules)
+
+    open_calendar = AcademicCalendar(
+        Semester("2026-fall", "2026-2027 学年秋季学期", WEEK1_MONDAY, total_weeks=None)
+    )
+    # 展开结果必须与课表自身周次集合严格一一对应
+    assert len(build_events([long_meeting], open_calendar, schedules_wide)) == len(
+        set(long_meeting.weeks)
+    )
 
 
 def test_build_events_raises_on_unconfigured_schedule(

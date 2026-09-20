@@ -1,0 +1,35 @@
+{
+  "_readme": [
+    "eHall 接口定义（模板）。",
+    "",
+    "⚠️ 本文件中的路径仅为**占位示例**，不是已确认的真实接口。",
+    "   必须通过 scripts/probe_ehall.py 观测到的真实网络请求来填写。",
+    "   在填写之前，fetch 会自动回退到浏览器拦截路径。",
+    "",
+    "填写方法：",
+    "  1) python scripts/probe_ehall.py",
+    "  2) 在浏览器里手动登录并进入「我的课表」页面",
+    "  3) 查看生成的 _notes/ehall-probe.md，从脱敏报告里找出课表接口",
+    "  4) 把 endpoint / method 填到下面，复制本文件为 ehall_endpoints.json",
+    "",
+    "⚠️ 绝对不要在本文件中写入 Cookie、token、学号或任何凭据。",
+    "   本文件随仓库分发，必须保持可公开。"
+  ],
+
+  "endpoints": [
+    {
+      "name": "semester_list",
+      "method": "GET",
+      "path": "/REPLACE_WITH_OBSERVED_PATH",
+      "description": "当前学期信息（学期标识、起止日期）",
+      "required": false
+    },
+    {
+      "name": "timetable",
+      "method": "GET",
+      "path": "/REPLACE_WITH_OBSERVED_PATH",
+      "description": "当前登录账号的个人课表",
+      "required": true
+    }
+  ]
+}

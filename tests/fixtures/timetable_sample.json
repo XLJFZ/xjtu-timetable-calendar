@@ -1,0 +1,56 @@
+{
+  "_note": "手工构造的脱敏示例，用于测试与文档。字段名为有依据的兼容键（英文通用名）。",
+  "_disclaimer": "此文件不含任何真实数据：课程名、教师、地点、课程编号均为虚构占位值。",
+  "_history": "2026-09-20 校准：原先猜测的 periodText/weekText 键无任何真实观测依据，已改为 periods/weeks（保留的英文兼容键）。真实西交大字段为 SKXQ/KSJC/JSJC/SKZC/ZCMC，由 ehall_timetable_real_sanitized.json 覆盖。 2026-09-20 清洗：原示例曾使用真实课程名与真实教室号，已统一替换为 示例课程甲/乙/丙/丁 与 A-1001…A-1004，避免公开仓库泄露个人课表痕迹。",
+  "code": "0",
+  "msg": "success",
+  "data": {
+    "totalCount": 4,
+    "rows": [
+      {
+        "courseId": "DEMO-1001",
+        "courseName": "示例课程甲",
+        "teacher": "示例教师甲",
+        "location": "A-1001",
+        "campus": "创新港校区",
+        "weekday": 5,
+        "periods": "1-2节",
+        "weeks": "1-8周",
+        "credits": 3
+      },
+      {
+        "courseId": "DEMO-1002",
+        "courseName": "示例课程乙",
+        "teacher": "示例教师乙",
+        "location": "A-1002",
+        "campus": "兴庆校区",
+        "weekday": 2,
+        "periods": "3-4节",
+        "weeks": "1-16周",
+        "credits": 4
+      },
+      {
+        "courseId": "DEMO-1003",
+        "courseName": "示例课程丙",
+        "teacher": "示例教师丙",
+        "location": "A-1003",
+        "campus": "创新港校区",
+        "weekday": 3,
+        "periods": "5-6节",
+        "weeks": "2,5-8周",
+        "credits": 3
+      },
+      {
+        "courseId": "DEMO-1004",
+        "courseName": "示例课程丁",
+        "teacher": "示例教师丁",
+        "location": "A-1004",
+        "campus": "兴庆校区",
+        "weekday": 4,
+        "periods": "7-8节",
+        "weeks": "1-16周（单）",
+        "credits": 1
+      }
+    ]
+  }
+}

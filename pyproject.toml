@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xjtu-timetable-calendar"
+version = "0.1.0"
+description = "将西安交通大学 eHall 个人课表导出为 iCalendar (.ics)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "XJTU Timetable Calendar contributors" }]
+keywords = ["xjtu", "timetable", "icalendar", "ics", "calendar", "课表"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Office/Business :: Scheduling",
+]
+
+# 运行期依赖尽量克制：
+#   - icalendar  负责 RFC 5545 序列化（折行/转义规则复杂，不适合手写）
+#   - httpx      可选，仅用于无浏览器环境下的 HTTP 会话复用；playwright 路径不需要
+#   - playwright 仅 login 子命令需要，见 [project.optional-dependencies].browser
+dependencies = ["icalendar>=5.0"]
+
+[project.optional-dependencies]
+http = ["httpx>=0.27"]
+browser = ["playwright>=1.40"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "httpx>=0.27", "playwright>=1.40"]
+
+[project.scripts]
+xjtu-calendar = "xjtu_calendar.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/XLJFZ/xjtu-timetable-calendar"
+Issues = "https://github.com/XLJFZ/xjtu-timetable-calendar/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests", "src"]
+pythonpath = ["src"]
+addopts = "-ra --strict-markers --doctest-modules"
+filterwarnings = ["error::DeprecationWarning"]
+doctest_optionflags = ["NORMALIZE_WHITESPACE"]
+
+[tool.coverage.run]
+source = ["src/xjtu_calendar"]
+branch = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF"]
+# E501：行宽由 formatter 负责，不在 lint 里重复制造噪音。
+#
+# RUF001/002/003（ambiguous-unicode-character-*）针对的是「形似 ASCII 的非 ASCII 字符」
+# 这类钓鱼式混淆，但它的字符表把中文全角标点（（）「」：、等）一并算了进去。
+# 本仓库的 docstring、注释与面向用户的文案**本身就是中文**，全角标点是正确写法：
+# 实测 1097 处命中（占全部 RUF 命中的 96%）均为误报。
+# 结论：显式关闭这三条规则，而不是改写一千多处标点去迎合它。
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+files = ["src/xjtu_calendar"]

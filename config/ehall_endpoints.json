@@ -1,0 +1,33 @@
+{
+  "_readme": [
+    "eHall 接口定义。",
+    "",
+    "✅ 本文件中的路径来自 2026-09-20 的真实网络观测",
+    "  （scripts/probe_ehall.py 捕获，见 _notes/ehall-probe.md），非猜测。",
+    "   占位符路径会被 fetch 拒绝（fetcher.PLACEHOLDER_MARKER）。",
+    "",
+    "认证模型：统一身份认证（CAS）签发的会话 Cookie，",
+    "无需 CSRF token / Authorization 头；请求需 X-Requested-With: XMLHttpRequest",
+    "（fetch_via_http 已内置）。",
+    "",
+    "⚠️ 绝对不要在本文件中写入 Cookie、token、学号或任何凭据。",
+    "   本文件随仓库分发，必须保持可公开。"
+  ],
+
+  "endpoints": [
+    {
+      "name": "current_semester",
+      "method": "POST",
+      "path": "/jwapp/sys/wdkb/modules/jshkcb/dqxnxq.do",
+      "description": "当前学年学期。响应 datas.<module>.rows[0].DM 为学期代码（格式 YYYY-YYYY-N，如 2026-2027-1），无需请求体",
+      "required": false
+    },
+    {
+      "name": "timetable",
+      "method": "POST",
+      "path": "/jwapp/sys/wdkb/modules/xskcb/xskcb.do",
+      "description": "学生课程表。form 参数 XNXQDM=<学期代码>；响应 datas.xskcb.rows[]，周次为 SKZC 01 位掩码",
+      "required": true
+    }
+  ]
+}

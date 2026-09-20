@@ -55,7 +55,7 @@ def test_parse_weekday_rejects_invalid(bad: object) -> None:
 # 整体解析
 # --------------------------------------------------------------------------- #
 def test_parse_returns_courses_and_meetings(sample_payload: dict) -> None:
-    courses, meetings = TimetableParser(max_week=16).parse(sample_payload)
+    courses, meetings = TimetableParser(expansion_limit=16).parse(sample_payload)
 
     assert len(courses) == 4
     assert len(meetings) == 4
@@ -68,7 +68,7 @@ def test_parse_returns_courses_and_meetings(sample_payload: dict) -> None:
 
 
 def test_parse_course_metadata(sample_payload: dict) -> None:
-    courses, _ = TimetableParser(max_week=16).parse(sample_payload)
+    courses, _ = TimetableParser(expansion_limit=16).parse(sample_payload)
     first = next(c for c in courses if c.course_id == "DEMO-1001")
 
     assert first.name == "示例课程甲"
@@ -78,7 +78,7 @@ def test_parse_course_metadata(sample_payload: dict) -> None:
 
 def test_parse_meeting_facts(sample_payload: dict) -> None:
     """核心：CourseMeeting 只保留星期 + 节次 + 周次，不含钟点。"""
-    _, meetings = TimetableParser(max_week=16).parse(sample_payload)
+    _, meetings = TimetableParser(expansion_limit=16).parse(sample_payload)
     first = next(m for m in meetings if m.course_id == "DEMO-1001")
 
     assert first.weekday == 5
@@ -93,19 +93,19 @@ def test_parse_meeting_facts(sample_payload: dict) -> None:
 
 def test_parse_discrete_weeks(sample_payload: dict) -> None:
     """``2,5-8周`` -> ``[2,5,6,7,8]``（用户点名的用例）。"""
-    _, meetings = TimetableParser(max_week=16).parse(sample_payload)
+    _, meetings = TimetableParser(expansion_limit=16).parse(sample_payload)
     discrete = next(m for m in meetings if m.course_id == "DEMO-1003")
     assert discrete.weeks == [2, 5, 6, 7, 8]
 
 
 def test_parse_odd_weeks(sample_payload: dict) -> None:
-    _, meetings = TimetableParser(max_week=16).parse(sample_payload)
+    _, meetings = TimetableParser(expansion_limit=16).parse(sample_payload)
     odd = next(m for m in meetings if m.course_id == "DEMO-1004")
     assert odd.weeks == [1, 3, 5, 7, 9, 11, 13, 15]
 
 
 def test_parse_report_is_clean(sample_payload: dict) -> None:
-    parser = TimetableParser(max_week=16)
+    parser = TimetableParser(expansion_limit=16)
     parser.parse(sample_payload)
     assert parser.report.parsed == 4
     assert parser.report.skipped == []
@@ -135,7 +135,7 @@ def test_parser_handles_alternative_field_names() -> None:
             }
         ]
     }
-    _courses, meetings = TimetableParser(max_week=16).parse(payload)
+    _courses, meetings = TimetableParser(expansion_limit=16).parse(payload)
     assert len(meetings) == 1
     meeting = meetings[0]
     assert meeting.course_name == "示例课程甲"
@@ -166,7 +166,7 @@ def test_parser_prefers_real_xjtu_keys() -> None:
             "XXXQDM_DISPLAY": "创新港校区",
         }
     ]
-    courses, meetings = TimetableParser(max_week=18).parse(payload)
+    courses, meetings = TimetableParser(expansion_limit=18).parse(payload)
     assert len(courses) == 1 and len(meetings) == 1
     m = meetings[0]
     assert m.course_id == "TEST400001"
@@ -192,7 +192,7 @@ def test_parser_week_mask_wins_over_display_text() -> None:
             "SKZC": "1010101000000000",
         }
     ]
-    _, meetings = TimetableParser(max_week=16).parse(payload)
+    _, meetings = TimetableParser(expansion_limit=16).parse(payload)
     assert meetings[0].weeks == [1, 3, 5, 7]
     assert meetings[0].raw_week_text == "1-4周"  # 原始展示串仍被保留
 
@@ -206,7 +206,7 @@ def test_parser_handles_bare_list_payload() -> None:
             "weeks": "1-4周",
         }
     ]
-    courses, meetings = TimetableParser(max_week=16).parse(payload)
+    courses, meetings = TimetableParser(expansion_limit=16).parse(payload)
     assert len(courses) == 1
     assert len(meetings) == 1
 
@@ -221,7 +221,7 @@ def test_parser_handles_numeric_periods_and_weeks() -> None:
             "weeks": "1-3周",
         }
     ]
-    _, meetings = TimetableParser(max_week=16).parse(payload)
+    _, meetings = TimetableParser(expansion_limit=16).parse(payload)
     assert meetings[0].periods == [1, 2]
     assert meetings[0].weeks == [1, 2, 3]
 
@@ -235,7 +235,7 @@ def test_parser_handles_dict_style_period_field() -> None:
             "weeks": {"week": "1-2"},
         }
     ]
-    _, meetings = TimetableParser(max_week=16).parse(payload)
+    _, meetings = TimetableParser(expansion_limit=16).parse(payload)
     assert meetings[0].periods == [5, 6]
     assert meetings[0].weeks == [1, 2]
 
@@ -245,7 +245,7 @@ def test_parser_handles_dict_style_period_field() -> None:
 # --------------------------------------------------------------------------- #
 def test_parser_skips_record_without_name() -> None:
     payload = [{"weekday": 1, "periods": "1-2节", "weeks": "1-4周"}]
-    parser = TimetableParser(max_week=16)
+    parser = TimetableParser(expansion_limit=16)
     _, meetings = parser.parse(payload)
     assert meetings == []
     assert any("缺少名称" in s for s in parser.report.skipped)
@@ -253,7 +253,7 @@ def test_parser_skips_record_without_name() -> None:
 
 def test_parser_skips_record_with_bad_weekday() -> None:
     payload = [{"courseName": "课程", "weekday": "星期八", "periods": "1-2节", "weeks": "1-4周"}]
-    parser = TimetableParser(max_week=16)
+    parser = TimetableParser(expansion_limit=16)
     _, meetings = parser.parse(payload)
     assert meetings == []
     assert any("星期" in s for s in parser.report.skipped)
@@ -261,7 +261,7 @@ def test_parser_skips_record_with_bad_weekday() -> None:
 
 def test_parser_skips_record_with_bad_weeks() -> None:
     payload = [{"courseName": "课程", "weekday": 1, "periods": "1-2节", "weeks": "待定"}]
-    parser = TimetableParser(max_week=16)
+    parser = TimetableParser(expansion_limit=16)
     _, meetings = parser.parse(payload)
     assert meetings == []
     assert any("待定" in s or "解析" in s for s in parser.report.skipped)
@@ -269,7 +269,7 @@ def test_parser_skips_record_with_bad_weeks() -> None:
 
 def test_parser_skips_record_with_bad_periods() -> None:
     payload = [{"courseName": "课程", "weekday": 1, "periods": "待定", "weeks": "1-4周"}]
-    parser = TimetableParser(max_week=16)
+    parser = TimetableParser(expansion_limit=16)
     _, meetings = parser.parse(payload)
     assert meetings == []
 
@@ -280,7 +280,7 @@ def test_parser_partial_success_keeps_valid_records() -> None:
         {"courseName": "好课程", "weekday": 1, "periods": "1-2节", "weeks": "1-4周"},
         {"courseName": "坏课程", "weekday": "?", "periods": "1-2节", "weeks": "1-4周"},
     ]
-    parser = TimetableParser(max_week=16)
+    parser = TimetableParser(expansion_limit=16)
     _, meetings = parser.parse(payload)
     assert len(meetings) == 1
     assert meetings[0].course_name == "好课程"
@@ -301,10 +301,45 @@ def test_parser_rejects_scalar_payload() -> None:
         TimetableParser().parse("not json structure")
 
 
-def test_parser_clips_weeks_to_semester_length() -> None:
+def test_parser_rejects_weeks_beyond_limit_instead_of_clipping() -> None:
+    """显式周次越界 → 硬失败（ParseError），绝不裁剪、绝不记为跳过。
+
+    旧行为是把 ``1-20周`` 砍成 ``1-16周`` 并且**完全没有提示** ——
+    用户会拿到一份少了几周课的日历。
+    """
     payload = [{"courseName": "长课程", "weekday": 1, "periods": "1-2节", "weeks": "1-20周"}]
-    _, meetings = TimetableParser(max_week=16).parse(payload)
+    with pytest.raises(ParseError, match="超出解析上限 16"):
+        TimetableParser(expansion_limit=16).parse(payload)
+
+
+def test_parser_accepts_weeks_within_limit() -> None:
+    """范围内的显式周次照常解析，不受新契约影响。"""
+    payload = [{"courseName": "普通课程", "weekday": 1, "periods": "1-2节", "weeks": "1-16周"}]
+    _, meetings = TimetableParser(expansion_limit=16).parse(payload)
     assert meetings[0].weeks == list(range(1, 17))
+
+
+def test_parser_rejects_mask_bits_beyond_limit() -> None:
+    """位掩码越界同样硬失败 —— 不静默取低位，也不回退到展示串。"""
+    mask = "0" * 19 + "1"          # 第 20 位为 1
+    payload = [
+        {
+            "courseName": "掩码越界课程",
+            "weekday": 1,
+            "periods": "1-2节",
+            "SKZC": mask,
+            "ZCMC": "1-2周",       # 展示串在范围内，但不得用它偷偷兜底
+        }
+    ]
+    with pytest.raises(ParseError, match="超出解析上限 16"):
+        TimetableParser(expansion_limit=16).parse(payload)
+
+
+def test_parser_still_skips_unparseable_weeks() -> None:
+    """「看不懂」与「越界」要区分：无法识别的周次文本仍按跳过处理（进 report）。"""
+    payload = [{"courseName": "坏周次课程", "weekday": 1, "periods": "1-2节", "weeks": "无"}]
+    _, meetings = TimetableParser(expansion_limit=16).parse(payload)
+    assert meetings == []
 
 
 # --------------------------------------------------------------------------- #
@@ -336,7 +371,7 @@ def test_parser_does_not_leak_personal_data_structure() -> None:
             "xm": "某学生",
         }
     ]
-    _, meetings = TimetableParser(max_week=16).parse(payload)
+    _, meetings = TimetableParser(expansion_limit=16).parse(payload)
     # CourseMeeting 是冻结的 dataclass，字段集固定，不携带原始记录
     fields = set(meetings[0].__dataclass_fields__)
     assert "xh" not in fields
@@ -353,7 +388,7 @@ def test_parser_keeps_multiple_meetings_of_same_course() -> None:
         {"courseName": "数据结构", "weekday": 1, "periods": "1-2节", "weeks": "1-16周"},
         {"courseName": "数据结构", "weekday": 3, "periods": "3-4节", "weeks": "1-16周"},
     ]
-    courses, meetings = TimetableParser(max_week=16).parse(payload)
+    courses, meetings = TimetableParser(expansion_limit=16).parse(payload)
 
     assert len(courses) == 1  # 元信息去重，不因出现两次而重复建课
     assert len(meetings) == 2
@@ -372,7 +407,7 @@ def test_parser_same_course_different_room_by_weeks() -> None:
         {"courseName": "建筑设计", "weekday": 2, "periods": "1-4节",
          "weeks": "9-16周", "location": "东楼 B502"},
     ]
-    _, meetings = TimetableParser(max_week=16).parse(payload)
+    _, meetings = TimetableParser(expansion_limit=16).parse(payload)
 
     assert len(meetings) == 2
     by_room = {m.location: m for m in meetings}
@@ -388,7 +423,7 @@ def test_parser_single_double_week_parity_meetings() -> None:
         {"courseName": "体育", "weekday": 4, "periods": "5-6节",
          "weeks": "双周", "location": "体育馆"},
     ]
-    _, meetings = TimetableParser(max_week=16).parse(payload)
+    _, meetings = TimetableParser(expansion_limit=16).parse(payload)
 
     assert len(meetings) == 2
     weeks_by_room = {m.location: m.weeks for m in meetings}
@@ -401,7 +436,7 @@ def test_parser_period_range_and_disjoint_weeks() -> None:
     payload = [
         {"courseName": "讲座", "weekday": 5, "periods": "5-6节", "weeks": "1,3,5,7周"}
     ]
-    _, meetings = TimetableParser(max_week=16).parse(payload)
+    _, meetings = TimetableParser(expansion_limit=16).parse(payload)
 
     assert meetings[0].periods == [5, 6]
     assert meetings[0].weeks == [1, 3, 5, 7]

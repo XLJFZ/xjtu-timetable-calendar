@@ -523,7 +523,7 @@ class CourseMeeting:
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 270 项测试（含 doctest）
+pytest                      # 277 项测试（含 doctest）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）
@@ -537,7 +537,7 @@ mypy src                    # 类型检查（strict）
 
 ### 测试覆盖重点
 
-- **周次解析**：连续 / 离散 / 混合 / 单双周 / 全角 / 无「周」字 / 去重乱序 / 越界裁剪 / `SKZC` 位掩码
+- **周次解析**：连续 / 离散 / 混合 / 单双周 / 全角 / 无「周」字 / 去重乱序 / 越界报错 / `SKZC` 位掩码
 - **节次解析**：连排 / 逗号 / 单节 / 全角 / 括号噪声 / 结构化 `KSJC`+`JSJC` 优先
 - **日期换算**：周一与周日边界、跨周、逆向换算
 - **作息解析**：夏季→summer、冬季→winter、未配置时明确报错

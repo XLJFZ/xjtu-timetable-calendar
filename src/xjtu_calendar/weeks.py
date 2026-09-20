@@ -10,6 +10,34 @@
   一个周次都识别不出来（此时才抛 :class:`WeekParseError`）。
 - 中文全角括号、全角逗号、全角波浪线等常见变体都要能处理。
 
+与「静默错误」有关的硬契约
+--------------------------
+核心原则：**显式输入不得被静默篡改；内部安全上限不得伪装成业务事实。**
+
+====================  =========================================================
+输入类型              越界处理
+====================  =========================================================
+显式周次文本           ``< 1`` 或 ``> expansion_limit`` 一律抛
+（``1-18周``、          :class:`WeekOutOfRangeError`。**绝不裁剪**——
+``第20周``、          ``"1-18周"`` 被悄悄变成 ``1-16周`` 属于「生成成功但内容
+``1,3,5,31``）         错误」，比直接失败危险得多。
+位掩码                第 ``expansion_limit`` 位之后仍有置位 → 抛
+（``SKZC``）            :class:`WeekOutOfRangeError`。**绝不只取低位然后假装
+                       解析成功**。
+裸「单周 / 双周」       这是 shorthand，展开范围只能由 ``expansion_limit``
+（无显式数字）         给出。它是**解析安全上限，不是学期长度** ——
+                       调用方拿到的是「上限之内的奇数周」，不代表学期真有
+                       这么多周。
+====================  =========================================================
+
+注意第三种与前两种的性质不同：前两者是**用户/教务系统明确声明的**周次，
+越界说明数据或配置有错，必须报错；第三种是我们自己生成的展开，上限只是
+「在不知道学期长度时的安全边界」，因此**不报错**，但调用方不应把它当成
+「学期有 30 周」这一业务事实。
+
+如果原文自己声明了超界范围（例如 ``1-40周（单）``），仍按第一种处理：
+**报错**，因为那是显式输入。
+
 支持的写法
 ----------
 ==============================  ==================================
@@ -35,11 +63,33 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-__all__ = ["WeekParseError", "format_weeks", "parse_week_mask", "parse_weeks"]
+__all__ = [
+    "DEFAULT_EXPANSION_LIMIT",
+    "WeekOutOfRangeError",
+    "WeekParseError",
+    "format_weeks",
+    "parse_week_mask",
+    "parse_weeks",
+]
+
+#: 解析侧的安全上限。**它不是「学期有多少周」这个业务事实**，只是
+#: 「在不知道学期长度时，展开裸单双周 / 判定显式输入是否离谱」的边界。
+#: 校历给出真实周数时，调用方应传自己的值（见 `Semester.total_weeks`）。
+DEFAULT_EXPANSION_LIMIT = 30
 
 
 class WeekParseError(ValueError):
     """周次文本无法解析成任何有效教学周。"""
+
+
+class WeekOutOfRangeError(WeekParseError):
+    """显式声明的周次超出解析边界。
+
+    与父类的区别在于**调用方应如何反应**：普通的 :class:`WeekParseError`
+    表示「这段文本我看不懂」，可以回退到别的字段或记为跳过；
+    而本异常表示「文本看得懂、但内容越界了」，属于数据或配置错误，
+    **不应回退、不应裁剪，应当终止并让用户看到**。
+    """
 
 
 #: 周次字段里可能出现、但应当直接忽略的噪声片段。
@@ -89,11 +139,29 @@ class _Range:
     start: int
     end: int
 
-    def expand(self, max_week: int) -> list[int]:
-        stop = min(self.end, max_week)
-        if stop < self.start:
-            return []
-        return list(range(self.start, stop + 1))
+    def weeks(self) -> list[int]:
+        """原样展开，**不做任何裁剪** —— 越界由 :func:`_require_within` 报错。"""
+        return list(range(self.start, self.end + 1))
+
+
+def _require_within(rng: _Range, expansion_limit: int, source: str) -> None:
+    """确认区间完全落在 ``1..expansion_limit`` 内，否则抛错。
+
+    这里是「显式输入不得被静默篡改」的落点：以前越界部分会被 ``min()``
+    悄悄砍掉，用户拿到的是「解析成功、但少了几周」的结果。
+    """
+    if rng.start < 1:
+        raise WeekOutOfRangeError(
+            f"周次 {rng.start} 非法（教学周必须 >= 1），来源：{source!r}"
+        )
+    if rng.end > expansion_limit:
+        raise WeekOutOfRangeError(
+            f"周次 {rng.end} 超出解析上限 {expansion_limit}，来源：{source!r}。\n"
+            f"  这不一定是数据错误 —— 也可能是解析上限设小了。\n"
+            f"  请核对校历（Semester.total_weeks）；若无法确认，"
+            f"把 total_weeks 留空，解析会改用默认安全上限 "
+            f"{DEFAULT_EXPANSION_LIMIT}。"
+        )
 
 
 def normalize_week_text(text: str) -> str:
@@ -165,17 +233,25 @@ def _parse_tokens(text: str) -> list[_Range]:
     return ranges
 
 
-def parse_week_mask(mask: object, *, max_week: int = 30) -> list[int]:
+def parse_week_mask(
+    mask: object, *, expansion_limit: int = DEFAULT_EXPANSION_LIMIT
+) -> list[int]:
     """解析 eHall ``SKZC`` 周次**位掩码**（如 ``"1111111100000000"``）。
 
     真实接口（``POST /jwapp/sys/wdkb/modules/xskcb/xskcb.do``，2026-09-20 观测）
     用一个 01 串表示整学期的上课周：第 i 位为 ``1`` 表示第 i+1 周上课。
     这是**结构化**数据，优先于 ``ZCMC`` 展示串（如 ``"1-8周"``）使用。
 
+    掩码是**显式声明**：第 ``expansion_limit`` 位之后仍有 ``1`` 时抛
+    :class:`WeekOutOfRangeError`。**绝不只取低若干位然后假装解析成功** ——
+    那会静默丢掉学期后段的课。
+
     Raises
     ------
     WeekParseError
-        掩码为空或含有 0/1 之外的字符（调用方应回退到展示串解析）。
+        掩码为空或含有 0/1 之外的字符（调用方可以回退到展示串解析）。
+    WeekOutOfRangeError
+        置位位置超出 ``expansion_limit``（**调用方不应回退、不应裁剪**）。
     """
     text = str(mask or "").strip()
     if not text:
@@ -184,29 +260,46 @@ def parse_week_mask(mask: object, *, max_week: int = 30) -> list[int]:
         raise WeekParseError(f"周次掩码含有非法字符：{text[:4]!r}…")
 
     weeks = [index + 1 for index, bit in enumerate(text) if bit == "1"]
-    return [week for week in weeks if week <= max_week]
+    beyond = [week for week in weeks if week > expansion_limit]
+    if beyond:
+        raise WeekOutOfRangeError(
+            f"周次掩码在第 {beyond[0]} 位（含之后共 {len(beyond)} 位）为 1，"
+            f"超出解析上限 {expansion_limit}（掩码长度 {len(text)}）。\n"
+            f"  掩码是显式声明，这里不做截断。请核对校历（Semester.total_weeks）；"
+            f"若无法确认，把 total_weeks 留空以改用默认安全上限 "
+            f"{DEFAULT_EXPANSION_LIMIT}。"
+        )
+    return weeks
 
 
-def parse_weeks(text: str, *, max_week: int = 30) -> list[int]:
+def parse_weeks(
+    text: str, *, expansion_limit: int = DEFAULT_EXPANSION_LIMIT
+) -> list[int]:
     """把周次文本解析为升序去重的教学周列表。
 
     Parameters
     ----------
     text:
         原始周次文本，例如 ``"2,5-8周"``、``"1-16周（单）"``。
-    max_week:
-        学期总周数的上界，用于 (a) 裁剪超界周次、(b) 展开裸「单周」/「双周」。
-        默认 30，足以覆盖国内高校常见学期长度。
+    expansion_limit:
+        解析边界。**它是安全上限，不是「学期总周数」这一业务事实**：
+        它只决定两件事 —— (a) 显式声明的周次超过它时是否报错、
+        (b) 裸「单周」/「双周」展开到哪一周为止。
+        默认 :data:`DEFAULT_EXPANSION_LIMIT`。
 
     Returns
     -------
     list[int]
-        升序、去重、且全部位于 ``1..max_week`` 的周次列表。
+        升序去重的周次列表。**所有元素都来自输入本身**（裸单双周除外，
+        它由 ``expansion_limit`` 界定），不存在「输入里有、结果里没有了」
+        的静默丢弃。
 
     Raises
     ------
     WeekParseError
         文本为空或完全无法识别出周次时。
+    WeekOutOfRangeError
+        显式声明的周次 ``< 1`` 或 ``> expansion_limit`` 时。
 
     Examples
     --------
@@ -214,6 +307,14 @@ def parse_weeks(text: str, *, max_week: int = 30) -> list[int]:
     [2, 5, 6, 7, 8]
     >>> parse_weeks("1-16周（单）")
     [1, 3, 5, 7, 9, 11, 13, 15]
+    >>> parse_weeks("1-30周", expansion_limit=16)  # 越界报错，不裁剪
+    Traceback (most recent call last):
+        ...
+    xjtu_calendar.weeks.WeekOutOfRangeError: 周次 30 超出解析上限 16，来源：'1-30周'。
+    <BLANKLINE>
+      这不一定是数据错误 —— 也可能是解析上限设小了。
+    <BLANKLINE>
+      请核对校历（Semester.total_weeks）；若无法确认，把 total_weeks 留空，解析会改用默认安全上限 30。
     """
     if text is None:
         raise WeekParseError("周次文本为 None")
@@ -236,24 +337,35 @@ def parse_weeks(text: str, *, max_week: int = 30) -> list[int]:
 
     if not ranges:
         if parity in ("odd", "even"):
-            # 裸「单周」/「双周」：以学期周数上界为范围展开全学期
-            ranges = [_Range(1, max_week)]
+            # 裸「单周」/「双周」没有显式数字，展开范围只能由解析上限给出。
+            # 这是 shorthand —— 上限在此是**展开边界**，不代表学期真的这么长，
+            # 所以不报错；但调用方不应把它当作「学期有 expansion_limit 周」。
+            ranges = [_Range(1, expansion_limit)]
         else:
             raise WeekParseError(f"无法从 {text!r} 中解析出任何教学周")
+    else:
+        # 显式书写的周次：越界即报错，绝不裁剪（见 _require_within）
+        for rng in ranges:
+            _require_within(rng, expansion_limit, _as_source(text, parity))
 
     weeks: set[int] = set()
     for rng in ranges:
-        weeks.update(rng.expand(max_week))
+        weeks.update(rng.weeks())
 
     if parity == "odd":
         weeks = {w for w in weeks if w % 2 == 1}
     elif parity == "even":
         weeks = {w for w in weeks if w % 2 == 0}
 
-    result = sorted(w for w in weeks if 1 <= w <= max_week)
-    if not result:
+    if not weeks:
         raise WeekParseError(f"从 {text!r} 解析出的教学周为空（可能被单双周过滤或超出范围）")
-    return result
+    return sorted(weeks)
+
+
+def _as_source(text: object, parity: str | None) -> str:
+    """给报错用的来源描述：原文 + 单双周修饰。"""
+    suffix = {"odd": "（单周）", "even": "（双周）"}.get(parity or "", "")
+    return f"{text}{suffix}"
 
 
 def format_weeks(weeks: list[int]) -> str:

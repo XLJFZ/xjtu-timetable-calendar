@@ -31,7 +31,7 @@ def real_payload() -> dict:
 
 @pytest.fixture(scope="module")
 def real_parsed(real_payload: dict) -> tuple[list, list, TimetableParser]:
-    parser = TimetableParser(max_week=18)
+    parser = TimetableParser(expansion_limit=18)
     courses, meetings = parser.parse(real_payload)
     return courses, meetings, parser
 

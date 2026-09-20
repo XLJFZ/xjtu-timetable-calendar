@@ -509,19 +509,68 @@ mypy src      → Success: no issues found in 16 source files
 |---|---|
 | `models.py` | `Semester.total_weeks` 改为 `int \| None`，默认 `None`；`<= 0` 校验仅在有值时生效；`last_week_sunday` 在 `None` 时抛 `ValueError`（学期末日无定义，不给默认值） |
 | `academic_calendar.py` | 新增 `_optional_int()`；`total_weeks` 缺省（`None` / 空串）为 `None`，非数字报 `ParseError` |
-| `parser.py` | 新增 `DEFAULT_MAX_WEEK = 30` 常量 —— 解析侧的兜底上限**只**用于裸「单周/双周」展开与位掩码截断，与导出校验解耦 |
-| `cli.py` | `max_week=total_weeks or DEFAULT_MAX_WEEK`，不再把 `None` 直接传给解析器 |
+| `parser.py` | 新增 `DEFAULT_EXPANSION_LIMIT = 30` —— 解析边界**只**用于裸「单周/双周」展开，与导出校验解耦 |
+| `cli.py` | `expansion_limit=total_weeks or DEFAULT_EXPANSION_LIMIT`，不再把 `None` 直接传给解析器 |
 | `README.md` / 示例配置 | 说明 `total_weeks` 可选及其三态行为，强调「没有官方依据时宁可留空」 |
 
 **⚠️ 顺带发现、本轮未处理**：`weeks.py` 的 `parse_weeks` / `parse_week_mask`
 末尾也有 `if 1 <= w <= max_week` 的**静默截断**，属同一类问题，但作用在解析阶段。
-是否同样改为 fail-closed 需单独决策（它会影响「单双周」这类文本的展开语义）。
+→ **已于同日处理，见 §6.0.3。**
 
 **验收**
 
 ```
 pytest -q     → 270 passed（新增 5 项：越界报错 / None 全量展开 / week<1 报错 /
                 无静默丢弃守卫 / 配置省略与非法值）
+ruff check .  → All checks passed!
+mypy src      → Success: no issues found in 16 source files
+```
+
+### 6.0.3 修复记录（2026-09-21 P0-2：周次解析的静默截断）
+
+**动机**：§6.0.2 修掉导出侧的静默丢周后，同一类问题在**解析侧**仍然存在 ——
+`parse_weeks` 末尾的 `if 1 <= w <= max_week` 与 `parse_week_mask` 末尾的
+`if week <= max_week` 会把超界周次悄悄砍掉，然后返回一个「解析成功」的结果。
+两者是同一原则的两端，必须一起封死。
+
+**契约（已冻结）：显式输入不得被静默篡改；内部安全上限不得伪装成业务事实。**
+
+| 输入类型 | 越界处理 |
+|---|---|
+| 显式周次文本（`1-18周`、`第20周`、`1,3,5,31`） | `< 1` 或 `> expansion_limit` → 抛 `WeekOutOfRangeError`，**绝不裁剪** |
+| 位掩码（`SKZC`） | 第 `expansion_limit` 位之后仍有置位 → 抛 `WeekOutOfRangeError`，**绝不只取低位** |
+| 裸「单周 / 双周」 | 按 `expansion_limit` 展开，**不报错** —— 它是 shorthand，上限只是展开边界 |
+
+第三种与前两种性质不同：前两者是**用户/教务系统显式声明的**周次，越界说明
+数据或配置有错；第三种是我们自己生成的展开，上限只是「不知道学期长度时的
+安全边界」，**不代表学期真有 30 周**。因此 `max_week` 这一命名被废弃，
+统一改为 `expansion_limit`（`weeks.py` 的公开函数与 `TimetableParser` 构造参数），
+避免被误读成业务事实。原文自己声明超界范围（`1-40周（单）`）时仍按第一种报错。
+
+**异常分流**：新增 `WeekOutOfRangeError(WeekParseError)`。两者的区别正是
+**调用方该如何反应**：
+
+- 普通 `WeekParseError` = 「这段文本我看不懂」→ 位掩码场景可回退展示串，
+  文本场景记入 `report.skipped`（cli 打 warning）。这是既有行为，保留。
+- `WeekOutOfRangeError` = 「看得懂，但内容越界」→ **硬失败**（parser 转成
+  顶层 `ParseError`）。既不回退字段也不记为跳过 —— 静默跳过一条 meeting
+  等于这门课少上课，用户看不到任何提示。
+
+**连带变更**
+
+| 位置 | 变更 |
+|---|---|
+| `weeks.py` | `max_week` → `expansion_limit`；`_Range.expand()`（内含 `min()` 裁剪）→ `_Range.weeks()`（原样展开）+ `_require_within()`（越界报错）；`parse_week_mask` 越界报错；新增 `WeekOutOfRangeError` 与 `DEFAULT_EXPANSION_LIMIT` |
+| `parser.py` | `TimetableParser(max_week=…)` → `(expansion_limit=…)`；位掩码与文本两条路径都增加 `except WeekOutOfRangeError → raise ParseError` 分支 |
+| `cli.py` | `expansion_limit=total_weeks or DEFAULT_EXPANSION_LIMIT` |
+| 测试 | 全量替换 `max_week=` 调用；删除断言「裁剪」行为的用例，改为断言「报错」 |
+
+**验收**
+
+```
+pytest -q     → 277 passed（新增 8 项：显式文本越界 / 位掩码越界 /
+                越界异常可区分性 / 裸单双周不报错 / 单双周+显式范围仍校验 /
+                week 0 / parser 层硬失败 / parser 层「看不懂」仍走跳过）
 ruff check .  → All checks passed!
 mypy src      → Success: no issues found in 16 source files
 ```
@@ -744,9 +793,10 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 | 12 | 跑通真实 `export`，用日历客户端导入验证（UID 更新语义、时区、跨作息切换） | 9–11 | ⬜ **下一步**。验收必须包含：① 10-01 前后同一节次钟点正确切换；② 09-20 / 10-10 两个调课日被**显式报出**而非静默忽略（§4.3） |
 | 13 | 推送：以远端 `main` **现有 HEAD**（`af6bfa3`）为 parent 做原子提交，`force:false`（git 协议在本机不通）。**绝不 force 覆盖远端已有的 Initial commit** | 9 | ✅ 已完成：远端 `b81fa79`，parent = `af6bfa3`，推送后四项验证全绿 |
 | 14 | **P0：越界周次 fail-closed**（`total_weeks` 改可选 + 删除静默 `continue`） | — | ✅ 已完成（§6.0.2），提交 `fix(export): fail closed on out-of-range course weeks` |
-| 15 | 首次真实 `export` 穿透 | 12 | ⬜ **下一步**（P0 已解除「静默缺课」风险） |
-| 16 | v0.2 设计：`CalendarAdjustment`（`CancelDate` / `ReplaceTeachingDay` / `AddMeeting`）取代「给 `DateOverride` 打补丁」的思路 | 15 | ⬜ |
-| 17 | 门户按 D3 处理「开发中」标注 | 13–14 | ⬜ |
+| 15 | **P0-2：周次解析的静默截断**（`max_week` → `expansion_limit` + 显式越界报错） | 14 | ✅ 已完成（§6.0.3），提交 `fix(parser): reject silently truncated week specifications` |
+| 16 | 首次真实 `export` 穿透 | 12 | ⬜ **下一步**（导出侧与解析侧两端均已解除「静默缺课」风险） |
+| 17 | v0.2 设计：`CalendarAdjustment`（`CancelDate` / `ReplaceTeachingDay` / `AddMeeting`）取代「给 `DateOverride` 打补丁」的思路 | 16 | ⬜ |
+| 18 | 门户按 D3 处理「开发中」标注 | 13–15 | ⬜ |
 
 > **第 2–8 步已于 2026-09-20 第二、三轮完成**，见 §6.0 与 §6.0.1。本批提交信息建议：
 > `chore(repo): clean public fixtures and documentation`
@@ -761,7 +811,7 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 | 结论 | 验证命令 / 方式 |
 |---|---|
-| 270 项测试通过（P0 后） | `python -m pytest -q`（`cv-project0` 环境） |
+| 277 项测试通过（P0 / P0-2 后） | `python -m pytest -q`（`cv-project0` 环境） |
 | `ruff` 全绿 | `python -m ruff check .` → `All checks passed!` |
 | `mypy` 全绿 | `python -m mypy src` → `Success: no issues found in 16 source files` |
 | 远端无代码 | `GET https://api.github.com/repos/XLJFZ/xjtu-timetable-calendar/contents/` → 3 项 |

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from xjtu_calendar.weeks import format_weeks, normalize_week_text, parse_weeks
+from xjtu_calendar.weeks import (
+    WeekOutOfRangeError,
+    WeekParseError,
+    format_weeks,
+    normalize_week_text,
+    parse_week_mask,
+    parse_weeks,
+)
 
 
 @pytest.mark.parametrize(
@@ -56,14 +63,55 @@ def test_parse_weeks(text: str, expected: list[int]) -> None:
     assert parse_weeks(text) == expected
 
 
-def test_parse_weeks_clips_to_max_week() -> None:
-    """超出学期总周数的部分应被裁掉，而不是原样返回。"""
-    assert parse_weeks("1-30周", max_week=16) == list(range(1, 17))
+def test_parse_weeks_rejects_out_of_range_instead_of_clipping() -> None:
+    """显式写出的周次越界 → 报错，**绝不裁剪**。
+
+    旧行为是把 ``1-30周`` 悄悄砍成 ``1-16周``，用户拿到「解析成功但少了几周」
+    的结果 —— 与 exporter 的 P0 是同一条原则：显式输入不得被静默篡改。
+    """
+    with pytest.raises(WeekOutOfRangeError, match="超出解析上限 16"):
+        parse_weeks("1-30周", expansion_limit=16)
 
 
-def test_parse_weeks_parity_respects_max_week() -> None:
-    assert parse_weeks("单周", max_week=9) == [1, 3, 5, 7, 9]
-    assert parse_weeks("双周", max_week=9) == [2, 4, 6, 8]
+def test_parse_week_mask_rejects_bits_beyond_limit() -> None:
+    """位掩码是显式声明：第 limit 位之后仍有置位 → 报错，不取低位了事。"""
+    # 第 20 位为 1，但 limit = 16
+    mask = "0" * 19 + "1" + "0" * 5
+    with pytest.raises(WeekOutOfRangeError, match="超出解析上限 16"):
+        parse_week_mask(mask, expansion_limit=16)
+
+    # 置位全部落在范围内则正常返回
+    ok_mask = "1" * 16 + "0" * 4
+    assert parse_week_mask(ok_mask, expansion_limit=16) == list(range(1, 17))
+
+
+def test_parse_week_mask_error_is_not_swallowed_as_parse_error() -> None:
+    """越界异常必须是 WeekParseError 的子类，但调用方能区分二者。"""
+    assert issubclass(WeekOutOfRangeError, WeekParseError)
+    mask = "0" * 30 + "1"
+    with pytest.raises(WeekOutOfRangeError):
+        parse_week_mask(mask, expansion_limit=30)
+
+
+def test_parse_weeks_parity_uses_expansion_limit_not_semester_fact() -> None:
+    """裸「单周 / 双周」按解析边界展开 —— 它是安全上限，不是学期长度。
+
+    因此这里**不报错**（没有显式声明），但调用方不应据此认为学期真有 9 周。
+    """
+    assert parse_weeks("单周", expansion_limit=9) == [1, 3, 5, 7, 9]
+    assert parse_weeks("双周", expansion_limit=9) == [2, 4, 6, 8]
+
+
+def test_parse_weeks_parity_with_explicit_range_still_validates() -> None:
+    """原文自己声明了超界范围（``1-40周（单）``）→ 仍报错，因为那是显式输入。"""
+    with pytest.raises(WeekOutOfRangeError, match="超出解析上限"):
+        parse_weeks("1-40周（单）", expansion_limit=30)
+
+
+def test_parse_weeks_rejects_week_zero() -> None:
+    """``< 1`` 同样是显式越界，报错而不是悄悄丢掉。"""
+    with pytest.raises(WeekOutOfRangeError, match="教学周必须 >= 1"):
+        parse_weeks("0-5周")
 
 
 def test_parse_weeks_ignores_adjacent_period_text() -> None:
@@ -79,8 +127,8 @@ def test_parse_weeks_rejects_garbage(bad: object) -> None:
 
 
 def test_parse_weeks_rejects_week_outside_range() -> None:
-    with pytest.raises(ValueError):
-        parse_weeks("20-25周", max_week=16)
+    with pytest.raises(WeekOutOfRangeError):
+        parse_weeks("20-25周", expansion_limit=16)
 
 
 def test_parse_weeks_result_is_sorted_unique() -> None:

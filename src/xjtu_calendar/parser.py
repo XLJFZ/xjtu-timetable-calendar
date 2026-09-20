@@ -23,7 +23,13 @@ from typing import Any
 from .errors import ParseError
 from .models import CAMPUS_UNKNOWN, Course, CourseMeeting
 from .periods import PeriodParseError, parse_periods
-from .weeks import WeekParseError, parse_week_mask, parse_weeks
+from .weeks import (
+    DEFAULT_EXPANSION_LIMIT,
+    WeekOutOfRangeError,
+    WeekParseError,
+    parse_week_mask,
+    parse_weeks,
+)
 
 __all__ = ["WEEKDAY_ALIASES", "ParseReport", "TimetableParser"]
 
@@ -106,24 +112,23 @@ class ParseReport:
         return "；".join(parts)
 
 
-#: 未从校历拿到总周数时，周次解析使用的兜底上限。
-#: 只影响裸「单周 / 双周」的展开与位掩码的截断，与导出阶段的校验无关
-#: —— 导出侧由 :func:`xjtu_calendar.exporter.build_events` 独立把关。
-DEFAULT_MAX_WEEK = 30
-
-
+#: 未从校历拿到总周数时的解析边界。语义见 :mod:`xjtu_calendar.weeks`：
+#: 它是**解析安全上限，不是「学期总周数」这一业务事实**。
+#: 与导出阶段的校验相互独立 —— 导出侧由
+#: :func:`xjtu_calendar.exporter.build_events` 独立把关。
 class TimetableParser:
     """把 eHall 课表响应解析成标准化模型。
 
     Parameters
     ----------
-    max_week:
-        学期总周数，用于裁剪周次与展开裸「单周/双周」。
-        校历未给出总周数时传 :data:`DEFAULT_MAX_WEEK`。
+    expansion_limit:
+        周次解析边界。显式声明的周次越界会**报错**（不裁剪），
+        裸「单周 / 双周」则展开到该边界为止。默认
+        :data:`DEFAULT_EXPANSION_LIMIT`。
     """
 
-    def __init__(self, *, max_week: int = DEFAULT_MAX_WEEK) -> None:
-        self.max_week = max_week
+    def __init__(self, *, expansion_limit: int = DEFAULT_EXPANSION_LIMIT) -> None:
+        self.expansion_limit = expansion_limit
         self.report = ParseReport()
 
     # ------------------------------------------------------------------ #
@@ -334,18 +339,29 @@ class TimetableParser:
                 return []
 
         # --- 周次：优先结构化 SKZC 位掩码（真实接口形态），展示串仅作回退 ---
+        #
+        # 异常分流（两类错误的处理方式必须不同）：
+        #   WeekOutOfRangeError —— 内容越界。属于数据/配置错误，**硬失败**：
+        #       既不回退到别的字段，也不记为「跳过」。静默跳过一条 meeting
+        #       等于这门课少上课，用户看不到任何提示。
+        #   普通 WeekParseError —— 「这段文本看不懂」。可以回退展示串 /
+        #       记为跳过（进入 report，cli 会打 warning）。
         raw_mask = self._get(record, "weeks_mask")
         raw_weeks = self._get(record, "weeks")
         weeks: list[int] | None = None
         mask_text = str(raw_mask or "").strip()
         if mask_text:
             try:
-                weeks = parse_week_mask(mask_text, max_week=self.max_week)
+                weeks = parse_week_mask(mask_text, expansion_limit=self.expansion_limit)
+            except WeekOutOfRangeError as exc:
+                raise ParseError(f"{label}：{exc}") from exc
             except WeekParseError:
                 weeks = None  # 不是合法位掩码 → 回退展示串
         if weeks is None:
             try:
-                weeks = parse_weeks(_as_text(raw_weeks), max_week=self.max_week)
+                weeks = parse_weeks(_as_text(raw_weeks), expansion_limit=self.expansion_limit)
+            except WeekOutOfRangeError as exc:
+                raise ParseError(f"{label}：{exc}") from exc
             except WeekParseError as exc:
                 self.report.skip(f"{label}：{exc}")
                 return []

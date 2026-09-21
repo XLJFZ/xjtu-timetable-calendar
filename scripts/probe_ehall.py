@@ -4,7 +4,8 @@
 记录前端自己调用的结构化接口。
 
 .. important::
-   本脚本是 ``config/ehall_endpoints.json`` 里接口路径的**唯一合法来源**。
+   本脚本是 ``src/xjtu_calendar/data/ehall_endpoints.json``（随包分发的默认接口定义）
+   里接口路径的**唯一合法来源**。
    任何没有在本脚本输出中出现过的 endpoint，都不得写进正式配置。
 
 上一版缺陷（导致捕获数为 0）

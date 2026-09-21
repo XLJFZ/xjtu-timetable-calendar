@@ -15,9 +15,40 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+import tomllib
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
-from .models import (
+#: distribution 名称，必须与 ``pyproject.toml`` 的 ``project.name`` 一致
+DISTRIBUTION_NAME = "xjtu-timetable-calendar"
+
+
+def _version_from_pyproject() -> str | None:
+    """源码 checkout（未安装）时的回退：直接读 ``pyproject.toml``。
+
+    版本号仍然只有 **一个真源** —— ``pyproject.toml``。已安装时走
+    ``importlib.metadata``，未安装时解析同一份文件，不需要第二处常量。
+    """
+    # __init__.py -> src/xjtu_calendar -> src -> <repo root>
+    candidate = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+    try:
+        payload = tomllib.loads(candidate.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    value = payload.get("project", {}).get("version")
+    return str(value) if value else None
+
+
+def _resolve_version() -> str:
+    try:
+        return version(DISTRIBUTION_NAME)
+    except PackageNotFoundError:
+        return _version_from_pyproject() or "0.0.0"
+
+
+__version__ = _resolve_version()
+
+from .models import (  # noqa: E402 - 必须先算出 __version__ 再导出公共 API
     CAMPUS_UNKNOWN,
     CalendarEvent,
     Course,
@@ -29,6 +60,7 @@ from .models import (
 
 __all__ = [
     "CAMPUS_UNKNOWN",
+    "DISTRIBUTION_NAME",
     "CalendarEvent",
     "Course",
     "CourseMeeting",

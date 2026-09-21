@@ -156,8 +156,14 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-pip install -e .
+pip install -e .   # 开发用可编辑安装；只想使用则 `pip install .`
 ```
+
+> **安装即自包含**：eHall 接口定义随包分发在
+> `src/xjtu_calendar/data/ehall_endpoints.json`（通过
+> `importlib.resources` 读取），`pip install .` 与 `pip install -e .`
+> 之后都**无需手工复制任何配置文件**。CI 会在干净虚拟环境里实测这一点。
+> 需要覆盖时，把同名文件放到 `~/.xjtu-timetable-calendar/ehall_endpoints.json` 即可。
 
 可选依赖：
 
@@ -433,13 +439,15 @@ xjtu-timetable-calendar/
 ├── LICENSE
 ├── .gitignore
 ├── pyproject.toml
+├── CHANGELOG.md                        # 版本变更记录
 ├── docs/
 │   └── design-v0.1.md                  # 技术设计 v0.1（设计基准与漂移记录）
+├── .github/workflows/
+│   └── ci.yml                          # CI：pytest / mypy / ruff + wheel 自包含自检
 ├── config/
-│   ├── ehall_endpoints.json            # 接口定义（真实观测，随仓库分发）
-│   └── ehall_endpoints.example.json    # 接口定义模板
+│   └── ehall_endpoints.example.json    # 接口定义模板（真实定义随包分发）
 ├── src/xjtu_calendar/
-│   ├── __init__.py
+│   ├── __init__.py                     # __version__：importlib.metadata + pyproject 回退
 │   ├── __main__.py                     # python -m xjtu_calendar
 │   ├── cli.py                          # 命令行入口
 │   ├── config.py                       # 集中配置（URL / appId / 目录）
@@ -454,7 +462,9 @@ xjtu-timetable-calendar/
 │   ├── auth.py                         # 会话管理
 │   ├── fetcher.py                      # 课表抓取（HTTP / 浏览器双路径）
 │   ├── exporter.py                     # → CalendarEvent → .ics
-│   └── timeutil.py                     # 时区常量（Asia/Shanghai）
+│   ├── timeutil.py                     # 时区常量（Asia/Shanghai）
+│   └── data/
+│       └── ehall_endpoints.json        # 接口定义（真实观测，随 wheel 分发）
 ├── scripts/
 │   └── probe_ehall.py                  # eHall 接口分析工具
 ├── tests/
@@ -466,6 +476,8 @@ xjtu-timetable-calendar/
 │   ├── test_parser_real.py             # 基于真实响应脱敏固件的校准测试
 │   ├── test_fetcher.py                 # 响应分类 / 端点校验（MockTransport，不发真实请求）
 │   ├── test_exporter.py                # UID / 时间 / ICS 合规
+│   ├── test_makeup.py                  # 停课日 / 调课日（source_date 语义）
+│   ├── test_packaging.py               # 版本号单一来源 + 包内资源随 wheel 分发
 │   └── fixtures/
 │       ├── timetable_sample.json           # 手工构造的脱敏样例
 │       └── ehall_timetable_real_sanitized.json  # 真实结构脱敏固件
@@ -572,13 +584,21 @@ class CourseMeeting:
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 309 项测试（含 doctest）
+pytest                      # 319 项测试（含 doctest）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）
 ```
 
 上面四条在 `main` 上**全部为零输出**：`ruff` 无告警、`mypy` 无错误、测试全通过。
+仓库已配置 GitHub Actions（`.github/workflows/ci.yml`）：每次 push / PR 在
+Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**真正构建 wheel
+并在干净虚拟环境里安装**，验证 `pip install .` 得到的包是自包含的
+（含包内默认接口定义、CLI 可运行）—— 避免「从源码目录碰巧找到配置」的假通过。
+
+版本变更记录在 `CHANGELOG.md`；版本号**单一来源**为 `pyproject.toml`
+（`importlib.metadata` 读取，未安装时回退解析同一份文件，代码里没有第二处常量）。
+
 若你在自己的分支上看到大量 `RUF001/002/003`，那是规则的已知误报 ——
 它把**中文全角标点**当成「易混淆 Unicode」，而本项目的 docstring、注释与
 面向用户的文案本身就是中文。这些规则已在 `pyproject.toml` 里显式关闭，
@@ -603,7 +623,8 @@ python scripts/probe_ehall.py
 打开浏览器让你手动登录并进入课表页，脚本记录前端**自己调用的**结构化 JSON 接口，
 输出脱敏结构报告到 `_notes/ehall-probe.md`（该目录已排除）。
 
-`config/ehall_endpoints.json` 中已填入**经真实网络观测确认**的端点：
+包内默认接口定义（`src/xjtu_calendar/data/ehall_endpoints.json`，随 wheel 分发）
+中已填入**经真实网络观测确认**的端点：
 
 | 端点 | 方法 | 路径 | 作用 |
 |---|---|---|---|
@@ -665,7 +686,8 @@ python -m xjtu_calendar login --force
 - [x] 逐次上课生成独立事件，UID 稳定
 - [x] RFC 5545 `.ics` 导出（`Asia/Shanghai`）
 - [x] CLI、错误体系、日志脱敏、测试
-- [x] 用真实网络请求确认 eHall 课表接口，固化到 `config/ehall_endpoints.json`
+- [x] 用真实网络请求确认 eHall 课表接口，固化到随包分发的接口定义
+- [x] 包自包含（接口定义随 wheel 分发）+ 版本号单一来源 + CI 门禁
 - [x] 按真实响应校准 `parser.py` 的字段候选（含 `SKZC` 位掩码、结构化节次优先）
 - [x] `fetch` 以真实账号跑通：真实课表成功落盘并逐行校验
 - [x] 产出首份真实 `.ics`

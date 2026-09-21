@@ -91,7 +91,9 @@ class EndpointNotConfigured(XjtuCalendarError):
     hint = (
         "接口路径必须来自真实网络观测，不得猜测。"
         "请运行 `python scripts/probe_ehall.py` 完成登录后进入「我的课表」页面，"
-        "再用观测到的路径填写 config/ehall_endpoints.json。"
+        "再用观测到的路径填写端点配置"
+        "（包内默认：src/xjtu_calendar/data/ehall_endpoints.json；"
+        "用户覆盖：~/.xjtu-timetable-calendar/ehall_endpoints.json）。"
     )
 
 

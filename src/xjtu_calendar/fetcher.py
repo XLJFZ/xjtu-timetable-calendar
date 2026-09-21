@@ -4,7 +4,8 @@
 --------
 1. **HTTP 路径（首选，轻量）** —— 复用 :func:`xjtu_calendar.auth.load_cookies`
    拿到的 cookie，用 ``httpx`` 直接请求课表接口。需要已知端点
-   （由 Phase 1 的接口分析确定，写入 ``config/ehall_endpoints.json``）。
+   （由 Phase 1 的接口分析确定，随包分发在
+   ``src/xjtu_calendar/data/ehall_endpoints.json``）。
 2. **浏览器路径（兜底）** —— 用 Playwright 在已登录的持久化 profile 里
    打开课表页，拦截页面自身发出的结构化 JSON 响应。
 
@@ -40,6 +41,7 @@ from .logging_setup import get_logger, redact, redact_url
 
 __all__ = [
     "Endpoint",
+    "bundled_endpoints_text",
     "classify_body",
     "fetch_current_semester",
     "fetch_via_browser",
@@ -50,7 +52,8 @@ __all__ = [
 
 logger = get_logger()
 
-#: 端点配置文件名（放在项目 ``config/`` 下，随仓库分发）
+#: 端点配置文件名。包内默认副本位于 ``xjtu_calendar/data/``，随 wheel 分发；
+#: 用户覆盖副本放在用户数据目录下，文件名相同。
 ENDPOINTS_FILE = "ehall_endpoints.json"
 
 #: 可重试的 HTTP 状态码
@@ -147,14 +150,80 @@ def require_endpoint(endpoints: Mapping[str, Endpoint], name: str) -> Endpoint:
     return endpoint
 
 
+def _parse_endpoints(payload: Any, source: str) -> dict[str, Endpoint]:
+    """把接口定义 JSON 解析成 ``Endpoint`` 映射（占位符一律忽略）。"""
+    endpoints: dict[str, Endpoint] = {}
+    for item in payload.get("endpoints") or []:
+        try:
+            endpoint = Endpoint(
+                name=str(item["name"]),
+                method=str(item.get("method", "GET")).upper(),
+                path=str(item["path"]),
+                description=str(item.get("description", "")),
+                required=bool(item.get("required", False)),
+            )
+        except KeyError as exc:
+            logger.warning("接口定义缺少字段：%s", exc)
+            continue
+        if PLACEHOLDER_MARKER in endpoint.path:
+            # 占位符不是「已确认的接口」。放进去等于拿模板去发真实请求。
+            logger.warning(
+                "接口 `%s` 的路径仍是占位符，已忽略（必须先由真实探测确认）",
+                endpoint.name,
+            )
+            continue
+        endpoints[endpoint.name] = endpoint
+
+    if endpoints:
+        logger.debug("已从 %s 载入 %d 个接口定义", source, len(endpoints))
+    return endpoints
+
+
+def _load_endpoints_text(text: str, source: str) -> dict[str, Endpoint]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        logger.warning("接口定义文件无法解析：%s（%s）", source, exc)
+        return {}
+    return _parse_endpoints(payload, source)
+
+
+def bundled_endpoints_text() -> str | None:
+    """读取**随包分发**的默认接口定义。
+
+    走 :mod:`importlib.resources` 而不是 ``Path(__file__).parent/...``：
+    后者只在源码仓库里成立，wheel 安装后 ``config/`` 根本不存在，
+    包就不是自包含的 —— 用户会被迫手工复制配置文件才能首次使用。
+
+    对 zip / 非文件系统导入同样可用（``Traversable.read_text``），
+    因此这里刻意不把资源转成 :class:`~pathlib.Path`。
+    """
+    try:
+        from importlib.resources import files
+
+        resource = files(__package__ or "xjtu_calendar").joinpath("data", ENDPOINTS_FILE)
+        return resource.read_text(encoding="utf-8")
+    except (OSError, ModuleNotFoundError, TypeError, UnicodeDecodeError) as exc:
+        logger.warning("包内默认接口定义不可用：%s", exc)
+        return None
+
+
 def load_endpoints(path: Path | str | None = None, cfg: Settings | None = None) -> dict[str, Endpoint]:
     """加载接口定义。
+
+    查找优先级（**高 -> 低**）：
+
+    1. ``path`` —— 显式指定的配置文件；
+    2. ``<用户数据目录>/ehall_endpoints.json`` —— 用户覆盖；
+    3. 包内默认配置 ``xjtu_calendar/data/ehall_endpoints.json``（随 wheel 分发）。
+
+    前一级存在但解析不出任何有效端点时，继续回退到下一级
+    （例如用户目录里只有占位符模板，仍应能用包内默认配置）。
 
     Parameters
     ----------
     path:
-        显式指定配置文件；``None`` 时依次查找
-        ``<repo>/config/ehall_endpoints.json`` 与 ``<home>/endpoints.json``。
+        显式指定配置文件；``None`` 时按上述优先级查找。
     cfg:
         配置。
 
@@ -166,53 +235,41 @@ def load_endpoints(path: Path | str | None = None, cfg: Settings | None = None) 
     Notes
     -----
     **接口路径必须来自真实网络请求观测**（Phase 1 产物），不得猜测。
-    若配置文件缺失或不含 ``timetable`` 端点，返回空字典，
+    若所有来源都缺失或不含 ``timetable`` 端点，返回空字典，
     调用方应回退到浏览器路径或提示用户先完成接口分析。
     """
     cfg = cfg or default_settings
 
-    candidates: list[Path] = []
+    # 1. 显式指定：只在用户明确给了路径时使用，不再回退（避免「静默用了别的配置」）。
     if path is not None:
-        candidates.append(Path(path))
-    else:
-        candidates.append(Path(__file__).resolve().parent.parent.parent / "config" / ENDPOINTS_FILE)
-        candidates.append(cfg.home / ENDPOINTS_FILE)
-
-    for candidate in candidates:
+        candidate = Path(path)
         if not candidate.is_file():
-            continue
+            return {}
         try:
-            payload = json.loads(candidate.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("接口定义文件无法解析：%s（%s）", candidate, exc)
-            continue
+            text = candidate.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning("接口定义文件无法读取：%s（%s）", candidate, exc)
+            return {}
+        return _load_endpoints_text(text, str(candidate))
 
-        endpoints: dict[str, Endpoint] = {}
-        for item in payload.get("endpoints") or []:
-            try:
-                endpoint = Endpoint(
-                    name=str(item["name"]),
-                    method=str(item.get("method", "GET")).upper(),
-                    path=str(item["path"]),
-                    description=str(item.get("description", "")),
-                    required=bool(item.get("required", False)),
-                )
-            except KeyError as exc:
-                logger.warning("接口定义缺少字段：%s", exc)
-                continue
-            if PLACEHOLDER_MARKER in endpoint.path:
-                # 占位符不是「已确认的接口」。放进去等于拿模板去发真实请求。
-                logger.warning(
-                    "接口 `%s` 的路径仍是占位符，已忽略（必须先由真实探测确认）",
-                    endpoint.name,
-                )
-                continue
-            endpoints[endpoint.name] = endpoint
+    # 2. 用户目录覆盖
+    override = cfg.home / ENDPOINTS_FILE
+    if override.is_file():
+        try:
+            text = override.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning("接口定义文件无法读取：%s（%s）", override, exc)
+        else:
+            endpoints = _load_endpoints_text(text, str(override))
+            if endpoints:
+                return endpoints
 
-        if endpoints:
-            logger.debug("已从 %s 载入 %d 个接口定义", candidate, len(endpoints))
-            return endpoints
+    # 3. 包内默认配置
+    bundled = bundled_endpoints_text()
+    if bundled is not None:
+        return _load_endpoints_text(bundled, f"package:{ENDPOINTS_FILE}")
 
+    logger.warning("未找到任何接口定义（包内默认配置缺失），将回退到浏览器路径")
     return {}
 
 

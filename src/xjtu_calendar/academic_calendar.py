@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import ParseError, SemesterNotConfigured
-from .models import CourseMeeting, Semester
+from .models import CourseMeeting, Semester, UnsupportedAdjustment
 
 __all__ = ["AcademicCalendar", "DateOverride"]
 
@@ -84,6 +84,7 @@ class AcademicCalendar:
     semester: Semester
     excluded_dates: set[date] = field(default_factory=set)
     overrides: dict[date, DateOverride] = field(default_factory=dict)
+    unsupported_adjustments: tuple[UnsupportedAdjustment, ...] = field(default_factory=tuple)
 
     # ------------------------------------------------------------------ #
     # 教学周 -> 日期
@@ -173,7 +174,16 @@ class AcademicCalendar:
                 note=value.get("note"),
             )
 
-        return cls(semester=semester, excluded_dates=excluded, overrides=overrides)
+        adjustments = _unsupported_adjustments_from_dict(
+            payload.get("unsupported_adjustments")
+        )
+
+        return cls(
+            semester=semester,
+            excluded_dates=excluded,
+            overrides=overrides,
+            unsupported_adjustments=adjustments,
+        )
 
     @classmethod
     def from_file(cls, path: str | Path) -> AcademicCalendar:
@@ -204,6 +214,48 @@ def _semester_from_dict(raw: dict[str, Any]) -> Semester:
         start_date=_optional_date(raw.get("start_date")),
         end_date=_optional_date(raw.get("end_date")),
     )
+
+
+def _unsupported_adjustments_from_dict(
+    raw: Any,
+) -> tuple[UnsupportedAdjustment, ...]:
+    """解析 ``unsupported_adjustments`` 配置（可为空 / 缺省）。
+
+    期望结构::
+
+        "unsupported_adjustments": [
+            {"date": "2026-09-20", "description": "按 2026-10-06 的课表上课"},
+            ...
+        ]
+
+    这是「已知但无法表达」的显式声明，与 ``overrides`` 的区别：
+    ``overrides`` 是工具**能**表达的业务规则；本字段是工具**不能**表达、
+    但配置者知道存在的事实。导出阶段会据此决定 fail 还是警告。
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ParseError(
+            f"unsupported_adjustments 必须是数组，实际为 {type(raw).__name__}"
+        )
+
+    adjustments: list[UnsupportedAdjustment] = []
+    for index, item in enumerate(raw):
+        label = f"unsupported_adjustments[{index}]"
+        if not isinstance(item, dict):
+            raise ParseError(f"{label} 必须是对象（含 date / description）")
+        if "date" not in item:
+            raise ParseError(f"{label} 缺少 date 字段")
+        day = _parse_date(item["date"], f"{label}.date")
+        description = str(item.get("description") or "").strip()
+        if not description:
+            raise ParseError(
+                f"{label} 缺少 description —— 没有说明的「无法表达」只会让人困惑，"
+                f"请写清楚该日期应按什么安排上课"
+            )
+        adjustments.append(UnsupportedAdjustment(date=day, description=description))
+
+    return tuple(adjustments)
 
 
 def _optional_int(value: Any, label: str) -> int | None:

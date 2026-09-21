@@ -359,6 +359,53 @@ def test_academic_calendar_missing_semester_raises() -> None:
         AcademicCalendar.from_dict({})
 
 
+# --------------------------------------------------------------------------- #
+# unsupported_adjustments：显式声明「已知但无法表达」的调课
+# --------------------------------------------------------------------------- #
+def test_unsupported_adjustments_omitted_is_empty() -> None:
+    cal = AcademicCalendar.from_dict(
+        {"semester": {"key": "x", "first_week_monday": "2026-09-07"}}
+    )
+    assert cal.unsupported_adjustments == ()
+
+
+def test_unsupported_adjustments_parsed() -> None:
+    cal = AcademicCalendar.from_dict(
+        {
+            "semester": {"key": "x", "first_week_monday": "2026-09-07"},
+            "unsupported_adjustments": [
+                {"date": "2026-09-20", "description": "按 10-06（第 4 周周二）课表上课"},
+                {"date": "2026-10-10", "description": "按 10-07（第 4 周周三）课表上课"},
+            ],
+        }
+    )
+    assert [a.date for a in cal.unsupported_adjustments] == [
+        date(2026, 9, 20),
+        date(2026, 10, 10),
+    ]
+    assert "10-06" in cal.unsupported_adjustments[0].description
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not-a-list",                                   # 非数组
+        [{"description": "没有日期"}],                    # 缺 date
+        [{"date": "2026-09-20"}],                       # 缺 description
+        [{"date": "2026-09-20", "description": "  "}],  # 空白 description
+    ],
+)
+def test_unsupported_adjustments_bad_shape_raises(raw: object) -> None:
+    """没有说明的「无法表达」只会让人困惑 —— description 必填。"""
+    with pytest.raises(ParseError):
+        AcademicCalendar.from_dict(
+            {
+                "semester": {"key": "x", "first_week_monday": "2026-09-07"},
+                "unsupported_adjustments": raw,
+            }
+        )
+
+
 def test_academic_calendar_bad_date_raises() -> None:
     with pytest.raises(ParseError):
         AcademicCalendar.from_dict(

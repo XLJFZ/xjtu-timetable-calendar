@@ -31,10 +31,39 @@ __all__ = [
     "SchedulePeriod",
     "ScheduleProfile",
     "Semester",
+    "UnsupportedAdjustment",
 ]
 
 #: 无法识别校区时使用的占位值
 CAMPUS_UNKNOWN = "未知校区"
+
+
+@dataclass(frozen=True)
+class UnsupportedAdjustment:
+    """一条**已知但本工具当前无法表达**的调课安排。
+
+    这不是「待办标记」，而是**显式声明的能力边界**：配置者知道某个日期
+    存在特殊安排（补课 / 借用其他教学日的课表），而 v0.1 的数据模型
+    只能「删 / 改」既有事件，不能「新增」事件，所以只能把这一事实
+    原样记录下来，由导出阶段决定如何处置（默认 fail-closed，
+    显式允许后转为显著警告）。
+
+    设计红线：**绝不**为了「让配置看起来完整」而把这些安排伪装成
+    :class:`DateOverride` 或伪造事件 —— 那是把「工具暂不支持」
+    冒充成「业务事实」。
+
+    Attributes
+    ----------
+    date:
+        调课发生的实际日期（例如补课当天）。
+    description:
+        自由文本说明，例如
+        ``"按 2026-10-06（第 4 周星期二）的课表上课"``。
+        导出报错 / 警告时会原样呈现给用户。
+    """
+
+    date: date
+    description: str = ""
 
 
 @dataclass(frozen=True)

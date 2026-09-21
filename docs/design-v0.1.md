@@ -575,6 +575,66 @@ ruff check .  → All checks passed!
 mypy src      → Success: no issues found in 16 source files
 ```
 
+### 6.0.4 修复记录（2026-09-21：unsupported_adjustments + 首次真实 ICS 穿透）
+
+**动机**：§4.3 的硬性要求是「调课日必须显式报出，而非静默忽略」。但工具此前没有
+承载「已知却无法表达」的机制 —— 配置里写不进这件事，导出自然也就无从报起。
+首次真实导出因此被卡住：直接导会**静默产出错误日历**（假期日照常排课、
+借课日无事件），违反红线。
+
+**新机制：`unsupported_adjustments`（教学日历配置的可选字段）**
+
+```json
+"unsupported_adjustments": [
+  { "date": "2026-09-20", "description": "按 2026-10-06（第 4 周星期二）的课表上课" }
+]
+```
+
+- 定位：**显式声明的能力边界**，不是待办标记，更不是业务事实。
+  绝不伪装成 `DateOverride`，也绝不生成占位事件。
+- `description` 必填（空白报 `ParseError`）—— 没有说明的「无法表达」只会让人困惑。
+- 解析进 `AcademicCalendar.unsupported_adjustments`；
+  导出侧新增 `collect_unsupported(calendar, events)`：找出日期落在本次事件
+  跨度内的声明（事件为空时视为全部命中）。
+- **处置默认 fail-closed**：抛 `UnsupportedAdjustmentError`，逐条列出明细，
+  拒绝生成；`--allow-unsupported-adjustments` 显式放行后，每条转为
+  `logger.warning`（⚠️ 前缀 + 「该时段事件缺失」），并继续导出。
+
+**连带修复：ICS 落盘的二次行尾翻译（真 bug）**
+
+`cli.cmd_export` 原先用 `write_text(ics, encoding="utf-8")` 写文件 ——
+Windows 下默认 `newline=None` 会把 `render_ics` 产出的 `\r\n` 再翻译成
+`os.linesep`，得到 **`\r\r\n`**，违反 RFC 5545。改为 `newline=""`（写什么是什么），
+并加测试锁定「文件字节里 `\r\r\n` 必须为 0」。
+
+**首次真实 ICS 穿透结果（2026-2027-1，9 门课 / 18 条安排）**
+
+| 检查 | 结果 |
+|---|---|
+| 未声明机制时默认导出 | ✅ 拒绝并逐条列出 2 条调课（fail-closed 生效） |
+| 事件数 | 100 → 补 `overrides`（10-10 全天停）后 **98** |
+| 国庆周 10-01 ~ 10-07 | ✅ 0 事件 |
+| 2026-09-20（借周二课表） | ✅ 0 原生事件（无周日课），缺失部分已声明 |
+| 2026-10-10（借周三课表） | ✅ 原生 2 条周六事件已按通知删除，缺失部分已声明 |
+| 作息切换 | ✅ 10-01 前第 5 节全部 14:30，之后全部 14:00（跨切换无错位） |
+| UID | ✅ 98 个互不相同；两次导出 UID 集合完全一致（仅 DTSTAMP 变化） |
+| 行尾 | ✅ 1027 个 CRLF / 0 个 `\r\r\n` |
+| 时区 | ✅ 全部 `Asia/Shanghai` |
+
+**配置层面的两个裁定（用户数据目录）**：`excluded_dates` 补入 10-01 ~ 10-07；
+`overrides` 补入 10-10 全天停课（「停原周六课程」是 `DateOverride` **能**表达的
+部分，不能因为新增部分表达不了就放弃能做的删除）。⚠️ 遗留待确认：
+2026-09-25（周五，中秋）是否放假 —— 未核实前不写入。
+
+**验收**
+
+```
+pytest -q     → 287 passed（新增 10 项：解析 / 范围判定 / 空事件全命中 /
+                配置形状校验 / ICS 落盘行尾锁定）
+ruff check .  → All checks passed!
+mypy src      → Success: no issues found in 16 source files
+```
+
 ### 6-1 `.gitignore` 静默排除作息表模板 【严重度：高】
 
 `examples/schedule.example.json` 命中 `.gitignore:17` 的 `schedule*.json` 规则而被排除。排除规则中的否定项 `!tests/fixtures/*.json` 只覆盖 `tests/fixtures/`，**不覆盖 `examples/`**。
@@ -794,9 +854,9 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 | 13 | 推送：以远端 `main` **现有 HEAD**（`af6bfa3`）为 parent 做原子提交，`force:false`（git 协议在本机不通）。**绝不 force 覆盖远端已有的 Initial commit** | 9 | ✅ 已完成：远端 `b81fa79`，parent = `af6bfa3`，推送后四项验证全绿 |
 | 14 | **P0：越界周次 fail-closed**（`total_weeks` 改可选 + 删除静默 `continue`） | — | ✅ 已完成（§6.0.2），提交 `fix(export): fail closed on out-of-range course weeks` |
 | 15 | **P0-2：周次解析的静默截断**（`max_week` → `expansion_limit` + 显式越界报错） | 14 | ✅ 已完成（§6.0.3），提交 `fix(parser): reject silently truncated week specifications` |
-| 16 | 首次真实 `export` 穿透 | 12 | ⬜ **下一步**（导出侧与解析侧两端均已解除「静默缺课」风险） |
-| 17 | v0.2 设计：`CalendarAdjustment`（`CancelDate` / `ReplaceTeachingDay` / `AddMeeting`）取代「给 `DateOverride` 打补丁」的思路 | 16 | ⬜ |
-| 18 | 门户按 D3 处理「开发中」标注 | 13–15 | ⬜ |
+| 16 | 首次真实 `export` 穿透（含 `unsupported_adjustments` fail-closed 机制 + ICS 落盘行尾修复） | 12 | ✅ 已完成（§6.0.4）：98 事件，八项验收全过 |
+| 17 | v0.2 设计：`CalendarAdjustment`（`CancelDate` / `ReplaceTeachingDay` / `AddMeeting`）取代「给 `DateOverride` 打补丁」的思路 | 16 | ⬜ **下一步**。落地后 09-20 / 10-10 两条 `unsupported_adjustments` 应转为正式表达 |
+| 18 | 门户按 D3 处理「开发中」标注 | 13–16 | ⬜ |
 
 > **第 2–8 步已于 2026-09-20 第二、三轮完成**，见 §6.0 与 §6.0.1。本批提交信息建议：
 > `chore(repo): clean public fixtures and documentation`
@@ -811,7 +871,7 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 | 结论 | 验证命令 / 方式 |
 |---|---|
-| 277 项测试通过（P0 / P0-2 后） | `python -m pytest -q`（`cv-project0` 环境） |
+| 287 项测试通过（P0 / P0-2 / §6.0.4 后） | `python -m pytest -q`（`cv-project0` 环境） |
 | `ruff` 全绿 | `python -m ruff check .` → `All checks passed!` |
 | `mypy` 全绿 | `python -m mypy src` → `Success: no issues found in 16 source files` |
 | 远端无代码 | `GET https://api.github.com/repos/XLJFZ/xjtu-timetable-calendar/contents/` → 3 项 |

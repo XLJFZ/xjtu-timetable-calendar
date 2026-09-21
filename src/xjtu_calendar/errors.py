@@ -124,3 +124,18 @@ class ScheduleNotConfigured(XjtuCalendarError):
 
 class CalendarExportError(XjtuCalendarError):
     """iCalendar 生成失败。"""
+
+
+class UnsupportedAdjustmentError(XjtuCalendarError):
+    """校历里声明了本工具无法表达的调课，且该调课落在导出范围内。
+
+    这是**故意的 fail-closed**：与其生成一份「看起来完整、实则缺了
+    若干调课时段」的日历，不如拒绝并把这些条目原样报给用户。
+    用户确认接受缺失后，可用 ``--allow-unsupported-adjustments``
+    带着显著警告继续导出。
+    """
+
+    hint = (
+        "核对上面列出的调课是否影响你；确认可以接受缺失后，"
+        "加 --allow-unsupported-adjustments 重新导出。"
+    )

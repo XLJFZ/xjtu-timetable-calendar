@@ -35,9 +35,16 @@ from .errors import (
     EndpointNotConfigured,
     ScheduleNotConfigured,
     SemesterNotConfigured,
+    UnsupportedAdjustmentError,
     XjtuCalendarError,
 )
-from .exporter import DEFAULT_CALENDAR_NAME, build_events, render_ics, summarize
+from .exporter import (
+    DEFAULT_CALENDAR_NAME,
+    build_events,
+    collect_unsupported,
+    render_ics,
+    summarize,
+)
 from .logging_setup import get_logger, setup_logging
 from .parser import TimetableParser
 from .schedules import ScheduleTable
@@ -97,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--name", default=DEFAULT_CALENDAR_NAME, help="日历名称")
     export.add_argument("--from-date", help="只导出该日期（含）之后的事件，ISO 格式")
     export.add_argument("--to-date", help="只导出该日期（含）之前的事件，ISO 格式")
+    export.add_argument(
+        "--allow-unsupported-adjustments",
+        action="store_true",
+        help="教学日历声明了无法表达的调课时仍继续导出（带显著警告，事件会缺失）",
+    )
 
     # --- inspect ---
     inspect = sub.add_parser("inspect", help="对原始课表 JSON 做脱敏结构分析")
@@ -333,11 +345,29 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     if not events:
         logger.warning("没有生成任何事件（可能全部落在停课日期或被日期过滤排除）")
 
+    # --- 无法表达的调课：fail-closed（显式允许后转为显著警告） ---
+    unsupported = collect_unsupported(academic, events)
+    if unsupported:
+        lines = [
+            f"  {a.date.isoformat()}：{a.description}"
+            for a in unsupported
+        ]
+        if not args.allow_unsupported_adjustments:
+            raise UnsupportedAdjustmentError(
+                f"教学日历声明了 {len(unsupported)} 条本工具无法表达的调课，"
+                f"它们落在本次导出范围内：\n" + "\n".join(lines) + "\n"
+                "继续导出将得到一份**缺少这些时段**的日历。"
+            )
+        for line in lines:
+            logger.warning("⚠️ 未表达的调课（该时段事件缺失）：%s", line)
+
     # --- 渲染 ---
     ics = render_ics(events, calendar_name=args.name)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(ics, encoding="utf-8")
+    # newline=""：render_ics 已按 RFC 5545 产出 CRLF 行尾，
+    # 若用默认 newline=None，Windows 会再翻译一次得到 \r\r\n。
+    output.write_text(ics, encoding="utf-8", newline="")
 
     # --- 汇总 ---
     info = summarize(meetings, events)

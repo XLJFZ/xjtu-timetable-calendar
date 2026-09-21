@@ -24,11 +24,12 @@ from xjtu_calendar.exporter import (
     PRODID,
     UID_DOMAIN,
     build_events,
+    collect_unsupported,
     make_uid,
     render_ics,
     summarize,
 )
-from xjtu_calendar.models import CourseMeeting, Semester
+from xjtu_calendar.models import CourseMeeting, Semester, UnsupportedAdjustment
 from xjtu_calendar.schedules import ScheduleTable
 from xjtu_calendar.timeutil import TZ_NAME
 
@@ -430,6 +431,72 @@ def test_build_events_deduplicates_same_uid(
     duplicate = CourseMeeting("DUP", "重复课程", 5, [1, 2], [1])
     events = build_events([m, duplicate], calendar, schedules)
     assert len(events) == 1
+
+
+# --------------------------------------------------------------------------- #
+# unsupported_adjustments：已知但无法表达的调课（fail-closed 的数据来源）
+# --------------------------------------------------------------------------- #
+def _calendar_with_adjustments(
+    base: AcademicCalendar, *adjustments: UnsupportedAdjustment
+) -> AcademicCalendar:
+    return AcademicCalendar(
+        semester=base.semester,
+        excluded_dates=base.excluded_dates,
+        overrides=base.overrides,
+        unsupported_adjustments=tuple(adjustments),
+    )
+
+
+def test_collect_unsupported_reports_only_in_range(
+    calendar: AcademicCalendar, schedules: ScheduleTable, sample_meeting: CourseMeeting
+) -> None:
+    """声明了的调课若落在事件日期跨度内则报告；范围外的不报告。"""
+    events = build_events([sample_meeting], calendar, schedules)
+    cal_with = _calendar_with_adjustments(
+        calendar,
+        UnsupportedAdjustment(date(2026, 9, 20), "按 10-06 课表上课"),
+        UnsupportedAdjustment(date(2026, 10, 10), "按 10-07 课表上课"),
+        UnsupportedAdjustment(date(2025, 3, 2), "上学期的事，不应命中"),
+    )
+
+    got = collect_unsupported(cal_with, events)
+    dates = {a.date for a in got}
+    assert dates == {date(2026, 9, 20), date(2026, 10, 10)}
+
+
+def test_collect_unsupported_empty_when_not_declared(
+    calendar: AcademicCalendar, schedules: ScheduleTable, sample_meeting: CourseMeeting
+) -> None:
+    events = build_events([sample_meeting], calendar, schedules)
+    assert collect_unsupported(calendar, events) == []
+
+
+def test_collect_unsupported_all_hit_when_no_events(calendar: AcademicCalendar) -> None:
+    """事件为空时全部命中 —— 空日历同样需要用户知情。"""
+    cal_with = _calendar_with_adjustments(
+        calendar, UnsupportedAdjustment(date(2026, 9, 20), "按 10-06 课表上课")
+    )
+    assert len(collect_unsupported(cal_with, [])) == 1
+
+
+def test_written_ics_keeps_rfc5545_crlf(
+    tmp_path: object, calendar: AcademicCalendar, schedules: ScheduleTable,
+    sample_meeting: CourseMeeting,
+) -> None:
+    """写文件时不得二次翻译行尾：render_ics 产出 CRLF，落盘必须仍是 CRLF。
+
+    Windows 上 `write_text` 默认 newline=None 会把 \\n 再翻译成 os.linesep，
+    得到 ``\\r\\r\\n``。cli 侧用 ``newline=""`` 写入 —— 这里锁定该行为。
+    """
+    ics = render_ics(build_events([sample_meeting], calendar, schedules))
+    assert "\r\n" in ics
+    assert "\r\r\n" not in ics
+
+    path = tmp_path / "timetable.ics"  # type: ignore[operator]
+    path.write_text(ics, encoding="utf-8", newline="")  # 与 cli 写法一致
+    raw = path.read_bytes()
+    assert raw.count(b"\r\r\n") == 0
+    assert raw.count(b"\r\n") == raw.count(b"\n")
 
 
 # --------------------------------------------------------------------------- #

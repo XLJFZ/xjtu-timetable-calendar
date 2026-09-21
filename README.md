@@ -280,6 +280,25 @@ Output:
 `excluded_dates` 是全校停课日（节假日）。第一版不自动推断，
 需要你从校历抄录；后续版本会考虑自动获取。
 
+**`unsupported_adjustments`（可选）：声明「已知但本工具无法表达」的调课。**
+
+```json
+"unsupported_adjustments": [
+  { "date": "2026-09-20", "description": "按 2026-10-06（第 4 周星期二）的课表上课" }
+]
+```
+
+有些安排（如「某周日按某周二的课表上课」）需要在原本没有事件的日期上
+**新增**事件，而 v0.1 的覆盖机制只能删 / 改。声明之后，导出行为是：
+
+- **默认直接报错**，逐条列出调课明细 —— 绝不静默产出缺课的日历；
+- 你确认可以接受缺失后，加 `--allow-unsupported-adjustments`
+  继续导出（每条都会以警告形式再次出现）。
+
+`description` 必填：没有说明的「无法表达」只会让人困惑。
+这类声明**不是**数据模型的一部分（不给 `DateOverride` 打补丁），
+未来会由独立的调课模型正式接管。
+
 ### 2. 作息表
 
 位置：`~/.xjtu-timetable-calendar/schedules/schedule.json`
@@ -523,7 +542,7 @@ class CourseMeeting:
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 277 项测试（含 doctest）
+pytest                      # 287 项测试（含 doctest）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）

@@ -22,7 +22,7 @@ from datetime import datetime
 
 from .academic_calendar import AcademicCalendar
 from .errors import CalendarExportError
-from .models import CalendarEvent, CourseMeeting
+from .models import CalendarEvent, CourseMeeting, UnsupportedAdjustment
 from .periods import format_periods
 from .schedules import ScheduleTable
 from .timeutil import TZ_XIAN, now_local
@@ -31,6 +31,7 @@ from .weeks import format_weeks
 __all__ = [
     "PRODID",
     "build_events",
+    "collect_unsupported",
     "make_uid",
     "render_ics",
     "summarize",
@@ -213,6 +214,31 @@ def build_events(
 
     events.sort(key=lambda e: (e.start, e.summary))
     return events
+
+
+def collect_unsupported(
+    calendar: AcademicCalendar,
+    events: Sequence[CalendarEvent],
+) -> list[UnsupportedAdjustment]:
+    """找出落在导出范围内、但本工具无法表达的调课安排。
+
+    判定逻辑：声明了 ``unsupported_adjustments`` 且其日期落在
+    本次事件的日期跨度内（事件为空时视为全部命中）。
+
+    返回值交给调用方决定处置：默认 fail-closed，
+    显式允许后转为显著警告。**本函数只报告，不虚构任何事件** ——
+    不会为了「让日历看起来完整」而生成占位事件。
+    """
+    adjustments = calendar.unsupported_adjustments
+    if not adjustments:
+        return []
+
+    if not events:
+        return list(adjustments)
+
+    lo = min(e.start.date() for e in events)
+    hi = max(e.start.date() for e in events)
+    return [a for a in adjustments if lo <= a.date <= hi]
 
 
 def render_ics(

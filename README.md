@@ -251,7 +251,10 @@ Output:
   },
   "excluded_dates": ["2026-10-01"],
   "overrides": {
-    "2026-10-10": { "note": "国庆调休补课" }
+    "2026-10-10": {
+      "source_date": "2026-10-06",
+      "note": "（示例）本日按 10-06 的课表上课"
+    }
   }
 }
 ```
@@ -280,24 +283,51 @@ Output:
 `excluded_dates` 是全校停课日（节假日）。第一版不自动推断，
 需要你从校历抄录；后续版本会考虑自动获取。
 
+**`overrides` 支持两类校历例外。** 工具不把节假日、调课混为一谈：
+
+| 字段 | 含义 |
+|---|---|
+| `excluded_dates` | **停课日**：该日不生成任何事件。 |
+| `overrides[date].source_date` | **调课日**：该日原课程停上，改为按 `source_date` 所在教学周 + 星期的课表上课。 |
+| `overrides[date].cancel` | 仅停课（不调入其他课表）。 |
+| `overrides[date].note` / `location` | 附加备注 / 覆盖教室。 |
+
+调课日语义（对应学校通知里的「某日上原本某日的课」）：
+
+```json
+"overrides": {
+  "2026-10-10": { "source_date": "2026-10-06" }
+}
+```
+
+- 10-10 原有的星期六课程**停上**；
+- 生成的事件来自 **10-06 所在教学周 + 星期二** 的课程安排
+  （单双周 / 周次位掩码按 **source 教学周**解释，不按 10-10 自己的周次）；
+- 事件的日期是 **10-10 本身**，钟点按 **10-10 当天适用作息**解析
+  （例如冬春季作息切换后补课自动用新钟点）；
+- UID 与普通事件同一规则，稳定可复现。
+
+配置校验（fail-closed）：`source_date` 等于自身、落在学期范围外、
+目标日又在 `excluded_dates` 中、或同一日期残留
+`unsupported_adjustments` 旧声明 —— 加载时即报错。
+
 **`unsupported_adjustments`（可选）：声明「已知但本工具无法表达」的调课。**
 
 ```json
 "unsupported_adjustments": [
-  { "date": "2026-09-20", "description": "按 2026-10-06（第 4 周星期二）的课表上课" }
+  { "date": "2026-11-14", "description": "运动会停课，补课安排未公布" }
 ]
 ```
 
-有些安排（如「某周日按某周二的课表上课」）需要在原本没有事件的日期上
-**新增**事件，而 v0.1 的覆盖机制只能删 / 改。声明之后，导出行为是：
+能用 `overrides[source_date]` 表达的调课**不要**写在这里 ——
+同一日期两种声明并存会在加载时报错。这个字段只用于声明真正表达不了的
+安排（例如「某日按某周几课表上课，但具体哪周未知」），导出行为是：
 
 - **默认直接报错**，逐条列出调课明细 —— 绝不静默产出缺课的日历；
 - 你确认可以接受缺失后，加 `--allow-unsupported-adjustments`
   继续导出（每条都会以警告形式再次出现）。
 
 `description` 必填：没有说明的「无法表达」只会让人困惑。
-这类声明**不是**数据模型的一部分（不给 `DateOverride` 打补丁），
-未来会由独立的调课模型正式接管。
 
 ### 2. 作息表
 
@@ -542,7 +572,7 @@ class CourseMeeting:
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 287 项测试（含 doctest）
+pytest                      # 309 项测试（含 doctest）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）
@@ -631,20 +661,19 @@ python -m xjtu_calendar login --force
 - [x] 周次 / 节次文本解析（含单双周、混合区间）
 - [x] 教学周 → 实际日期
 - [x] 冬/夏季作息解耦，节次 → 实际钟点
-- [x] 停课 / 调课覆盖机制
+- [x] 停课 / 调课覆盖机制（`source_date` 调课日：按来源教学日课表生成事件）
 - [x] 逐次上课生成独立事件，UID 稳定
 - [x] RFC 5545 `.ics` 导出（`Asia/Shanghai`）
 - [x] CLI、错误体系、日志脱敏、测试
 - [x] 用真实网络请求确认 eHall 课表接口，固化到 `config/ehall_endpoints.json`
 - [x] 按真实响应校准 `parser.py` 的字段候选（含 `SKZC` 位掩码、结构化节次优先）
 - [x] `fetch` 以真实账号跑通：真实课表成功落盘并逐行校验
+- [x] 产出首份真实 `.ics`
 
 **待完成**
 
-- [ ] 产出首份真实 `.ics`（需先由用户配置校历与作息表）
 - [ ] 从学校官方来源自动获取校历与作息表（替代手工配置）
 - [ ] 补 `SEQUENCE` / `LAST-MODIFIED`，为 URL 订阅式 ICS 做准备
-- [ ] 补课 / 调课表达：当前 `DateOverride` 只能删改、不能新增事件
 
 **未来扩展（架构已预留）**
 

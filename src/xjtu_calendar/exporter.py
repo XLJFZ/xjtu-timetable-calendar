@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Sequence
-from datetime import datetime
+from datetime import date, datetime
 
 from .academic_calendar import AcademicCalendar
 from .errors import CalendarExportError
@@ -44,6 +44,8 @@ UID_DOMAIN = "xjtu-timetable-calendar"
 
 #: 生产环境默认的日历名称
 DEFAULT_CALENDAR_NAME = "西安交通大学课表"
+
+_WEEKDAY_NAMES = ("一", "二", "三", "四", "五", "六", "日")
 
 
 def make_uid(
@@ -103,6 +105,32 @@ def _build_description(meeting: CourseMeeting, week: int) -> str:
     return "\n".join(lines)
 
 
+def _build_makeup_description(
+    meeting: CourseMeeting,
+    source_week: int,
+    source_weekday: int,
+    source_date: date,
+) -> str:
+    """构造调课事件的 DESCRIPTION。
+
+    与普通事件的关键差异：不能写「本周为第 N 教学周」——target date 所在
+    教学周与课程来源周通常不同（例如第 1 周周日上第 4 周周二的课），
+    误导性的周次说明比没有说明更糟。
+    """
+    lines: list[str] = []
+    if meeting.teacher:
+        lines.append(f"教师：{meeting.teacher}")
+    lines.append(f"教学周：{meeting.raw_week_text or format_weeks(meeting.weeks) + '周'}")
+    lines.append(f"节次：{meeting.raw_period_text or format_periods(meeting.periods)}")
+    lines.append(
+        f"调课：本日按第 {source_week} 教学周星期{_WEEKDAY_NAMES[source_weekday - 1]}"
+        f"（{source_date.isoformat()}）的课表上课"
+    )
+    if meeting.course_id:
+        lines.append(f"课程编号：{meeting.course_id}")
+    return "\n".join(lines)
+
+
 def build_events(
     meetings: Sequence[CourseMeeting],
     calendar: AcademicCalendar,
@@ -112,7 +140,9 @@ def build_events(
 ) -> list[CalendarEvent]:
     """把课程安排展开成逐次上课的日历事件。
 
-    处理流程（对每个 :class:`CourseMeeting` 的每个教学周）：
+    处理流程：
+
+    **第一遍（原生展开）**，对每个 :class:`CourseMeeting` 的每个教学周：
 
     0. **周次校验（fail-closed）**：``week < 1`` 或（``total_weeks`` 有值时）
        ``week > total_weeks`` 一律抛 :class:`CalendarExportError` 终止导出，
@@ -120,10 +150,21 @@ def build_events(
        完全按 ``meeting.weeks`` 原样展开；
     1. ``week + weekday`` -> 具体日期（:class:`AcademicCalendar`）；
     2. 若该日期在停课集合中 -> 丢弃；
-    3. 若该日期存在覆盖规则且命中本课程 -> 丢弃；
+    3. 若该日期存在覆盖规则且命中本课程 -> 丢弃
+       （调课日 ``source_date`` 隐含整日取消，原课程在此让位）；
     4. ``date`` -> 生效作息表（:class:`ScheduleTable`）；
     5. ``periods`` -> 实际起止时刻；
     6. 生成事件，UID 稳定可复现。
+
+    **第二遍（调课展开）**，对每条 ``source_date`` 调课规则：
+
+    7. 课程来源是 **source_date 所在教学周 + 星期** 的课程安排
+       （不是 target date 自然星期——单双周 / 位掩码按 source 周解释）；
+    8. 事件日期写 target date，钟点按 **target date 当天适用作息** 解析
+       （例如 10-10 补 10-07 的课，下午第一节用冬春季作息 14:00）；
+    9. UID 与普通事件同一规则（semester + course + 日期 + 节次），稳定可复现。
+
+    两遍共用同一个 UID 去重集合，target date 不会出现重复事件。
 
     Parameters
     ----------
@@ -207,6 +248,62 @@ def build_events(
                     start=start,
                     end=end,
                     location=location,
+                    description=description,
+                    meeting=meeting,
+                )
+            )
+
+    # ---- 第二遍：调课日（source_date）展开 ----
+    for day, override in calendar.makeup_rules():
+        source = override.source_date
+        if source is None:  # pragma: no cover - makeup_rules 已过滤
+            continue
+        source_week = calendar.date_to_week(source)
+        source_weekday = source.isoweekday()
+        # 防御性校验：from_dict 已挡住越界，这里兜底防止绕过加载器构造的对象。
+        if source_week < 1:
+            raise CalendarExportError(
+                f"调课规则 {day.isoformat()} 的 source_date={source.isoformat()} "
+                f"早于第 1 教学周星期一，无法换算教学周。"
+            )
+        total = semester.total_weeks
+        if total is not None and source_week > total:
+            raise CalendarExportError(
+                f"调课规则 {day.isoformat()} 的 source_date={source.isoformat()} "
+                f"落在第 {source_week} 教学周，超出学期总周数 {total}。"
+            )
+
+        for meeting in meetings:
+            if meeting.weekday != source_weekday:
+                continue
+            if source_week not in meeting.weeks:
+                continue
+
+            sorted_periods = sorted(set(meeting.periods))
+            try:
+                start, end = schedules.resolve_period_time(day, sorted_periods)
+            except Exception as exc:
+                raise CalendarExportError(
+                    f"解析调课日 {day.isoformat()} 第 {sorted_periods} 节的上课时间失败："
+                    f"{exc}（课程：{meeting.course_name}）"
+                ) from exc
+
+            uid = make_uid(semester.key, meeting, day.isoformat())
+            if uid in seen_uids:
+                continue
+            seen_uids.add(uid)
+
+            description = _build_makeup_description(meeting, source_week, source_weekday, source)
+            if with_override_notes and override.note:
+                description = f"{description}\n备注：{override.note}"
+
+            events.append(
+                CalendarEvent(
+                    uid=uid,
+                    summary=meeting.course_name.strip(),
+                    start=start,
+                    end=end,
+                    location=meeting.full_location,
                     description=description,
                     meeting=meeting,
                 )

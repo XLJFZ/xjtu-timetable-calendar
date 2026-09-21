@@ -35,18 +35,26 @@ __all__ = ["AcademicCalendar", "DateOverride"]
 class DateOverride:
     """对某个具体日期的教学安排覆盖。
 
-    三种用法（按优先级从高到低）：
+    用法（按优先级从高到低）：
 
-    1. ``cancel=True`` —— 该日不上课，等效于把该日期加入排除集合。
-    2. ``skip_meeting_keys`` —— 该日仅跳过指定的课程安排（按 ``course_key`` 匹配）。
-    3. ``location`` / ``note`` —— 不改变是否上课，只覆盖地点或附加备注。
+    1. ``source_date`` —— **调课日**：该日原课程停上（等效于整日取消），
+       改为按 ``source_date`` **所在教学周 + 星期** 的课程安排生成事件。
+       事件的日期是本日（不是 source_date），钟点按**本日**适用作息解析。
+       这正是学校调休通知的语义："某日上原本某日的课"。
+    2. ``cancel=True`` —— 该日不上课，等效于把该日期加入排除集合。
+    3. ``skip_meeting_keys`` —— 该日仅跳过指定的课程安排（按 ``course_key`` 匹配）。
+    4. ``location`` / ``note`` —— 不改变是否上课，只覆盖地点或附加备注。
 
     Attributes
     ----------
     day:
         被覆盖的日期。
     cancel:
-        是否整日停课。
+        是否整日停课（``source_date`` 存在时隐含生效，无需重复声明）。
+    source_date:
+        调课来源日期。该日的课程来源是 ``source_date`` 的**教学周 + 星期**，
+        而不是本日在自然日历上的星期 —— 单双周 / ``SKZC`` 位掩码语义
+        也按 source 教学周解释（复现源教学日原本应上的那一套课）。
     skip_meeting_keys:
         该日需要跳过的课程标识集合（``CourseMeeting.stable_course_key``）。
     location:
@@ -57,12 +65,18 @@ class DateOverride:
 
     day: date
     cancel: bool = False
+    source_date: date | None = None
     skip_meeting_keys: frozenset[str] = frozenset()
     location: str | None = None
     note: str | None = None
 
     def skips(self, meeting: CourseMeeting) -> bool:
-        if self.cancel:
+        """该日是否跳过 ``meeting`` 的**原生**安排。
+
+        调课日（``source_date`` 存在）隐含整日取消：原课程让位给
+        source 课表，否则 target date 会出现「自身课程 + 调入课程」双份事件。
+        """
+        if self.cancel or self.source_date is not None:
             return True
         return meeting.stable_course_key in self.skip_meeting_keys
 
@@ -126,6 +140,16 @@ class AcademicCalendar:
     def override_for(self, day: date) -> DateOverride | None:
         return self.overrides.get(day)
 
+    def makeup_rules(self) -> list[tuple[date, DateOverride]]:
+        """返回所有调课规则 ``[(target_date, override), ...]``（按日期升序）。
+
+        只包含声明了 ``source_date`` 的覆盖；纯停课 / 换教室等规则不在此列。
+        """
+        return sorted(
+            ((day, o) for day, o in self.overrides.items() if o.source_date is not None),
+            key=lambda item: item[0],
+        )
+
     # ------------------------------------------------------------------ #
     # 序列化
     # ------------------------------------------------------------------ #
@@ -166,17 +190,33 @@ class AcademicCalendar:
             skip_keys = frozenset(
                 value.get("skip_courses") or value.get("skip_meeting_keys") or []
             )
+            source_date: date | None = None
+            if value.get("source_date"):
+                source_date = _parse_date(value["source_date"], f"overrides[{key}].source_date")
             overrides[day] = DateOverride(
                 day=day,
                 cancel=bool(value.get("cancel", False)),
+                source_date=source_date,
                 skip_meeting_keys=skip_keys,
                 location=value.get("location"),
                 note=value.get("note"),
             )
+            overrides[day] = _validate_override(overrides[day], semester, excluded)
 
         adjustments = _unsupported_adjustments_from_dict(
             payload.get("unsupported_adjustments")
         )
+
+        # 调课日不能再同时声明为「无法表达」：同一日期两种互相矛盾的声明，
+        # 几乎总是「机制升级后忘了删旧声明」——保留会让导出侧误报缺课。
+        makeup_days = {day for day, o in overrides.items() if o.source_date is not None}
+        for a in adjustments:
+            if a.date in makeup_days:
+                raise ParseError(
+                    f"{a.date.isoformat()} 同时出现在 unsupported_adjustments 与"
+                    f" overrides[source_date] 中：该调课已可用 overrides 表达，"
+                    f"请从 unsupported_adjustments 中删除这条过时声明。"
+                )
 
         return cls(
             semester=semester,
@@ -196,6 +236,51 @@ class AcademicCalendar:
         except json.JSONDecodeError as exc:
             raise ParseError(f"教学日历不是合法 JSON：{file_path}（{exc}）") from exc
         return cls.from_dict(payload)
+
+
+def _validate_override(
+    override: DateOverride,
+    semester: Semester,
+    excluded: set[date],
+) -> DateOverride:
+    """校验单条覆盖规则的跨字段一致性（fail-closed）。
+
+    调课声明里的错误如果等到导出阶段才炸，用户会面对一份「看起来生成
+    成功实则错乱」的日历；在配置加载时就拒绝，才能把问题挡在最早一步。
+    """
+    if override.source_date is None:
+        return override
+
+    if override.source_date == override.day:
+        raise ParseError(
+            f"overrides[{override.day.isoformat()}].source_date 不能等于该日期自身："
+            f"「按当天的课表上课」不是调课，请删除 source_date。"
+        )
+
+    if override.day in excluded:
+        raise ParseError(
+            f"{override.day.isoformat()} 同时出现在 excluded_dates 与"
+            f" overrides[source_date] 中：调课目标日不能又是全校停课日，"
+            f"两者只能保留其一。"
+        )
+
+    # source_date 只用于推导「第几教学周 + 星期几」，不需要它自己可上课；
+    # 但它必须落在学期教学周范围内，否则周次换算没有意义。
+    source_week = (override.source_date - semester.first_week_monday).days // 7 + 1
+    if override.source_date < semester.first_week_monday or source_week < 1:
+        raise ParseError(
+            f"overrides[{override.day.isoformat()}].source_date="
+            f"{override.source_date.isoformat()} 早于第 1 教学周星期一"
+            f"（{semester.first_week_monday.isoformat()}），无法换算教学周。"
+        )
+    if semester.total_weeks is not None and source_week > semester.total_weeks:
+        raise ParseError(
+            f"overrides[{override.day.isoformat()}].source_date="
+            f"{override.source_date.isoformat()} 落在第 {source_week} 教学周，"
+            f"超出学期总周数 {semester.total_weeks}。"
+        )
+
+    return override
 
 
 def _semester_from_dict(raw: dict[str, Any]) -> Semester:

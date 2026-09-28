@@ -90,12 +90,12 @@ def test_week_to_date_sunday_is_day_seven(calendar: AcademicCalendar) -> None:
 @pytest.mark.parametrize(
     ("week", "weekday", "expected"),
     [
-        (1, 1, date(2026, 9, 7)),   # 第 1 周周一
+        (1, 1, date(2026, 9, 7)),  # 第 1 周周一
         (1, 5, date(2026, 9, 11)),  # 第 1 周周五
         (2, 5, date(2026, 9, 18)),  # 第 2 周周五
         (3, 2, date(2026, 9, 22)),  # 第 3 周周二
-        (8, 3, date(2026, 10, 28)), # 第 8 周周三
-        (16, 6, date(2026, 12, 26)),# 第 16 周周六（12/21 周一 + 5 天）
+        (8, 3, date(2026, 10, 28)),  # 第 8 周周三
+        (16, 6, date(2026, 12, 26)),  # 第 16 周周六（12/21 周一 + 5 天）
     ],
 )
 def test_week_to_date_table(
@@ -326,9 +326,7 @@ def test_academic_calendar_total_weeks_omitted_is_none() -> None:
 
     没有官方校历依据时宁可留空 —— 填一个猜来的数字会让合法周次被判越界。
     """
-    cal = AcademicCalendar.from_dict(
-        {"semester": {"key": "x", "first_week_monday": "2026-09-07"}}
-    )
+    cal = AcademicCalendar.from_dict({"semester": {"key": "x", "first_week_monday": "2026-09-07"}})
     assert cal.semester.total_weeks is None
 
 
@@ -342,8 +340,7 @@ def test_academic_calendar_total_weeks_empty_string_is_none() -> None:
 def test_academic_calendar_bad_total_weeks_raises() -> None:
     with pytest.raises(ParseError, match="total_weeks"):
         AcademicCalendar.from_dict(
-            {"semester": {"key": "x", "first_week_monday": "2026-09-07",
-                          "total_weeks": "十六"}}
+            {"semester": {"key": "x", "first_week_monday": "2026-09-07", "total_weeks": "十六"}}
         )
 
 
@@ -363,9 +360,7 @@ def test_academic_calendar_missing_semester_raises() -> None:
 # unsupported_adjustments：显式声明「已知但无法表达」的调课
 # --------------------------------------------------------------------------- #
 def test_unsupported_adjustments_omitted_is_empty() -> None:
-    cal = AcademicCalendar.from_dict(
-        {"semester": {"key": "x", "first_week_monday": "2026-09-07"}}
-    )
+    cal = AcademicCalendar.from_dict({"semester": {"key": "x", "first_week_monday": "2026-09-07"}})
     assert cal.unsupported_adjustments == ()
 
 
@@ -389,9 +384,9 @@ def test_unsupported_adjustments_parsed() -> None:
 @pytest.mark.parametrize(
     "raw",
     [
-        "not-a-list",                                   # 非数组
-        [{"description": "没有日期"}],                    # 缺 date
-        [{"date": "2026-09-20"}],                       # 缺 description
+        "not-a-list",  # 非数组
+        [{"description": "没有日期"}],  # 缺 date
+        [{"date": "2026-09-20"}],  # 缺 description
         [{"date": "2026-09-20", "description": "  "}],  # 空白 description
     ],
 )

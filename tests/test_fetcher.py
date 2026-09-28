@@ -56,9 +56,7 @@ def cfg(tmp_path: Path) -> Settings:
     (session / "storage_state.json").write_text(
         json.dumps(
             {
-                "cookies": [
-                    {"name": "JSESSIONID", "value": "fake", "domain": "ehall.xjtu.edu.cn"}
-                ],
+                "cookies": [{"name": "JSESSIONID", "value": "fake", "domain": "ehall.xjtu.edu.cn"}],
                 "origins": [],
             }
         ),
@@ -76,7 +74,9 @@ def endpoint() -> Endpoint:
     return Endpoint(name="timetable", method="GET", path="/fake/timetable")
 
 
-def transport(status: int, body: str, content_type: str = "application/json") -> httpx.MockTransport:
+def transport(
+    status: int, body: str, content_type: str = "application/json"
+) -> httpx.MockTransport:
     return httpx.MockTransport(
         lambda request: httpx.Response(status, text=body, headers={"content-type": content_type})
     )
@@ -124,8 +124,7 @@ def test_load_endpoints_ignores_placeholder(tmp_path: Path) -> None:
         json.dumps(
             {
                 "endpoints": [
-                    {"name": "timetable", "method": "GET",
-                     "path": "/REPLACE_WITH_OBSERVED_PATH"}
+                    {"name": "timetable", "method": "GET", "path": "/REPLACE_WITH_OBSERVED_PATH"}
                 ]
             }
         ),
@@ -137,9 +136,7 @@ def test_load_endpoints_ignores_placeholder(tmp_path: Path) -> None:
 def test_load_endpoints_reads_confirmed_path(tmp_path: Path) -> None:
     path = tmp_path / "endpoints.json"
     path.write_text(
-        json.dumps(
-            {"endpoints": [{"name": "timetable", "method": "POST", "path": "/x/kb"}]}
-        ),
+        json.dumps({"endpoints": [{"name": "timetable", "method": "POST", "path": "/x/kb"}]}),
         encoding="utf-8",
     )
     endpoints = load_endpoints(path)
@@ -200,7 +197,8 @@ def test_fetch_login_html_is_auth_problem_not_parse_error(cfg: Settings) -> None
     """
     with pytest.raises(AuthenticationExpired) as exc:
         fetch_via_http(
-            endpoint(), cfg=cfg,
+            endpoint(),
+            cfg=cfg,
             transport=transport(200, LOGIN_HTML, "text/html; charset=utf-8"),
         )
     assert exc.value.exit_code == 3
@@ -210,7 +208,8 @@ def test_fetch_login_html_is_auth_problem_not_parse_error(cfg: Settings) -> None
 def test_fetch_plain_html_is_fetch_error_not_auth_error(cfg: Settings) -> None:
     with pytest.raises(TimetableFetchError) as exc:
         fetch_via_http(
-            endpoint(), cfg=cfg,
+            endpoint(),
+            cfg=cfg,
             transport=transport(200, PLAIN_HTML, "text/html; charset=utf-8"),
         )
     assert not isinstance(exc.value, AuthenticationExpired)

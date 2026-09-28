@@ -65,9 +65,15 @@ PLACEHOLDER_MARKER = "REPLACE_WITH_OBSERVED_PATH"
 #: 判定「这其实是个登录页」的 HTML 特征
 #: （eHall 会话失效后，接口常以 200 + 登录页 HTML 的方式返回，而不是 401）
 LOGIN_PAGE_MARKERS = (
-    "统一身份认证", "统一身份", "账号登录", "用户登录",
-    "login.xjtu.edu.cn", "cas.xjtu.edu.cn", "ids.xjtu.edu.cn",
-    "请输入账号", "请输入密码",
+    "统一身份认证",
+    "统一身份",
+    "账号登录",
+    "用户登录",
+    "login.xjtu.edu.cn",
+    "cas.xjtu.edu.cn",
+    "ids.xjtu.edu.cn",
+    "请输入账号",
+    "请输入密码",
 )
 
 
@@ -208,7 +214,9 @@ def bundled_endpoints_text() -> str | None:
         return None
 
 
-def load_endpoints(path: Path | str | None = None, cfg: Settings | None = None) -> dict[str, Endpoint]:
+def load_endpoints(
+    path: Path | str | None = None, cfg: Settings | None = None
+) -> dict[str, Endpoint]:
     """加载接口定义。
 
     查找优先级（**高 -> 低**）：
@@ -300,7 +308,7 @@ def fetch_current_semester(endpoint: Endpoint, *, cfg: Settings | None = None) -
     raise TimetableFetchError(
         f"学期接口 {endpoint.name} 的响应中没有学期代码（DM/XNXQDM）",
         hint="响应 schema 可能变化。请运行 python -m xjtu_calendar inspect "
-             "查看脱敏结构，并核对 scripts/probe_ehall.py 的最新观测。",
+        "查看脱敏结构，并核对 scripts/probe_ehall.py 的最新观测。",
     )
 
 
@@ -369,7 +377,7 @@ def fetch_via_http(
                 last_error = exc
                 if attempt >= attempts:
                     break
-                delay = cfg.retry_backoff_base ** attempt
+                delay = cfg.retry_backoff_base**attempt
                 logger.warning("请求失败（第 %d/%d 次），%.1fs 后重试", attempt, attempts, delay)
                 time.sleep(delay)
                 continue
@@ -390,10 +398,13 @@ def fetch_via_http(
                 )
                 if attempt >= attempts:
                     break
-                delay = cfg.retry_backoff_base ** attempt
+                delay = cfg.retry_backoff_base**attempt
                 logger.warning(
                     "服务端返回 %d（第 %d/%d 次），%.1fs 后重试",
-                    response.status_code, attempt, attempts, delay,
+                    response.status_code,
+                    attempt,
+                    attempts,
+                    delay,
                 )
                 time.sleep(delay)
                 continue
@@ -415,9 +426,7 @@ def fetch_via_http(
                 )
 
             if kind == "empty":
-                raise TimetableFetchError(
-                    f"接口 {endpoint.name} 返回了空响应体"
-                )
+                raise TimetableFetchError(f"接口 {endpoint.name} 返回了空响应体")
 
             if kind != "json":
                 raise TimetableFetchError(
@@ -430,9 +439,7 @@ def fetch_via_http(
             logger.debug("响应结构（已脱敏）：%s", redact(payload))
             return payload
 
-    raise TimetableFetchError(
-        f"请求接口 {endpoint.name} 失败，已尝试 {attempts} 次：{last_error}"
-    )
+    raise TimetableFetchError(f"请求接口 {endpoint.name} 失败，已尝试 {attempts} 次：{last_error}")
 
 
 # --------------------------------------------------------------------------- #
@@ -443,7 +450,12 @@ def fetch_via_browser(
     cfg: Settings | None = None,
     navigate_url: str | None = None,
     hint_keywords: tuple[str, ...] = (
-        "timetable", "schedule", "course", "kcb", "semester", "term",
+        "timetable",
+        "schedule",
+        "course",
+        "kcb",
+        "semester",
+        "term",
     ),
     settle_seconds: float = 8.0,
 ) -> list[dict[str, Any]]:

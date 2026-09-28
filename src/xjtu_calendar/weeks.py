@@ -151,9 +151,7 @@ def _require_within(rng: _Range, expansion_limit: int, source: str) -> None:
     悄悄砍掉，用户拿到的是「解析成功、但少了几周」的结果。
     """
     if rng.start < 1:
-        raise WeekOutOfRangeError(
-            f"周次 {rng.start} 非法（教学周必须 >= 1），来源：{source!r}"
-        )
+        raise WeekOutOfRangeError(f"周次 {rng.start} 非法（教学周必须 >= 1），来源：{source!r}")
     if rng.end > expansion_limit:
         raise WeekOutOfRangeError(
             f"周次 {rng.end} 超出解析上限 {expansion_limit}，来源：{source!r}。\n"
@@ -233,9 +231,7 @@ def _parse_tokens(text: str) -> list[_Range]:
     return ranges
 
 
-def parse_week_mask(
-    mask: object, *, expansion_limit: int = DEFAULT_EXPANSION_LIMIT
-) -> list[int]:
+def parse_week_mask(mask: object, *, expansion_limit: int = DEFAULT_EXPANSION_LIMIT) -> list[int]:
     """解析 eHall ``SKZC`` 周次**位掩码**（如 ``"1111111100000000"``）。
 
     真实接口（``POST /jwapp/sys/wdkb/modules/xskcb/xskcb.do``，2026-09-20 观测）
@@ -272,9 +268,7 @@ def parse_week_mask(
     return weeks
 
 
-def parse_weeks(
-    text: str, *, expansion_limit: int = DEFAULT_EXPANSION_LIMIT
-) -> list[int]:
+def parse_weeks(text: str, *, expansion_limit: int = DEFAULT_EXPANSION_LIMIT) -> list[int]:
     """把周次文本解析为升序去重的教学周列表。
 
     Parameters
@@ -329,9 +323,7 @@ def parse_weeks(
     parity = _detect_parity(normalized)
     # 先把「1 - 8」这类带空格的区间收紧成「1-8」，
     # 否则后续按空格分词会把区间拆散，``parse_week_range`` 的语义就丢了。
-    body = _SPACED_RANGE_PATTERN.sub(
-        lambda m: m.group(0).replace(" ", ""), cleaned
-    )
+    body = _SPACED_RANGE_PATTERN.sub(lambda m: m.group(0).replace(" ", ""), cleaned)
     body = _strip_parity_markers(body)
     ranges = _parse_tokens(body)
 

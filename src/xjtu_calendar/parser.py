@@ -35,14 +35,59 @@ __all__ = ["WEEKDAY_ALIASES", "ParseReport", "TimetableParser"]
 
 #: 星期文本 -> 序号（``1`` = 星期一）
 WEEKDAY_ALIASES: dict[str, int] = {
-    "一": 1, "1": 1, "mon": 1, "monday": 1, "周一": 1, "星期一": 1, "礼拜一": 1,
-    "二": 2, "2": 2, "tue": 2, "tuesday": 2, "周二": 2, "星期二": 2, "礼拜二": 2,
-    "三": 3, "3": 3, "wed": 3, "wednesday": 3, "周三": 3, "星期三": 3, "礼拜三": 3,
-    "四": 4, "4": 4, "thu": 4, "thursday": 4, "周四": 4, "星期四": 4, "礼拜四": 4,
-    "五": 5, "5": 5, "fri": 5, "friday": 5, "周五": 5, "星期五": 5, "礼拜五": 5,
-    "六": 6, "6": 6, "sat": 6, "saturday": 6, "周六": 6, "星期六": 6, "礼拜六": 6,
-    "日": 7, "天": 7, "7": 7, "sun": 7, "sunday": 7, "周日": 7, "周天": 7,
-    "星期日": 7, "星期天": 7, "礼拜日": 7, "礼拜天": 7,
+    "一": 1,
+    "1": 1,
+    "mon": 1,
+    "monday": 1,
+    "周一": 1,
+    "星期一": 1,
+    "礼拜一": 1,
+    "二": 2,
+    "2": 2,
+    "tue": 2,
+    "tuesday": 2,
+    "周二": 2,
+    "星期二": 2,
+    "礼拜二": 2,
+    "三": 3,
+    "3": 3,
+    "wed": 3,
+    "wednesday": 3,
+    "周三": 3,
+    "星期三": 3,
+    "礼拜三": 3,
+    "四": 4,
+    "4": 4,
+    "thu": 4,
+    "thursday": 4,
+    "周四": 4,
+    "星期四": 4,
+    "礼拜四": 4,
+    "五": 5,
+    "5": 5,
+    "fri": 5,
+    "friday": 5,
+    "周五": 5,
+    "星期五": 5,
+    "礼拜五": 5,
+    "六": 6,
+    "6": 6,
+    "sat": 6,
+    "saturday": 6,
+    "周六": 6,
+    "星期六": 6,
+    "礼拜六": 6,
+    "日": 7,
+    "天": 7,
+    "7": 7,
+    "sun": 7,
+    "sunday": 7,
+    "周日": 7,
+    "周天": 7,
+    "星期日": 7,
+    "星期天": 7,
+    "礼拜日": 7,
+    "礼拜天": 7,
 }
 
 #: 各字段的候选键名（按优先级排列）
@@ -76,9 +121,18 @@ FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
 #: 星期字段里可能出现的**时段后缀**，需要先剥掉再匹配
 #: 例如 ``"星期五下午"`` -> ``"星期五"``。
 _WEEKDAY_SUFFIXES = (
-    "上午", "下午", "晚上", "中午", "上半", "下半",
-    "第1-2节", "第3-4节", "第5-6节", "第7-8节",
-    "am", "pm",
+    "上午",
+    "下午",
+    "晚上",
+    "中午",
+    "上半",
+    "下半",
+    "第1-2节",
+    "第3-4节",
+    "第5-6节",
+    "第7-8节",
+    "am",
+    "pm",
 )
 
 _WEEKDAY_NUM_PATTERN = re.compile(r"^(\d)$")
@@ -215,8 +269,7 @@ class TimetableParser:
             return
 
         raise ParseError(
-            "无法在课表响应中定位课程列表。"
-            f"顶层键为：{sorted(map(str, payload.keys()))}"
+            f"无法在课表响应中定位课程列表。顶层键为：{sorted(map(str, payload.keys()))}"
         )
 
     def _unwrap(self, value: Any, depth: int = 0) -> list[Any]:
@@ -247,12 +300,10 @@ class TimetableParser:
             if not isinstance(item, Mapping):
                 return False
             keys = {str(k).lower() for k in item}
-            has_name = any(
-                c.lower() in keys for c in FIELD_CANDIDATES["course_name"]
+            has_name = any(c.lower() in keys for c in FIELD_CANDIDATES["course_name"])
+            has_time = any(c.lower() in keys for c in FIELD_CANDIDATES["weeks"]) or any(
+                c.lower() in keys for c in FIELD_CANDIDATES["weekday"]
             )
-            has_time = any(
-                c.lower() in keys for c in FIELD_CANDIDATES["weeks"]
-            ) or any(c.lower() in keys for c in FIELD_CANDIDATES["weekday"])
             return has_name and has_time
 
         for value in payload.values():
@@ -321,14 +372,14 @@ class TimetableParser:
         raw_end = self._get(record, "period_end")
         raw_periods = self._get(record, "periods")
         if (
-            raw_start is not None and raw_end is not None
-            and str(raw_start).strip().isdigit() and str(raw_end).strip().isdigit()
+            raw_start is not None
+            and raw_end is not None
+            and str(raw_start).strip().isdigit()
+            and str(raw_end).strip().isdigit()
         ):
             start, end = int(str(raw_start)), int(str(raw_end))
             if not (1 <= start <= end <= 30):
-                self.report.skip(
-                    f"{label}：节次区间非法（{start}-{end}）"
-                )
+                self.report.skip(f"{label}：节次区间非法（{start}-{end}）")
                 return []
             periods = list(range(start, end + 1))
         else:
@@ -430,7 +481,7 @@ def parse_weekday(value: Any) -> int | None:
     # 去掉「星期/周/礼拜」前缀再查
     for prefix in ("星期", "周", "礼拜"):
         if text.startswith(prefix):
-            rest = text[len(prefix):]
+            rest = text[len(prefix) :]
             if rest in WEEKDAY_ALIASES:
                 return WEEKDAY_ALIASES[rest]
 
@@ -519,7 +570,9 @@ def parse_date_range(value: Any) -> tuple[date, date] | None:
         return None
 
 
-def iter_meeting_groups(records: Sequence[Mapping[str, Any]]) -> Iterator[tuple[str, list[Mapping[str, Any]]]]:
+def iter_meeting_groups(
+    records: Sequence[Mapping[str, Any]],
+) -> Iterator[tuple[str, list[Mapping[str, Any]]]]:
     """按课程分组记录（供未来「同课程多时段合并」使用）。"""
     groups: dict[str, list[Mapping[str, Any]]] = {}
     for record in records:

@@ -124,7 +124,9 @@ def build_parser() -> argparse.ArgumentParser:
     inspect = sub.add_parser("inspect", help="对原始课表 JSON 做脱敏结构分析")
     inspect.add_argument("--input", help="课表 JSON 路径（默认用本地缓存）")
     inspect.add_argument("--semester", help="学期标识")
-    inspect.add_argument("-o", "--output", default="_notes/timetable-structure.md", help="报告输出路径")
+    inspect.add_argument(
+        "-o", "--output", default="_notes/timetable-structure.md", help="报告输出路径"
+    )
 
     return parser
 
@@ -155,7 +157,9 @@ def cmd_status(args: argparse.Namespace, cfg: Settings) -> int:
     print(f"  eHall       : {cfg.ehall_base}")
     print(f"  appId       : {cfg.app_id}")
     endpoints = load_endpoints(cfg=cfg)
-    print(f"  接口定义    : {'已载入 ' + str(len(endpoints)) + ' 个' if endpoints else '缺失（需先完成 Phase 1 接口分析）'}")
+    print(
+        f"  接口定义    : {'已载入 ' + str(len(endpoints)) + ' 个' if endpoints else '缺失（需先完成 Phase 1 接口分析）'}"
+    )
     if not endpoints:
         print(f"              期望位置：config/{ENDPOINTS_FILE}")
 
@@ -191,8 +195,8 @@ def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
     if args.from_file:
         if not semester:
             raise SemesterNotConfigured(
-                "未指定学期", hint="--from-file 时请用 --semester 指定缓存名，"
-                                  "或设置环境变量 XJTU_SEMESTER"
+                "未指定学期",
+                hint="--from-file 时请用 --semester 指定缓存名，或设置环境变量 XJTU_SEMESTER",
             )
         source = Path(args.from_file)
         if not source.is_file():
@@ -215,8 +219,8 @@ def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
         raise EndpointNotConfigured(
             "尚未确认课表接口路径，无法使用 HTTP 方式",
             hint="接口路径必须来自真实观测，本项目不会猜测端点。"
-                 "请运行 scripts/probe_ehall.py 完成探测后填写 "
-                 f"config/{ENDPOINTS_FILE}，或改用 --source browser。",
+            "请运行 scripts/probe_ehall.py 完成探测后填写 "
+            f"config/{ENDPOINTS_FILE}，或改用 --source browser。",
         )
 
     if use_http:
@@ -234,8 +238,7 @@ def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
         if not semester_code:
             raise SemesterNotConfigured(
                 "无法确定学期代码",
-                hint="用 --semester 指定（格式如 2026-2027-1），"
-                     "或确认学期发现接口可用。",
+                hint="用 --semester 指定（格式如 2026-2027-1），或确认学期发现接口可用。",
             )
         semester = semester_code  # 供后续 save_raw 使用
 
@@ -247,16 +250,14 @@ def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
             raise XjtuCalendarError(
                 "未能捕获课表数据",
                 hint="请在浏览器里手动进入「我的课表」页面后再试，"
-                     "或先运行 scripts/probe_ehall.py 完成接口分析。",
+                "或先运行 scripts/probe_ehall.py 完成接口分析。",
             )
         # 取课程记录最多的那份响应
         payload = max(captured, key=lambda item: _payload_size(item["payload"]))["payload"]
 
     if not semester:
         # HTTP 路径上方的学期发现已尝试过；走到这里说明仍无法确定缓存名
-        raise SemesterNotConfigured(
-            "无法确定学期", hint="用 --semester 指定（格式如 2026-2027-1）"
-        )
+        raise SemesterNotConfigured("无法确定学期", hint="用 --semester 指定（格式如 2026-2027-1）")
     path = save_raw(payload, cfg, semester)
     logger.info("已获取课表原始数据，缓存到 %s", path)
     print()
@@ -283,23 +284,27 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
         payload = load_raw(cfg, semester)
 
     # --- 教学日历 ---
-    calendar_path = Path(args.calendar_config) if args.calendar_config else cfg.semester_config_path(semester)
+    calendar_path = (
+        Path(args.calendar_config) if args.calendar_config else cfg.semester_config_path(semester)
+    )
     if not calendar_path.is_file():
         raise SemesterNotConfigured(
             f"未找到学期 {semester} 的教学日历：{calendar_path}",
             hint="请参考 examples/academic_calendar.example.json 创建该文件。"
-                 "注意：第 1 教学周的星期一等日期必须来自官方校历，不要凭空填写。",
+            "注意：第 1 教学周的星期一等日期必须来自官方校历，不要凭空填写。",
         )
     academic = AcademicCalendar.from_file(calendar_path)
     logger.info("教学日历：%s", academic.semester.name)
 
     # --- 作息表 ---
-    schedule_path = Path(args.schedule_config) if args.schedule_config else cfg.schedule_config_path()
+    schedule_path = (
+        Path(args.schedule_config) if args.schedule_config else cfg.schedule_config_path()
+    )
     if not schedule_path.is_file():
         raise ScheduleNotConfigured(
             f"未找到作息表配置：{schedule_path}",
             hint="请参考 examples/schedule.example.json 创建该文件。"
-                 "注意：本项目不内置任何未经官方确认的作息时间，必须由你提供。",
+            "注意：本项目不内置任何未经官方确认的作息时间，必须由你提供。",
         )
     schedules = ScheduleTable.from_file(schedule_path)
 
@@ -332,7 +337,7 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
         raise XjtuCalendarError(
             f"响应里有 {parser.report.total_candidates} 条候选记录，但没有一条能解析出课程安排",
             hint="字段映射很可能与实际响应不符。请运行 inspect 子命令查看脱敏结构，"
-                 "并把真实字段名补进 parser.py 的 FIELD_CANDIDATES。",
+            "并把真实字段名补进 parser.py 的 FIELD_CANDIDATES。",
         )
 
     # --- 展开 ---
@@ -346,7 +351,8 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
         lower = date.fromisoformat(args.from_date) if args.from_date else None
         upper = date.fromisoformat(args.to_date) if args.to_date else None
         events = [
-            e for e in events
+            e
+            for e in events
             if (lower is None or e.start.date() >= lower)
             and (upper is None or e.start.date() <= upper)
         ]
@@ -358,10 +364,7 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     # --- 无法表达的调课：fail-closed（显式允许后转为显著警告） ---
     unsupported = collect_unsupported(academic, events)
     if unsupported:
-        lines = [
-            f"  {a.date.isoformat()}：{a.description}"
-            for a in unsupported
-        ]
+        lines = [f"  {a.date.isoformat()}：{a.description}" for a in unsupported]
         if not args.allow_unsupported_adjustments:
             raise UnsupportedAdjustmentError(
                 f"教学日历声明了 {len(unsupported)} 条本工具无法表达的调课，"
@@ -420,7 +423,9 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     if baseline is not None:
         stats = sequence_stats(events, baseline)
         print("Changes vs baseline:")
-        print(f"  unchanged {stats['preserved']} / updated {stats['updated']} / new {stats['added']}")
+        print(
+            f"  unchanged {stats['preserved']} / updated {stats['updated']} / new {stats['added']}"
+        )
         print()
     print("Date range:")
     print(f"  {info['date_range']}")

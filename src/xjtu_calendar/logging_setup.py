@@ -16,7 +16,14 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
-__all__ = ["get_logger", "is_sensitive_key", "redact", "redact_by_key", "redact_url", "setup_logging"]
+__all__ = [
+    "get_logger",
+    "is_sensitive_key",
+    "redact",
+    "redact_by_key",
+    "redact_url",
+    "setup_logging",
+]
 
 LOGGER_NAME = "xjtu_calendar"
 
@@ -41,27 +48,27 @@ _SENSITIVE_KEYS = frozenset(
         "sid",
         "student_id",
         "studentid",
-        "xh",          # 学号
-        "name",        # 姓名
+        "xh",  # 学号
+        "name",  # 姓名
         "xm",
         # ---- 教务系统（eHall/金智）真实响应中出现过的个人字段 ----
-        "sfzjh",       # 身份证件号（含末尾 X，长数字规则打不掉）
-        "zjhm",        # 证件号码
-        "ksh",         # 考生号
-        "jtdz",        # 家庭地址
+        "sfzjh",  # 身份证件号（含末尾 X，长数字规则打不掉）
+        "zjhm",  # 证件号码
+        "ksh",  # 考生号
+        "jtdz",  # 家庭地址
         "jtdzqh",
-        "zstxdz",      # 通信地址
-        "csrq",        # 出生日期
-        "dzxx",        # 电子邮箱
-        "sjh",         # 手机号
-        "yhh",         # 用户号/手机号
-        "qqh",         # QQ 号
-        "jtyb",        # 家庭邮编
-        "bjdm",        # 班级代码
-        "bjmc",        # 班级名称
-        "zymc",        # 专业名称
-        "username",    # eHall 门户 userName（姓名）
-        "usersex",     # 性别
+        "zstxdz",  # 通信地址
+        "csrq",  # 出生日期
+        "dzxx",  # 电子邮箱
+        "sjh",  # 手机号
+        "yhh",  # 用户号/手机号
+        "qqh",  # QQ 号
+        "jtyb",  # 家庭邮编
+        "bjdm",  # 班级代码
+        "bjmc",  # 班级名称
+        "zymc",  # 专业名称
+        "username",  # eHall 门户 userName（姓名）
+        "usersex",  # 性别
     }
 )
 
@@ -120,7 +127,9 @@ def redact_url(url: str) -> str:
         return url
 
     pairs = []
-    for key, value in (item.split("=", 1) if "=" in item else (item, "") for item in parsed.query.split("&")):
+    for key, value in (
+        item.split("=", 1) if "=" in item else (item, "") for item in parsed.query.split("&")
+    ):
         if key.lower() in _SENSITIVE_QUERY_KEYS:
             pairs.append(f"{key}=***")
         else:

@@ -60,13 +60,13 @@
 class CourseMeeting:
     course_id: str | None
     course_name: str
-    weekday: int          # 1 = 星期一 … 7 = 星期日
-    periods: list[int]    # 节次「序号」，不是时间
-    weeks: list[int]      # 教学周
+    weekday: int  # 1 = 星期一 … 7 = 星期日
+    periods: list[int]  # 节次「序号」，不是时间
+    weeks: list[int]  # 教学周
     teacher: str | None
     location: str | None
     campus: str | None
-    raw_week_text: str | None    # 原始文本留档，便于排查解析偏差
+    raw_week_text: str | None  # 原始文本留档，便于排查解析偏差
     raw_period_text: str | None
 ```
 

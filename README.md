@@ -68,8 +68,8 @@ Microsoft Outlook 等应用。
 ```python
 CourseMeeting(
     course_name="示例课程甲",
-    weekday=5,              # 星期五
-    periods=[1, 2],         # 第 1-2 节
+    weekday=5,  # 星期五
+    periods=[1, 2],  # 第 1-2 节
     weeks=[1, 2, 3, 4, 5, 6, 7, 8],
     location="A-1001",
     teacher="…",
@@ -79,7 +79,7 @@ CourseMeeting(
 而**不是**：
 
 ```python
-CourseMeeting(..., start_time="08:00", end_time="09:50")   # ✗ 错误设计
+CourseMeeting(..., start_time="08:00", end_time="09:50")  # ✗ 错误设计
 ```
 
 钟点在**导出阶段**由 `ScheduleTable` 现算。这样学期中途切换作息时，
@@ -511,13 +511,13 @@ xjtu-timetable-calendar/
 class CourseMeeting:
     course_id: str | None
     course_name: str
-    weekday: int              # 1 = 星期一 … 7 = 星期日
-    periods: list[int]        # 节次**序号**，不是时间
-    weeks: list[int]          # 教学周
+    weekday: int  # 1 = 星期一 … 7 = 星期日
+    periods: list[int]  # 节次**序号**，不是时间
+    weeks: list[int]  # 教学周
     teacher: str | None
     location: str | None
     campus: str | None
-    raw_week_text: str | None     # 原始文本留档，便于排查
+    raw_week_text: str | None  # 原始文本留档，便于排查
     raw_period_text: str | None
 ```
 

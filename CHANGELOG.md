@@ -20,6 +20,14 @@
   - 基线解析失败：显式指定报错终止，自动探测降级为警告（全部按新增）。
 - 新增 `src/xjtu_calendar/sequence.py` 与 `tests/test_sequence.py`（15 项）。
 
+### Changed
+
+- **license 迁移到 PEP 639**：`license = "MIT"`（SPDX 表达式）+ `license-files`，
+  移除 License 分类器（PEP 639 禁止两者并存）；`build-system` 提升到
+  `setuptools>=77`。wheel `METADATA` 现在携带 `License-Expression: MIT`，
+  构建期不再出现弃用告警。
+- CI 增加 `ruff format --check`：全仓已统一为 ruff 格式，从此防止格式漂移。
+
 ---
 
 ## [0.1.1] - 2026-09-22

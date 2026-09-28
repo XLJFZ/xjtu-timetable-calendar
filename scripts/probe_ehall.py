@@ -61,20 +61,46 @@ OUT_DIR = ROOT / "_notes"
 
 #: 与课表相关的关键词，用于**排序**（不再用于丢弃），让目标接口排在前面
 TIMETABLE_HINTS = (
-    "timetable", "schedule", "course", "kcb", "kb", "lesson", "class",
-    "semester", "term", "xnm", "xqm", "week", "student", "pkb", "kbxx",
+    "timetable",
+    "schedule",
+    "course",
+    "kcb",
+    "kb",
+    "lesson",
+    "class",
+    "semester",
+    "term",
+    "xnm",
+    "xqm",
+    "week",
+    "student",
+    "pkb",
+    "kbxx",
 )
 
 #: 只记录键名、不记录值的请求头（真正需要的通常是这几个）
 INTERESTING_REQ_HEADERS = (
-    "content-type", "accept", "x-requested-with", "referer",
-    "x-auth-token", "token", "csrf", "x-csrf-token",
+    "content-type",
+    "accept",
+    "x-requested-with",
+    "referer",
+    "x-auth-token",
+    "token",
+    "csrf",
+    "x-csrf-token",
 )
 
 #: 判定「看起来像登录页」的 HTML 特征
 LOGIN_HTML_MARKERS = (
-    "统一身份认证", "统一身份", "账号登录", "用户登录", "login.xjtu.edu.cn",
-    "cas.xjtu.edu.cn", "请输入账号", "请输入密码", "ids.xjtu.edu.cn",
+    "统一身份认证",
+    "统一身份",
+    "账号登录",
+    "用户登录",
+    "login.xjtu.edu.cn",
+    "cas.xjtu.edu.cn",
+    "请输入账号",
+    "请输入密码",
+    "ids.xjtu.edu.cn",
 )
 
 
@@ -95,10 +121,7 @@ def skeleton(value: Any, depth: int = 0, max_depth: int = 6, key: Any = None) ->
         return f"<{type(value).__name__}>"
 
     if isinstance(value, dict):
-        return {
-            str(k): skeleton(v, depth + 1, max_depth, key=k)
-            for k, v in value.items()
-        }
+        return {str(k): skeleton(v, depth + 1, max_depth, key=k) for k, v in value.items()}
     if isinstance(value, list):
         if not value:
             return {"__type__": "list", "__len__": 0}
@@ -186,15 +209,11 @@ def _auto_wait_loop(context: Any, captured: list[dict[str, Any]], max_wait: floa
     while time.monotonic() < deadline:
         try:
             cookies = context.cookies()
-            login_ok = any(
-                "ehall" in str(c.get("domain", "")).lower() for c in cookies
-            )
+            login_ok = any("ehall" in str(c.get("domain", "")).lower() for c in cookies)
         except Exception:
             login_ok = False
 
-        found = any(
-            e["body_kind"] == "json" and e["score"] >= 2 for e in captured
-        )
+        found = any(e["body_kind"] == "json" and e["score"] >= 2 for e in captured)
 
         now = time.monotonic()
         if now - last_report >= 10:
@@ -246,9 +265,7 @@ def _attach(context: Any, captured: list[dict[str, Any]], seen: set[str]) -> Non
                     body_kind = "json"
                 except json.JSONDecodeError:
                     payload = None
-                    body_kind = (
-                        "html" if body.lstrip()[:20].lower().startswith("<") else "text"
-                    )
+                    body_kind = "html" if body.lstrip()[:20].lower().startswith("<") else "text"
 
             captured.append(
                 {
@@ -287,15 +304,22 @@ def _attach(context: Any, captured: list[dict[str, Any]], seen: set[str]) -> Non
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="探测 eHall 课表真实接口")
     parser.add_argument("--url", default=None, help="直接打开指定页面（默认课表应用入口）")
-    parser.add_argument("--settle", type=float, default=0.0,
-                        help="按 Enter 结束后额外等待并采集的秒数（默认 0）")
-    parser.add_argument("--headless", action="store_true",
-                        help="无头模式（仅用于**自动化冒烟测试**；"
-                             "需要本人输入账号密码登录时请勿使用）")
-    parser.add_argument("--wait-seconds", type=float, default=None,
-                        help="自动等待模式的最长等待秒数（默认 900）。"
-                             "浏览器保持打开，**捕获到课表相关 JSON 后自动结束**，"
-                             "无需回终端按 Enter。适合非交互终端或忘记按 Enter 的场景。")
+    parser.add_argument(
+        "--settle", type=float, default=0.0, help="按 Enter 结束后额外等待并采集的秒数（默认 0）"
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="无头模式（仅用于**自动化冒烟测试**；需要本人输入账号密码登录时请勿使用）",
+    )
+    parser.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=None,
+        help="自动等待模式的最长等待秒数（默认 900）。"
+        "浏览器保持打开，**捕获到课表相关 JSON 后自动结束**，"
+        "无需回终端按 Enter。适合非交互终端或忘记按 Enter 的场景。",
+    )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     try:
@@ -350,8 +374,9 @@ def main(argv: Iterable[str] | None = None) -> int:
 
         page = context.pages[0] if context.pages else context.new_page()
         # 启动 URL 不带 #/，避免 SPA 卡死
-        page.goto(args.url or settings.select_role_url,
-                  wait_until="domcontentloaded", timeout=60_000)
+        page.goto(
+            args.url or settings.select_role_url, wait_until="domcontentloaded", timeout=60_000
+        )
 
         try:
             if auto_wait:
@@ -380,9 +405,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             # 只看 ehall 域自己的 cookie。
             # 注意：login.xjtu.edu.cn 的 CAS cookie 在**未登录**时也存在，
             # 用它判断会把「跳到了登录页」误判成「已登录」。
-            ehall_cookies = [
-                c for c in all_cookies if "ehall" in str(c.get("domain", "")).lower()
-            ]
+            ehall_cookies = [c for c in all_cookies if "ehall" in str(c.get("domain", "")).lower()]
             login_cookie_count = len(ehall_cookies)
 
             # **只在确认存在 eHall 会话 cookie 时才落盘会话。**
@@ -415,8 +438,10 @@ def main(argv: Iterable[str] | None = None) -> int:
     raw_path = probe_dir / f"capture-{stamp}.json"
     raw_path.write_text(
         json.dumps(
-            [{"url": redact_url(e["url"]), **{k: v for k, v in e.items() if k != "url"}}
-             for e in captured],
+            [
+                {"url": redact_url(e["url"]), **{k: v for k, v in e.items() if k != "url"}}
+                for e in captured
+            ],
             ensure_ascii=False,
             indent=2,
         ),
@@ -475,7 +500,9 @@ def main(argv: Iterable[str] | None = None) -> int:
         if item["query_keys"]:
             lines.append(f"- 查询参数**键名**：`{', '.join(item['query_keys'])}`")
         if item["body_keys"]:
-            lines.append(f"- 请求体（仅键名）：`{json.dumps(item['body_keys'], ensure_ascii=False)}`")
+            lines.append(
+                f"- 请求体（仅键名）：`{json.dumps(item['body_keys'], ensure_ascii=False)}`"
+            )
         if item["request_header_keys"]:
             lines.append(f"- 相关请求头：`{', '.join(item['request_header_keys'])}`")
         lines.append("")

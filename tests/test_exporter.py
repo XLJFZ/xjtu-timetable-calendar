@@ -103,9 +103,7 @@ def schedules_wide() -> ScheduleTable:
                     },
                 }
             },
-            "periods": [
-                {"start": "2026-09-01", "end": "2027-03-31", "profile": "all-year"}
-            ],
+            "periods": [{"start": "2026-09-01", "end": "2027-03-31", "profile": "all-year"}],
         }
     )
 
@@ -119,8 +117,8 @@ def sample_meeting() -> CourseMeeting:
         teacher="某教师",
         location="A-1001",
         campus="创新港校区",
-        weekday=5,             # 星期五
-        periods=[1, 2],        # 1-2 节
+        weekday=5,  # 星期五
+        periods=[1, 2],  # 1-2 节
         weeks=[1, 2, 3, 4, 5, 6, 7, 8],
         raw_week_text="1-8周",
         raw_period_text="1-2节",
@@ -262,7 +260,9 @@ def test_build_events_timezone_is_asia_shanghai(
         assert event.start.utcoffset().total_seconds() == 8 * 3600
 
 
-def test_build_events_location(sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable) -> None:
+def test_build_events_location(
+    sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable
+) -> None:
     events = build_events([sample_meeting], calendar, schedules)
     assert events[0].location == "创新港校区 A-1001"
 
@@ -286,9 +286,7 @@ def test_build_events_description_structure(
     assert "课程编号：DEMO-1001" in description
 
 
-def test_build_events_sorted_by_start(
-    calendar: AcademicCalendar, schedules: ScheduleTable
-) -> None:
+def test_build_events_sorted_by_start(calendar: AcademicCalendar, schedules: ScheduleTable) -> None:
     meetings = [
         CourseMeeting("B", "晚点的课", 5, [5, 6], [1]),
         CourseMeeting("A", "早点的课", 5, [1, 2], [1]),
@@ -323,9 +321,7 @@ def test_build_events_honours_location_and_note_override(
     sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable
 ) -> None:
     day = date(2026, 10, 2)
-    calendar.overrides[day] = DateOverride(
-        day=day, location="临时教室 A-101", note="调课"
-    )
+    calendar.overrides[day] = DateOverride(day=day, location="临时教室 A-101", note="调课")
     events = build_events([sample_meeting], calendar, schedules)
     target = next(e for e in events if e.start.date() == day)
     assert target.location == "临时教室 A-101"
@@ -356,10 +352,10 @@ def test_build_events_fails_closed_on_out_of_range_week(
         build_events([long_meeting], calendar, schedules)
 
     message = str(excinfo.value)
-    assert "17" in message            # 第一个越界周次
-    assert "16" in message            # 学期总周数
-    assert "超长课程" in message       # 必须指名是哪门课，方便定位
-    assert "total_weeks" in message   # 必须给出处理指引
+    assert "17" in message  # 第一个越界周次
+    assert "16" in message  # 学期总周数
+    assert "超长课程" in message  # 必须指名是哪门课，方便定位
+    assert "total_weeks" in message  # 必须给出处理指引
 
 
 def test_build_events_expands_all_weeks_when_total_weeks_is_none(
@@ -377,7 +373,7 @@ def test_build_events_expands_all_weeks_when_total_weeks_is_none(
     long_meeting = CourseMeeting("LONG", "超长课程", 5, [1, 2], list(range(1, 21)))
 
     events = build_events([long_meeting], open_calendar, schedules_wide)
-    assert len(events) == 20          # 20 周一次不落，包括超出 16 的部分
+    assert len(events) == 20  # 20 周一次不落，包括超出 16 的部分
 
 
 def test_build_events_raises_on_non_positive_week(
@@ -480,7 +476,9 @@ def test_collect_unsupported_all_hit_when_no_events(calendar: AcademicCalendar) 
 
 
 def test_written_ics_keeps_rfc5545_crlf(
-    tmp_path: object, calendar: AcademicCalendar, schedules: ScheduleTable,
+    tmp_path: object,
+    calendar: AcademicCalendar,
+    schedules: ScheduleTable,
     sample_meeting: CourseMeeting,
 ) -> None:
     """写文件时不得二次翻译行尾：render_ics 产出 CRLF，落盘必须仍是 CRLF。
@@ -607,15 +605,16 @@ def test_render_ics_calendar_name(
 
 def test_render_ics_special_characters_escaped() -> None:
     """课程名含逗号/分号时 icalendar 必须做转义，不能破坏 ICS 结构。"""
-    meeting = CourseMeeting(
-        "ESC", "带,逗号;分号的课程", 3, [1, 2], [1], location="A,B;1"
-    )
-    cal = AcademicCalendar(
-        Semester("t", "测试", WEEK1_MONDAY, total_weeks=16)
-    )
+    meeting = CourseMeeting("ESC", "带,逗号;分号的课程", 3, [1, 2], [1], location="A,B;1")
+    cal = AcademicCalendar(Semester("t", "测试", WEEK1_MONDAY, total_weeks=16))
     table = ScheduleTable.from_dict(
         {
-            "profiles": {"summer": {"name": "夏季", "periods": {"1": ["08:00", "08:50"], "2": ["09:00", "09:50"]}}},
+            "profiles": {
+                "summer": {
+                    "name": "夏季",
+                    "periods": {"1": ["08:00", "08:50"], "2": ["09:00", "09:50"]},
+                }
+            },
             "periods": [{"start": "2026-09-01", "end": "2026-12-31", "profile": "summer"}],
         }
     )
@@ -629,7 +628,9 @@ def test_render_ics_special_characters_escaped() -> None:
 # --------------------------------------------------------------------------- #
 # 汇总
 # --------------------------------------------------------------------------- #
-def test_summarize(sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable) -> None:
+def test_summarize(
+    sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable
+) -> None:
     events = build_events([sample_meeting], calendar, schedules)
     info = summarize([sample_meeting], events)
 

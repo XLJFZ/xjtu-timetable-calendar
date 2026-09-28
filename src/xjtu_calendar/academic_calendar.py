@@ -181,15 +181,15 @@ class AcademicCalendar:
 
         semester = _semester_from_dict(raw_semester)
 
-        excluded = {_parse_date(item, "excluded_dates") for item in payload.get("excluded_dates", [])}
+        excluded = {
+            _parse_date(item, "excluded_dates") for item in payload.get("excluded_dates", [])
+        }
 
         overrides: dict[date, DateOverride] = {}
         for key, value in (payload.get("overrides") or {}).items():
             day = _parse_date(key, "overrides")
             value = value or {}
-            skip_keys = frozenset(
-                value.get("skip_courses") or value.get("skip_meeting_keys") or []
-            )
+            skip_keys = frozenset(value.get("skip_courses") or value.get("skip_meeting_keys") or [])
             source_date: date | None = None
             if value.get("source_date"):
                 source_date = _parse_date(value["source_date"], f"overrides[{key}].source_date")
@@ -203,9 +203,7 @@ class AcademicCalendar:
             )
             overrides[day] = _validate_override(overrides[day], semester, excluded)
 
-        adjustments = _unsupported_adjustments_from_dict(
-            payload.get("unsupported_adjustments")
-        )
+        adjustments = _unsupported_adjustments_from_dict(payload.get("unsupported_adjustments"))
 
         # 调课日不能再同时声明为「无法表达」：同一日期两种互相矛盾的声明，
         # 几乎总是「机制升级后忘了删旧声明」——保留会让导出侧误报缺课。
@@ -320,9 +318,7 @@ def _unsupported_adjustments_from_dict(
     if raw is None:
         return ()
     if not isinstance(raw, list):
-        raise ParseError(
-            f"unsupported_adjustments 必须是数组，实际为 {type(raw).__name__}"
-        )
+        raise ParseError(f"unsupported_adjustments 必须是数组，实际为 {type(raw).__name__}")
 
     adjustments: list[UnsupportedAdjustment] = []
     for index, item in enumerate(raw):

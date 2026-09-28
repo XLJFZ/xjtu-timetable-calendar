@@ -122,12 +122,16 @@ def test_reexported_baseline_keeps_sequence_monotonic() -> None:
 def test_fingerprint_ignores_timezone_representation() -> None:
     """同一时刻的上海表示与 UTC 表示必须算作未变。"""
     a = event_fingerprint(
-        "示例课程甲", "A-1001", None,
+        "示例课程甲",
+        "A-1001",
+        None,
         datetime(2026, 9, 11, 8, 0, tzinfo=TZ_XIAN),
         datetime(2026, 9, 11, 9, 50, tzinfo=TZ_XIAN),
     )
     b = event_fingerprint(
-        "示例课程甲", "A-1001", None,
+        "示例课程甲",
+        "A-1001",
+        None,
         datetime(2026, 9, 11, 0, 0, tzinfo=UTC),
         datetime(2026, 9, 11, 1, 50, tzinfo=UTC),
     )
@@ -140,9 +144,7 @@ def test_resolve_sequence_content_change_bumps() -> None:
         event.uid: EventBaseline(
             sequence=3,
             last_modified=datetime(2026, 9, 1, tzinfo=UTC),
-            fingerprint=event_fingerprint(
-                "不同内容", None, None, event.start, event.end
-            ),
+            fingerprint=event_fingerprint("不同内容", None, None, event.start, event.end),
         )
     }
     sequence, last_modified = resolve_sequence(event, baseline, STAMP)
@@ -156,9 +158,7 @@ def test_resolve_sequence_unchanged_keeps_old_state() -> None:
         event.summary, event.location, event.description, event.start, event.end
     )
     old_lm = datetime(2026, 9, 1, tzinfo=UTC)
-    baseline = {
-        event.uid: EventBaseline(sequence=7, last_modified=old_lm, fingerprint=fingerprint)
-    }
+    baseline = {event.uid: EventBaseline(sequence=7, last_modified=old_lm, fingerprint=fingerprint)}
     sequence, last_modified = resolve_sequence(event, baseline, STAMP)
     assert (sequence, last_modified) == (7, old_lm)
 
@@ -169,8 +169,11 @@ def test_sequence_stats_counts_three_buckets() -> None:
     baseline = parse_baseline(render_ics([kept, changed], dtstamp=STAMP))
 
     # kept 未变；changed 再换教室（更新）；新增一条
-    events = [kept, make_event(uid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@example", location="C-3003"),
-              make_event(uid="cccccccccccccccccccccccccccccccc@example", summary="示例课程乙")]
+    events = [
+        kept,
+        make_event(uid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@example", location="C-3003"),
+        make_event(uid="cccccccccccccccccccccccccccccccc@example", summary="示例课程乙"),
+    ]
     stats = sequence_stats(events, baseline)
     assert stats == {"preserved": 1, "updated": 1, "added": 1}
 

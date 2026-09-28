@@ -228,7 +228,9 @@ def test_makeup_uids_stable_across_runs() -> None:
     first = build_events(meetings, calendar, schedules)
     second = build_events(meetings, calendar, schedules)
     assert [e.uid for e in first] == [e.uid for e in second]
-    makeup_uids = {e.uid for e in first if e.start.date() in (date(2026, 9, 20), date(2026, 10, 10))}
+    makeup_uids = {
+        e.uid for e in first if e.start.date() in (date(2026, 9, 20), date(2026, 10, 10))
+    }
     assert len(makeup_uids) == 2  # 两条调课事件都有稳定 UID
 
 

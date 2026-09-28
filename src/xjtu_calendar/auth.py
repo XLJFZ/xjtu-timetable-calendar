@@ -205,9 +205,7 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
         "_saved_at": _iso_now(),
         "_note": "本文件等价于登录凭据，请勿提交或分享。",
     }
-    cfg.state_path().write_text(
-        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    cfg.state_path().write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     logger.info("登录会话已保存（%d 个 cookie）", len(cookies))
     return inspect_session(cfg)

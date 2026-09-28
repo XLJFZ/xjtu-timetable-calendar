@@ -271,7 +271,7 @@ def _coerce_period_entry(idx: Any, value: Any, profile_key: str) -> tuple[str, s
     else:
         raise ParseError(
             f"作息表 {profile_key!r} 第 {idx} 节的时间格式无效，"
-            f"期望 [\"HH:MM\", \"HH:MM\"] 或 {{\"start\": ..., \"end\": ...}}"
+            f'期望 ["HH:MM", "HH:MM"] 或 {{"start": ..., "end": ...}}'
         )
 
     if not isinstance(start, str) or not isinstance(end, str):

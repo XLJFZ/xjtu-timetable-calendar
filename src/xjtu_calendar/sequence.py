@@ -77,6 +77,7 @@ def event_fingerprint(
 
     时间统一折算成 UTC 再比较，避免「同一时刻、不同时区表示」造成假差异。
     """
+
     def norm_dt(value: datetime) -> str:
         if value.tzinfo is None:
             return value.isoformat()
@@ -106,9 +107,7 @@ def parse_baseline(ics_text: str) -> dict[str, EventBaseline]:
     try:
         from icalendar import Calendar
     except ImportError as exc:  # pragma: no cover
-        raise CalendarExportError(
-            "缺少 icalendar 依赖，请安装：pip install icalendar"
-        ) from exc
+        raise CalendarExportError("缺少 icalendar 依赖，请安装：pip install icalendar") from exc
 
     try:
         calendar = Calendar.from_ical(ics_text)
@@ -204,13 +203,16 @@ def sequence_stats(
         previous = baseline.get(event.uid) if baseline else None
         if previous is None:
             added += 1
-        elif event_fingerprint(
-            summary=event.summary,
-            location=event.location,
-            description=event.description,
-            start=event.start,
-            end=event.end,
-        ) == previous.fingerprint:
+        elif (
+            event_fingerprint(
+                summary=event.summary,
+                location=event.location,
+                description=event.description,
+                start=event.start,
+                end=event.end,
+            )
+            == previous.fingerprint
+        ):
             preserved += 1
         else:
             bumped += 1

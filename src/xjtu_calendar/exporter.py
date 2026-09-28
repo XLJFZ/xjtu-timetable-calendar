@@ -377,9 +377,7 @@ def render_ics(
     try:
         from icalendar import Calendar, Event
     except ImportError as exc:  # pragma: no cover
-        raise CalendarExportError(
-            "缺少 icalendar 依赖，请安装：pip install icalendar"
-        ) from exc
+        raise CalendarExportError("缺少 icalendar 依赖，请安装：pip install icalendar") from exc
 
     stamp = dtstamp or now_local()
 
@@ -413,7 +411,9 @@ def render_ics(
     return raw.decode("utf-8")
 
 
-def summarize(meetings: Sequence[CourseMeeting], events: Sequence[CalendarEvent]) -> dict[str, object]:
+def summarize(
+    meetings: Sequence[CourseMeeting], events: Sequence[CalendarEvent]
+) -> dict[str, object]:
     """汇总导出结果，供 CLI 展示。"""
     course_keys = {(m.course_id or m.course_name) for m in meetings}
     if events:

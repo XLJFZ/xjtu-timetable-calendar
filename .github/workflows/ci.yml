@@ -1,12 +1,11 @@
 name: CI
 
 # 最小可用门禁：
-#   1) test  —— 3.11/3.12/3.13 上跑 pytest + mypy strict + ruff check
+#   1) test  —— 3.11/3.12/3.13 上跑 pytest + mypy strict + ruff check + ruff format --check
 #   2) wheel —— 真正构建 wheel 并在**干净虚拟环境**里安装后自检，
 #               确保 `pip install .` 得到的包是自包含的（含包内默认接口定义）
 #
 # 刻意不做的：
-#   - 不加 ruff format --check：仓库历史文件尚未统一格式化，加了只会有噪音
 #   - 不做发布：发布（tag / Release）仍由人工执行
 on:
   push:
@@ -51,6 +50,9 @@ jobs:
 
       - name: ruff
         run: python -m ruff check .
+
+      - name: ruff format (check only)
+        run: python -m ruff format --check .
 
   wheel:
     name: wheel self-contained check

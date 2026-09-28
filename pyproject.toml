@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# setuptools>=77 才支持 PEP 639（license = "SPDX" 字符串 + license-files）。
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,13 +9,15 @@ version = "0.1.1"
 description = "将西安交通大学 eHall 个人课表导出为 iCalendar (.ics)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+# PEP 639：SPDX 表达式 + license-files。使用 SPDX 表达式时**不得**再保留
+# License 分类器（PEP 639 明确禁止两者并存）。
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "XJTU Timetable Calendar contributors" }]
 keywords = ["xjtu", "timetable", "icalendar", "ics", "calendar", "课表"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",

@@ -31,13 +31,30 @@ def sample_payload() -> dict:
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        (1, 1), (5, 5), (7, 7),
-        ("1", 1), ("5", 5), ("7", 7),
-        ("星期一", 1), ("星期五", 5), ("星期日", 7), ("星期天", 7),
-        ("周一", 1), ("周五", 5), ("周日", 7), ("周天", 7),
-        ("礼拜一", 1), ("礼拜天", 7),
-        ("一", 1), ("五", 5), ("日", 7), ("天", 7),
-        ("Mon", 1), ("Friday", 5), ("fri", 5), ("Sunday", 7),
+        (1, 1),
+        (5, 5),
+        (7, 7),
+        ("1", 1),
+        ("5", 5),
+        ("7", 7),
+        ("星期一", 1),
+        ("星期五", 5),
+        ("星期日", 7),
+        ("星期天", 7),
+        ("周一", 1),
+        ("周五", 5),
+        ("周日", 7),
+        ("周天", 7),
+        ("礼拜一", 1),
+        ("礼拜天", 7),
+        ("一", 1),
+        ("五", 5),
+        ("日", 7),
+        ("天", 7),
+        ("Mon", 1),
+        ("Friday", 5),
+        ("fri", 5),
+        ("Sunday", 7),
         (" friday ", 5),
         ("星期五下午", 5),
     ],
@@ -321,14 +338,14 @@ def test_parser_accepts_weeks_within_limit() -> None:
 
 def test_parser_rejects_mask_bits_beyond_limit() -> None:
     """位掩码越界同样硬失败 —— 不静默取低位，也不回退到展示串。"""
-    mask = "0" * 19 + "1"          # 第 20 位为 1
+    mask = "0" * 19 + "1"  # 第 20 位为 1
     payload = [
         {
             "courseName": "掩码越界课程",
             "weekday": 1,
             "periods": "1-2节",
             "SKZC": mask,
-            "ZCMC": "1-2周",       # 展示串在范围内，但不得用它偷偷兜底
+            "ZCMC": "1-2周",  # 展示串在范围内，但不得用它偷偷兜底
         }
     ]
     with pytest.raises(ParseError, match="超出解析上限 16"):
@@ -402,10 +419,20 @@ def test_parser_same_course_different_room_by_weeks() -> None:
     教室切换的信息会被静默丢失。
     """
     payload = [
-        {"courseName": "建筑设计", "weekday": 2, "periods": "1-4节",
-         "weeks": "1-8周", "location": "东楼 A301"},
-        {"courseName": "建筑设计", "weekday": 2, "periods": "1-4节",
-         "weeks": "9-16周", "location": "东楼 B502"},
+        {
+            "courseName": "建筑设计",
+            "weekday": 2,
+            "periods": "1-4节",
+            "weeks": "1-8周",
+            "location": "东楼 A301",
+        },
+        {
+            "courseName": "建筑设计",
+            "weekday": 2,
+            "periods": "1-4节",
+            "weeks": "9-16周",
+            "location": "东楼 B502",
+        },
     ]
     _, meetings = TimetableParser(expansion_limit=16).parse(payload)
 
@@ -418,10 +445,20 @@ def test_parser_same_course_different_room_by_weeks() -> None:
 def test_parser_single_double_week_parity_meetings() -> None:
     """单双周交替（如体育课）：单周上 A 场地、双周上 B 场地，两条记录各自独立。"""
     payload = [
-        {"courseName": "体育", "weekday": 4, "periods": "5-6节",
-         "weeks": "单周", "location": "田径场"},
-        {"courseName": "体育", "weekday": 4, "periods": "5-6节",
-         "weeks": "双周", "location": "体育馆"},
+        {
+            "courseName": "体育",
+            "weekday": 4,
+            "periods": "5-6节",
+            "weeks": "单周",
+            "location": "田径场",
+        },
+        {
+            "courseName": "体育",
+            "weekday": 4,
+            "periods": "5-6节",
+            "weeks": "双周",
+            "location": "体育馆",
+        },
     ]
     _, meetings = TimetableParser(expansion_limit=16).parse(payload)
 
@@ -433,9 +470,7 @@ def test_parser_single_double_week_parity_meetings() -> None:
 
 def test_parser_period_range_and_disjoint_weeks() -> None:
     """节次区间与非连续周次并存（如 5-6 节、第 1,3,5,7 周）。"""
-    payload = [
-        {"courseName": "讲座", "weekday": 5, "periods": "5-6节", "weeks": "1,3,5,7周"}
-    ]
+    payload = [{"courseName": "讲座", "weekday": 5, "periods": "5-6节", "weeks": "1,3,5,7周"}]
     _, meetings = TimetableParser(expansion_limit=16).parse(payload)
 
     assert meetings[0].periods == [5, 6]

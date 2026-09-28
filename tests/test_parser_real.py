@@ -59,8 +59,11 @@ def test_real_fixture_multiple_meetings(real_parsed: tuple[list, list, Timetable
 def test_real_fixture_week_mapping(real_parsed: tuple[list, list, TimetableParser]) -> None:
     """周次以 SKZC 位掩码为准：第 i 位为 1 ⇔ 第 i+1 周上课。"""
     _, meetings, _ = real_parsed
-    m = next(m for m in meetings if m.raw_week_text == "1-8周"
-             and m.periods == [1, 2, 3, 4] and m.weekday == 6)
+    m = next(
+        m
+        for m in meetings
+        if m.raw_week_text == "1-8周" and m.periods == [1, 2, 3, 4] and m.weekday == 6
+    )
     assert m.weeks == [1, 2, 3, 4, 5, 6, 7, 8]
 
     # 非连续周（真实数据中存在 "1-2周,5周" 形态，且有两条不同时段的记录）
@@ -86,8 +89,7 @@ def test_real_fixture_location_mapping(real_parsed: tuple[list, list, TimetableP
     by_course: dict[str, list] = {}
     for m in meetings:
         by_course.setdefault(m.course_id, []).append(m)
-    multi_room = [ms for ms in by_course.values()
-                  if len({m.location for m in ms}) >= 2]
+    multi_room = [ms for ms in by_course.values() if len({m.location for m in ms}) >= 2]
     assert multi_room, "观测数据中存在同课程多教室，解析后不应丢失"
     for ms in multi_room:
         rooms = {m.location for m in ms}
@@ -95,7 +97,9 @@ def test_real_fixture_location_mapping(real_parsed: tuple[list, list, TimetableP
         assert len(rooms) == len({m.location for m in ms})
 
 
-def test_real_fixture_empty_optional_fields(real_parsed: tuple[list, list, TimetableParser]) -> None:
+def test_real_fixture_empty_optional_fields(
+    real_parsed: tuple[list, list, TimetableParser],
+) -> None:
     """真实响应里大量 BY1-BY10 为 null：解析不得因此报错或误匹配。"""
     courses, _, _ = real_parsed
     for c in courses:

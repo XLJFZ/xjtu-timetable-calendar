@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime
 
 from .academic_calendar import AcademicCalendar
@@ -25,6 +25,7 @@ from .errors import CalendarExportError
 from .models import CalendarEvent, CourseMeeting, UnsupportedAdjustment
 from .periods import format_periods
 from .schedules import ScheduleTable
+from .sequence import EventBaseline, resolve_sequence
 from .timeutil import TZ_XIAN, now_local
 from .weeks import format_weeks
 
@@ -344,6 +345,7 @@ def render_ics(
     calendar_name: str = DEFAULT_CALENDAR_NAME,
     prodid: str = PRODID,
     dtstamp: datetime | None = None,
+    baseline: Mapping[str, EventBaseline] | None = None,
 ) -> str:
     """把事件序列渲染成符合 RFC 5545 的 iCalendar 文本。
 
@@ -355,6 +357,11 @@ def render_ics(
         ``X-WR-CALNAME``，日历客户端中显示的名字。
     dtstamp:
         覆盖 DTSTAMP（测试用；生产环境留 ``None`` 即可）。
+    baseline:
+        旧 ICS 解析出的 ``UID -> EventBaseline``（见 :mod:`xjtu_calendar.sequence`）。
+        提供后，内容未变的事件保留原 ``SEQUENCE`` / ``LAST-MODIFIED``，
+        内容变化的事件 ``SEQUENCE`` 递增——日历客户端据此正确执行原地更新。
+        ``None`` 时全部事件按新增处理（``SEQUENCE: 0``）。
 
     Returns
     -------
@@ -388,6 +395,9 @@ def render_ics(
         component = Event()
         component.add("uid", item.uid)
         component.add("dtstamp", stamp)
+        sequence, last_modified = resolve_sequence(item, baseline, stamp)
+        component.add("sequence", sequence)
+        component.add("last-modified", last_modified)
         component.add("dtstart", item.start)
         component.add("dtend", item.end)
         component.add("summary", item.summary)

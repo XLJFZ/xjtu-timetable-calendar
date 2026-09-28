@@ -48,6 +48,7 @@ from .exporter import (
 from .logging_setup import get_logger, setup_logging
 from .parser import TimetableParser
 from .schedules import ScheduleTable
+from .sequence import EventBaseline, parse_baseline, sequence_stats
 from .weeks import DEFAULT_EXPANSION_LIMIT
 
 __all__ = ["build_parser", "main"]
@@ -108,6 +109,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-unsupported-adjustments",
         action="store_true",
         help="教学日历声明了无法表达的调课时仍继续导出（带显著警告，事件会缺失）",
+    )
+    export.add_argument(
+        "--sequence-from",
+        help="以指定 ICS 为 SEQUENCE/LAST-MODIFIED 基线（默认自动探测输出文件的旧版本）",
+    )
+    export.add_argument(
+        "--no-sequence",
+        action="store_true",
+        help="不使用基线：所有事件按新增处理（SEQUENCE: 0）",
     )
 
     # --- inspect ---
@@ -362,7 +372,30 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
             logger.warning("⚠️ 未表达的调课（该时段事件缺失）：%s", line)
 
     # --- 渲染 ---
-    ics = render_ics(events, calendar_name=args.name)
+    # SEQUENCE / LAST-MODIFIED 基线：
+    #   显式 --sequence-from 指定；否则自动探测输出文件的旧版本；
+    #   --no-sequence 关闭。基线让日历客户端能区分「没变」与「变了」，
+    #   避免重新导入时更新被忽略或产生全量「已更新」噪音。
+    baseline: dict[str, EventBaseline] | None = None
+    if not args.no_sequence:
+        explicit = Path(args.sequence_from) if args.sequence_from else None
+        auto = Path(args.output)
+        baseline_path = explicit or auto
+        if baseline_path is not None and baseline_path.is_file():
+            if explicit is not None:
+                baseline = parse_baseline(baseline_path.read_text(encoding="utf-8"))
+            else:
+                try:
+                    baseline = parse_baseline(baseline_path.read_text(encoding="utf-8"))
+                except XjtuCalendarError as exc:
+                    # 自动探测的基线解析失败：降级为空基线（全部按新增），
+                    # 不阻断导出——ICS 内容本身不会因此出错。
+                    logger.warning("自动探测的基线 ICS 不可用（%s），事件将全部按新增处理", exc)
+                    baseline = None
+            if baseline:
+                logger.info("SEQUENCE 基线：%s（%d 个事件）", baseline_path, len(baseline))
+
+    ics = render_ics(events, calendar_name=args.name, baseline=baseline)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     # newline=""：render_ics 已按 RFC 5545 产出 CRLF 行尾，
@@ -384,6 +417,11 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     print("Events:")
     print(f"  {info['events']}")
     print()
+    if baseline is not None:
+        stats = sequence_stats(events, baseline)
+        print("Changes vs baseline:")
+        print(f"  unchanged {stats['preserved']} / updated {stats['updated']} / new {stats['added']}")
+        print()
     print("Date range:")
     print(f"  {info['date_range']}")
     print()

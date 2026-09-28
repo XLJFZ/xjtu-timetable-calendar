@@ -126,6 +126,19 @@ UID 由课程标识 + 实际上课日期 + 节次派生（`sha256`），**不含
 - 换教室或作息调整 → 视为同一事件的新版本，客户端自动覆盖；
 - 不同日期的课 → UID 不同，不会互相覆盖。
 
+### 四、SEQUENCE / LAST-MODIFIED：让「重新导入」真正生效
+
+部分日历客户端在重新导入 ICS 时，靠 `UID + SEQUENCE` 判断事件是「没变」还是
+「变了」。本项目每次导出都会写入这两个属性：
+
+- **默认行为**：自动把输出文件的旧版本当作基线——内容未变的事件保留原
+  `SEQUENCE` / `LAST-MODIFIED`（客户端跳过，不产生噪音）；内容变了（换教室、
+  调时间、改课）则 `SEQUENCE` 递增、`LAST-MODIFIED` 刷新，客户端原地更新；
+- `--sequence-from PATH`：显式指定基线 ICS（比如导出到新文件名时）；
+- `--no-sequence`：关闭基线比对，全部按新增处理；
+- `LAST-MODIFIED` 恒为 UTC（RFC 5545 要求），`SEQUENCE` 基线解析失败时
+  显式指定会报错终止、自动探测则降级为警告。
+
 ### 数据流水线
 
 ```
@@ -404,7 +417,7 @@ Output:
 | `login [--force]` | 浏览器手动登录，保存本地会话 |
 | `status` | 查看会话与配置状态（不发起网络请求） |
 | `fetch [--semester S] [--source auto\|http\|browser] [--from-file F]` | 获取课表原始 JSON |
-| `export [--semester S] [-o OUT] [--input F] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D]` | 生成 `.ics` |
+| `export [--semester S] [-o OUT] [--input F] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence]` | 生成 `.ics` |
 | `inspect [--input F] [-o OUT]` | 对原始 JSON 做**脱敏**结构分析 |
 
 全局参数：`--debug`（详细异常）、`-q`（静默）、`--version`
@@ -478,6 +491,7 @@ xjtu-timetable-calendar/
 │   ├── test_exporter.py                # UID / 时间 / ICS 合规
 │   ├── test_makeup.py                  # 停课日 / 调课日（source_date 语义）
 │   ├── test_packaging.py               # 版本号单一来源 + 包内资源随 wheel 分发
+│   ├── test_sequence.py                # SEQUENCE / LAST-MODIFIED 版本管理
 │   └── fixtures/
 │       ├── timetable_sample.json           # 手工构造的脱敏样例
 │       └── ehall_timetable_real_sanitized.json  # 真实结构脱敏固件
@@ -584,7 +598,7 @@ class CourseMeeting:
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 319 项测试（含 doctest）
+pytest                      # 334 项测试（含 doctest）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）
@@ -611,6 +625,7 @@ Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**�
 - **日期换算**：周一与周日边界、跨周、逆向换算
 - **作息解析**：夏季→summer、冬季→winter、未配置时明确报错
 - **UID**：重复导出不变、不同日期不同、不含地点（换教室不产生新事件）
+- **SEQUENCE / LAST-MODIFIED**：无基线归零、内容未变保留、内容变更递增、UTC 规范、基线解析容错
 - **ICS**：必需属性齐全、无 RRULE、CRLF、时区 `Asia/Shanghai`、特殊字符转义
 - **接口层**：响应分类（含「200 + 登录页 HTML」判为会话失效）、占位符端点拒绝、401/403 不重试
 

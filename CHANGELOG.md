@@ -8,7 +8,17 @@
 
 ## [Unreleased]
 
-（暂无）
+### Added
+
+- **`SEQUENCE` / `LAST-MODIFIED` 版本管理**：每次导出自动写入这两个属性，
+  日历客户端据此区分「事件没变」（保留原 `SEQUENCE`，跳过更新）与「事件变了」
+  （`SEQUENCE` 递增、`LAST-MODIFIED` 刷新），修复重新导入时更新可能被忽略的问题。
+  - 默认把输出文件的旧版本当作基线；`--sequence-from PATH` 显式指定，
+    `--no-sequence` 关闭；
+  - 内容指纹 = 摘要 / 起止时间 / 地点 / 描述（时间统一折算 UTC 比较）；
+  - `LAST-MODIFIED` 恒为 UTC（RFC 5545 要求）；
+  - 基线解析失败：显式指定报错终止，自动探测降级为警告（全部按新增）。
+- 新增 `src/xjtu_calendar/sequence.py` 与 `tests/test_sequence.py`（15 项）。
 
 ---
 

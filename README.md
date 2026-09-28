@@ -299,8 +299,10 @@ Output:
 > 导出会报错；反过来若工具静默丢弃越界周次，你会拿到一份
 > **看起来正常、实则缺课**的日历 —— 后者危险得多，所以本工具选择报错。
 
-`excluded_dates` 是全校停课日（节假日）。第一版不自动推断，
-需要你从校历抄录；后续版本会考虑自动获取。
+`excluded_dates` 是全校停课日（节假日），`overrides` 是调课日。
+两者都可以从教务处的停课/调课通知**自动解析合并** —— 见下文
+[3. 停课/调课通知自动获取](#3-停课调课通知自动获取notice-子命令可选)；
+也可以手工从校历抄录。
 
 **`overrides` 支持两类校历例外。** 工具不把节假日、调课混为一谈：
 
@@ -408,6 +410,35 @@ Output:
 **缺少配置时的行为**：明确报错并给出提示，**不会猜测或回退到某个默认值**。
 这是刻意的设计——错误的静默默认值比明确的报错危险得多。
 
+### 3. 停课/调课通知自动获取（`notice` 子命令，可选）
+
+教务处会在假期前后发布结构化的停课/调课通知（日期 | 周次星期 | 调休及教学安排）。
+`notice` 子命令可以解析这类通知页，并（在你确认后）把停课日与调课日
+合并进学期配置 —— **只新增，绝不覆盖你已有的条目**：
+
+```bash
+# 预览：只打印解析结果，不写任何文件
+python -m xjtu_calendar notice --url <通知页地址> --semester 2026-2027-1
+
+# 也可以离线解析本地保存的 HTML
+python -m xjtu_calendar notice --from-file notice.html --semester 2026-2027-1
+
+# 确认无误后真正合并进学期配置
+python -m xjtu_calendar notice --url <通知页地址> --semester 2026-2027-1 --apply
+```
+
+解析规则与安全边界：
+
+- 通知里的「第 N 周星期 X」会与配置里的 `first_week_monday` **交叉校验**
+  （日期对不上即报错），借此同时解决「10 月 1 日属于哪一年」这类年份推断；
+- 「某日停课、上某日（第 N 周星期 X）的课」→ 识别为**调课**（`overrides[source_date]`）；
+- 「停课 / 放假 / 法定节假日 / 调休」→ 识别为**停课日**（`excluded_dates`）；
+- 识别不了的行**不会自动写入**，而是逐条列出请你人工确认；
+- `--apply` 合并是**只新增**操作：配置中已有的值一律保留，解析结果与现有
+  条目冲突时会给出警告。
+
+> 📌 通知页是普通公开网页，`notice` 只发匿名 GET 请求，**不携带任何登录凭据**。
+
 ---
 
 ## 命令参考
@@ -418,6 +449,7 @@ Output:
 | `status` | 查看会话与配置状态（不发起网络请求） |
 | `fetch [--semester S] [--source auto\|http\|browser] [--from-file F]` | 获取课表原始 JSON |
 | `export [--semester S] [-o OUT] [--input F] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence]` | 生成 `.ics` |
+| `notice --url U \| --from-file F [--semester S] [--apply]` | 解析停课/调课通知，预览或合并进学期配置 |
 | `inspect [--input F] [-o OUT]` | 对原始 JSON 做**脱敏**结构分析 |
 
 全局参数：`--debug`（详细异常）、`-q`（静默）、`--version`
@@ -475,6 +507,8 @@ xjtu-timetable-calendar/
 │   ├── auth.py                         # 会话管理
 │   ├── fetcher.py                      # 课表抓取（HTTP / 浏览器双路径）
 │   ├── exporter.py                     # → CalendarEvent → .ics
+│   ├── notices.py                      # 停课/调课通知解析（HTML 表格 → 配置条目）
+│   ├── sequence.py                     # SEQUENCE / LAST-MODIFIED 版本管理
 │   ├── timeutil.py                     # 时区常量（Asia/Shanghai）
 │   └── data/
 │       └── ehall_endpoints.json        # 接口定义（真实观测，随 wheel 分发）
@@ -492,9 +526,11 @@ xjtu-timetable-calendar/
 │   ├── test_makeup.py                  # 停课日 / 调课日（source_date 语义）
 │   ├── test_packaging.py               # 版本号单一来源 + 包内资源随 wheel 分发
 │   ├── test_sequence.py                # SEQUENCE / LAST-MODIFIED 版本管理
+│   ├── test_notices.py                 # 通知解析 / 周次交叉校验 / 只新增合并
 │   └── fixtures/
 │       ├── timetable_sample.json           # 手工构造的脱敏样例
-│       └── ehall_timetable_real_sanitized.json  # 真实结构脱敏固件
+│       ├── ehall_timetable_real_sanitized.json  # 真实结构脱敏固件
+│       └── notice_holiday_2026.html        # 真实停课/调课通知固件（样式已剥离）
 └── examples/
     ├── academic_calendar.example.json
     └── schedule.example.json
@@ -598,7 +634,7 @@ class CourseMeeting:
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 334 项测试（含 doctest）
+pytest                      # 345 项测试（含 doctest）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）
@@ -626,6 +662,7 @@ Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**�
 - **作息解析**：夏季→summer、冬季→winter、未配置时明确报错
 - **UID**：重复导出不变、不同日期不同、不含地点（换教室不产生新事件）
 - **SEQUENCE / LAST-MODIFIED**：无基线归零、内容未变保留、内容变更递增、UTC 规范、基线解析容错
+- **通知解析**：表格网格展开（rowspan/colspan）、周次交叉校验、停课/调课分类、只新增合并、无法识别行不落盘
 - **ICS**：必需属性齐全、无 RRULE、CRLF、时区 `Asia/Shanghai`、特殊字符转义
 - **接口层**：响应分类（含「200 + 登录页 HTML」判为会话失效）、占位符端点拒绝、401/403 不重试
 
@@ -706,11 +743,12 @@ python -m xjtu_calendar login --force
 - [x] 按真实响应校准 `parser.py` 的字段候选（含 `SKZC` 位掩码、结构化节次优先）
 - [x] `fetch` 以真实账号跑通：真实课表成功落盘并逐行校验
 - [x] 产出首份真实 `.ics`
+- [x] `SEQUENCE` / `LAST-MODIFIED` 版本管理（重新导入可正确更新）
+- [x] 停课/调课通知自动解析合并（`notice` 子命令，含周次交叉校验）
 
 **待完成**
 
-- [ ] 从学校官方来源自动获取校历与作息表（替代手工配置）
-- [ ] 补 `SEQUENCE` / `LAST-MODIFIED`，为 URL 订阅式 ICS 做准备
+- [ ] 从学校官方来源自动获取**作息表**（校历停课/调课部分已由 `notice` 覆盖）
 
 **未来扩展（架构已预留）**
 

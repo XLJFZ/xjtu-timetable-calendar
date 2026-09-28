@@ -19,6 +19,18 @@
   - `LAST-MODIFIED` 恒为 UTC（RFC 5545 要求）；
   - 基线解析失败：显式指定报错终止，自动探测降级为警告（全部按新增）。
 - 新增 `src/xjtu_calendar/sequence.py` 与 `tests/test_sequence.py`（15 项）。
+- **停课/调课通知自动获取（`notice` 子命令）**：解析教务处发布的结构化
+  停课/调课通知页（HTML 表格），把「停课日」与「按某日课表上课」的调课
+  自动整理成学期配置条目。
+  - 通知里的「第 N 周星期 X」与 `first_week_monday` **交叉校验**，
+    同时解决年份推断（对不上即报错，不盲信解析结果）；
+  - 默认只打印预览，`--apply` 才合并进学期配置，且**只新增、不覆盖**已有条目，
+    与现有值冲突时给出警告；
+  - 无法识别的行逐条列出、不落盘；支持 `--from-file` 离线解析本地 HTML；
+    通知抓取为匿名 GET，不携带登录凭据；
+  - 新增 `src/xjtu_calendar/notices.py`、`tests/test_notices.py`（11 项）
+    与真实通知脱敏固件 `tests/fixtures/notice_holiday_2026.html`
+    （解析输出与手工维护的真实配置完全一致）。
 
 ### Changed
 

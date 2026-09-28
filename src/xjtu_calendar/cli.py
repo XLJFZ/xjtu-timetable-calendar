@@ -120,6 +120,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="不使用基线：所有事件按新增处理（SEQUENCE: 0）",
     )
 
+    # --- notice ---
+    notice = sub.add_parser(
+        "notice",
+        help="抓取学校停课/调课通知，解析出停课日与调课日并校验（公开页面，无需登录）",
+    )
+    notice.add_argument("--url", help="通知页 URL（教务处 due.xjtu.edu.cn 的通知地址）")
+    notice.add_argument("--from-file", help="离线模式：直接读取本地 HTML 文件")
+    notice.add_argument("--semester", help="学期标识，例如 2026-2027-1（用于周次交叉校验）")
+    notice.add_argument(
+        "--apply",
+        action="store_true",
+        help="把解析结果合并写回学期配置（只新增、不覆盖现有条目）；默认只生成报告",
+    )
+
     # --- inspect ---
     inspect = sub.add_parser("inspect", help="对原始课表 JSON 做脱敏结构分析")
     inspect.add_argument("--input", help="课表 JSON 路径（默认用本地缓存）")
@@ -526,12 +540,101 @@ def _structure_report(payload: object, depth: int = 0, max_depth: int = 5) -> st
 # --------------------------------------------------------------------------- #
 # 入口
 # --------------------------------------------------------------------------- #
+def cmd_notice(args: argparse.Namespace, cfg: Settings) -> int:
+    """抓取并解析学校停课/调课通知，产出可合并进学期配置的条目。"""
+    import json as json_module
+    from datetime import date as date_type
+
+    from .errors import XjtuCalendarError as _Err
+    from .notices import apply_notice, fetch_notice_html, merge_into_config, parse_teaching_notice
+
+    if not args.url and not args.from_file:
+        raise _Err(
+            "需要提供通知来源",
+            hint="用 --url 指定教务处通知页地址，或用 --from-file 读取本地保存的 HTML。",
+        )
+
+    semester = args.semester or cfg.semester_key
+    if not semester:
+        raise SemesterNotConfigured(
+            "未指定学期", hint="请用 --semester 指定，或设置环境变量 XJTU_SEMESTER"
+        )
+    config_path = cfg.semester_config_path(semester)
+    if not config_path.is_file():
+        raise SemesterNotConfigured(
+            f"未找到学期 {semester} 的教学日历：{config_path}",
+            hint="通知里的「第 N 周星期 X」必须用学期第一周周一做交叉校验，请先建好校历配置。",
+        )
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    first_monday_raw = raw.get("first_week_monday")
+    if not first_monday_raw:
+        raise _Err(
+            f"学期配置缺少 first_week_monday：{config_path}",
+            hint="没有第一周周一就无法校验通知里的周次，不能盲信解析结果。",
+        )
+    first_monday = date_type.fromisoformat(str(first_monday_raw))
+
+    if args.from_file:
+        html = Path(args.from_file).read_text(encoding="utf-8")
+        source = str(args.from_file)
+    else:
+        html = fetch_notice_html(str(args.url))
+        source = str(args.url)
+
+    table = parse_teaching_notice(html)
+    application = apply_notice(table, first_monday)
+
+    print(f"通知来源: {source}")
+    print(f"学期: {semester}（第一教学周周一 {first_monday.isoformat()}）")
+    print()
+    print(f"停课日（{len(application.excluded_dates)} 天）:")
+    for day in application.excluded_dates:
+        print(f"  {day.isoformat()}")
+    print()
+    print(f"调课（{len(application.makeups)} 条）:")
+    for target, source_date in application.makeups:
+        print(f"  {target.isoformat()} <- 按 {source_date.isoformat()}（来源教学日）课表上课")
+    print()
+    if application.unresolved:
+        print(f"⚠️ 需人工确认（{len(application.unresolved)} 行，不会自动写入）:")
+        for row in application.unresolved:
+            print(f"  {row.date_text} | {row.week_text} | {row.arrangement}")
+            print(f"    原因：{row.reason}")
+        print()
+    for note in table.notes:
+        print(f"说明：{note}")
+    print()
+
+    if not args.apply:
+        proposed = {
+            "excluded_dates（建议新增）": [d.isoformat() for d in application.excluded_dates],
+            "overrides（建议新增）": {
+                t.isoformat(): {"source_date": s.isoformat()} for t, s in application.makeups
+            },
+        }
+        print("以上为解析结果预览（未写入任何文件）。确认无误后加 --apply 合并进学期配置：")
+        print(json_module.dumps(proposed, ensure_ascii=False, indent=2))
+        return 0
+
+    summary = merge_into_config(config_path, application, source_url=source)
+    print("已合并进学期配置（只新增，现有条目未被覆盖）:")
+    for item in summary["added_excluded"]:
+        print(f"  + 停课日 {item}")
+    for item in summary["added_makeups"]:
+        print(f"  + 调课 {item}")
+    for warning in summary["warnings"]:
+        logger.warning("%s", warning)
+    print(f"\n配置文件：{config_path}")
+    return 0
+
+
 _HANDLERS = {
     "login": cmd_login,
     "status": cmd_status,
     "fetch": cmd_fetch,
     "export": cmd_export,
     "inspect": cmd_inspect,
+    "notice": cmd_notice,
 }
 
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from .academic_calendar import AcademicCalendar
 from .errors import CalendarExportError
@@ -69,6 +69,12 @@ def make_uid(
     -----
     刻意**不把时间和地点纳入哈希**：作息调整或换教室时，同一节课应当被视为
     「同一事件的新版本」，由日历客户端原地更新，而不是产生重复事件。
+
+    **``course_name`` 参与身份是刻意的向后兼容选择**（legacy UID contract）：
+    ``course_id`` 已稳定时重复包含课程名在模型上并不理想，但 UID 算法自
+    v0.1.0 起已随正式版发布，改动会让已导入用户的整个学期被识别成新事件。
+    已知边界：同一 ``course_id`` 的课程被改名时，其事件会被视为新事件。
+    未来若做 UID v2，必须配显式迁移方案，不在普通 minor release 里直接改。
 
     Examples
     --------
@@ -238,8 +244,10 @@ def build_events(
             if with_override_notes and override is not None and override.note:
                 description = f"{description}\n备注：{override.note}"
 
+            # location 是业务事实，不受 with_override_notes 影响 ——
+            # 那个开关只管 DESCRIPTION 里要不要追加备注，绝不能顺手关掉换教室。
             location = meeting.full_location
-            if with_override_notes and override is not None and override.location:
+            if override is not None and override.location:
                 location = override.location
 
             events.append(
@@ -298,13 +306,20 @@ def build_events(
             if with_override_notes and override.note:
                 description = f"{description}\n备注：{override.note}"
 
+            # 调课事件与普通事件使用同一套 location 语义：
+            # overrides[target].location 是「这一天在哪里上课」的业务事实，
+            # 必须覆盖 meeting 自带的地点（临时换教室正是调课最常见的场景）。
+            location = meeting.full_location
+            if override.location:
+                location = override.location
+
             events.append(
                 CalendarEvent(
                     uid=uid,
                     summary=meeting.course_name.strip(),
                     start=start,
                     end=end,
-                    location=meeting.full_location,
+                    location=location,
                     description=description,
                     meeting=meeting,
                 )
@@ -316,27 +331,59 @@ def build_events(
 
 def collect_unsupported(
     calendar: AcademicCalendar,
-    events: Sequence[CalendarEvent],
+    *,
+    lower: date | None = None,
+    upper: date | None = None,
 ) -> list[UnsupportedAdjustment]:
-    """找出落在导出范围内、但本工具无法表达的调课安排。
+    """找出落在**导出范围**内、但本工具无法表达的调课安排。
 
-    判定逻辑：声明了 ``unsupported_adjustments`` 且其日期落在
-    本次事件的日期跨度内（事件为空时视为全部命中）。
+    范围语义（关键修正）
+    --------------------
+    判定范围必须是「用户请求导出的日期范围」，而**不是**「最终生成出来的
+    事件跨度」。旧实现从 ``events`` 取 ``min/max`` 日期当边界，会漏掉
+    「首次上课之前」的特殊安排：例如学期 09-07 开始、第一门课 09-11 才上，
+    那么 09-08 的调课声明落在事件跨度之外，会被静默漏报 —— 而漏报一条
+    已知的调课，用户拿到的就是一份悄悄缺课的日历。
 
-    返回值交给调用方决定处置：默认 fail-closed，
-    显式允许后转为显著警告。**本函数只报告，不虚构任何事件** ——
-    不会为了「让日历看起来完整」而生成占位事件。
+    Parameters
+    ----------
+    calendar:
+        教学日历（提供 ``unsupported_adjustments`` 与学期边界）。
+    lower / upper:
+        调用方已知的导出边界（对应 CLI 的 ``--from-date`` / ``--to-date``）。
+        为 ``None`` 的一侧回退到 :meth:`Semester.export_date_range`；
+        仍无法确定时视为无界——**不确定范围时多报，不能漏报**。
+
+    Returns
+    -------
+    list[UnsupportedAdjustment]
+        落在范围内的声明；两侧都无界时返回全部。
+
+    Notes
+    -----
+    本函数只报告，不虚构任何事件 —— 不会为了「让日历看起来完整」
+    而生成占位事件。
     """
     adjustments = calendar.unsupported_adjustments
     if not adjustments:
         return []
 
-    if not events:
+    if lower is None or upper is None:
+        semester_lower, semester_upper = calendar.semester.export_date_range()
+        if lower is None:
+            lower = semester_lower
+        if upper is None:
+            upper = semester_upper
+
+    if lower is None and upper is None:
+        # 学期边界不可知：safe-side，全部报出交用户判断。
         return list(adjustments)
 
-    lo = min(e.start.date() for e in events)
-    hi = max(e.start.date() for e in events)
-    return [a for a in adjustments if lo <= a.date <= hi]
+    return [
+        a
+        for a in adjustments
+        if (lower is None or a.date >= lower) and (upper is None or a.date <= upper)
+    ]
 
 
 def render_ics(
@@ -352,7 +399,7 @@ def render_ics(
     Parameters
     ----------
     events:
-        日历事件。
+        日历事件。可以是生成器 —— 函数入口会立刻物化，后续要遍历两次。
     calendar_name:
         ``X-WR-CALNAME``，日历客户端中显示的名字。
     dtstamp:
@@ -370,14 +417,28 @@ def render_ics(
 
     Notes
     -----
-    使用成熟的 ``icalendar`` 库完成序列化与折行，不手写拼接器——
-    ICS 的折行规则（75 字节）、转义规则（逗号、分号、反斜杠、换行）
-    极易出错。库缺失时给出明确安装提示。
+    1. 使用成熟的 ``icalendar`` 库完成序列化与折行，不手写拼接器——
+       ICS 的折行规则（75 字节）、转义规则（逗号、分号、反斜杠、换行）
+       极易出错。库缺失时给出明确安装提示。
+    2. **时区定义（VTIMEZONE）**：RFC 5545 §3.2.19 规定
+
+           "An individual 'VTIMEZONE' calendar component MUST be specified
+            for each unique 'TZID' parameter value specified in the
+            iCalendar object."
+
+       本项目的事件引用 ``TZID=Asia/Shanghai``，因此必须内嵌对应的 VTIMEZONE；
+       ``X-WR-TIMEZONE`` 只是给客户端的提示，**不能**替代它。
+       定义由 ``icalendar`` 官方的 :meth:`Calendar.add_missing_timezones`
+       生成，不手写（偏移与缩写极易写错）。该 API 需要 ``icalendar>=6.1.0``。
     """
     try:
         from icalendar import Calendar, Event
     except ImportError as exc:  # pragma: no cover
         raise CalendarExportError("缺少 icalendar 依赖，请安装：pip install icalendar") from exc
+
+    # 入口处显式物化：下面既要逐条生成 VEVENT，又要遍历一遍算时区覆盖范围。
+    # 若调用方传的是 generator，第二次遍历会得到空集合（静默少写 VTIMEZONE）。
+    items = list(events)
 
     stamp = dtstamp or now_local()
 
@@ -389,7 +450,7 @@ def render_ics(
     cal.add("x-wr-calname", calendar_name)
     cal.add("x-wr-timezone", TZ_XIAN.tzname(None) or "Asia/Shanghai")
 
-    for item in events:
+    for item in items:
         component = Event()
         component.add("uid", item.uid)
         component.add("dtstamp", stamp)
@@ -404,6 +465,15 @@ def render_ics(
         if item.description:
             component.add("description", item.description)
         cal.add_component(component)
+
+    # 所有 VEVENT 就位后补齐 VTIMEZONE（必须在 to_ical() 之前）。
+    # 覆盖范围按**本次事件范围**生成，两侧各留一天余量：
+    # 无脑用默认的 1970..2038 会产出跨越几十年的无意义时区定义。
+    # 空日历不引用任何 TZID，也就不需要（也不应凭空造出）VTIMEZONE。
+    if items:
+        first_date = min(item.start.date() for item in items) - timedelta(days=1)
+        last_date = max(item.end.date() for item in items) + timedelta(days=1)
+        cal.add_missing_timezones(first_date=first_date, last_date=last_date)
 
     # icalendar 未随包提供类型标注（mypy 视其为 Any），显式标注收窄返回值类型。
     # 运行时无任何变化：Calendar.to_ical() 恒返回 bytes。

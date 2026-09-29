@@ -158,6 +158,33 @@ class Semester:
             raise ValueError(f"星期必须位于 1..7，实际为 {weekday}")
         return self.first_week_monday + _timedelta(weeks=week - 1, days=weekday - 1)
 
+    def export_date_range(self) -> tuple[date | None, date | None]:
+        """本学期的**导出边界**（闭区间），用于判断某条安排是否落在导出范围内。
+
+        优先级：
+
+        1. ``start_date`` 与 ``end_date`` 都已知 -> 直接使用校历声明的学期起止；
+        2. 否则 ``total_weeks`` 已知 -> ``[first_week_monday, last_week_sunday]``；
+        3. 两者都无从确定 -> ``(None, None)``。
+
+        调用方必须把 ``(None, None)`` 理解为「范围不可知」，并在这种情形下
+        **倾向于多报**（宁可把范围外的安排也报出来）—— 漏报一条已知但无法
+        表达的调课，用户会拿到一份悄悄缺课的日历。
+
+        Examples
+        --------
+        >>> from datetime import date
+        >>> Semester("t", "测试", date(2026, 9, 7), total_weeks=2).export_date_range()
+        (datetime.date(2026, 9, 7), datetime.date(2026, 9, 20))
+        >>> Semester("t", "测试", date(2026, 9, 7)).export_date_range()
+        (None, None)
+        """
+        if self.start_date is not None and self.end_date is not None:
+            return self.start_date, self.end_date
+        if self.total_weeks is not None:
+            return self.first_week_monday, self.last_week_sunday
+        return None, None
+
 
 def _timedelta(*, weeks: int = 0, days: int = 0) -> timedelta:
     return timedelta(weeks=weeks, days=days)

@@ -19,6 +19,12 @@
   这一步同时解决了「通知只写月日、不写年份」的年份推断问题；
 - **不做静默合并**：``--apply`` 只**新增**条目，与现有配置冲突的一律
   保留现值并警告——用户手工核对过的配置优先级永远高于自动解析。
+- **全链路 fail-closed**：① ``parse_teaching_notice`` 不因日期写法不熟悉
+  就丢掉业务行，也绝不在「找到表头却 0 个业务行」时假装成功；
+  ② ``apply_notice`` 把认不出的行记入 ``unresolved``；
+  ③ CLI 在 ``--apply`` 且 ``unresolved`` 非空时**拒绝写盘**，
+  ④ ``merge_into_config`` 写前 / 写后都用正式领域模型校验，并原子替换。
+  任何一环都不允许「写进去一半」。
 
 HTML 解析用标准库 :mod:`html.parser`（零新增依赖）；
 学校页面把文字切碎在大量 ``<span>`` 里、并用 ``rowspan`` 合并
@@ -28,7 +34,9 @@ HTML 解析用标准库 :mod:`html.parser`（零新增依赖）；
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from html.parser import HTMLParser
@@ -36,11 +44,13 @@ from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
 
-from .errors import XjtuCalendarError
+from .academic_calendar import AcademicCalendar
+from .errors import ParseError, XjtuCalendarError
 from .logging_setup import get_logger
 
 __all__ = [
     "NoticeApplication",
+    "NoticeParseError",
     "NoticeRow",
     "NoticeTable",
     "apply_notice",
@@ -200,6 +210,24 @@ def parse_teaching_notice(html: str) -> NoticeTable:
     在页面所有表格里定位表头含「调休及教学安排」的那一张；
     找不到时抛 :class:`NoticeParseError`（页面结构变化，需要人工适配，
     而不是静默返回空结果）。
+
+    职责边界（fail-closed 的第一层）
+    --------------------------------
+    本函数只做「HTML 表格 -> 网格 -> 候选业务行」，**不判断日期格式能不能解析**：
+
+    - 表头行（含「调休及教学安排」）跳过；
+    - 全宽说明行（跨列后三列同文）归入 :attr:`NoticeTable.notes`；
+    - 其余非空行一律作为候选业务行原样交给 :func:`apply_notice`。
+
+    这是关键设计：如果在这里用「日期必须长成 ``N月N日``」筛掉不认识的行，
+    学校一旦把日期改成 ``10 月 1 日`` / ``2026年10月1日`` / ``10月1日（星期四）``，
+    整行就会**凭空消失**，连 ``unresolved`` 都进不去 —— 那是「静默丢数据」，
+    违反了「不确定时宁可不写，也不能部分成功」的红线。
+    解析失败的判定统一交给 :func:`apply_notice` 记入 ``unresolved``。
+
+    找到目标表但一条业务行都没有时同样抛 :class:`NoticeParseError`：
+    「0 个停课 + 0 个调课」与「真的没有调课」在结果上无法区分，
+    绝不能把前者伪装成一次成功的解析。
     """
     parser = _GridParser()
     parser.feed(html)
@@ -220,24 +248,34 @@ def parse_teaching_notice(html: str) -> NoticeTable:
 
     grid = _expand_grid(target)
     result = NoticeTable()
-    for cells in grid:
-        if not cells:
+    for grid_row in grid:
+        if not grid_row:
             continue
-        date_text = cells[0]
-        # 说明行：整行是同一句话（colspan=3），不是日期行
-        if len(cells) >= 3 and len({cells[0], cells[1], cells[2]}) == 1:
+        cells = [cell.strip() for cell in grid_row]
+        # 表头行：既不进业务行，也不进说明
+        if any(_TABLE_HEADER_MARK in cell for cell in cells):
+            continue
+        # 全宽说明行（如作息切换提示）：colspan 让三列拿到同一段文本
+        if len(cells) >= 3 and cells[0] and len(set(cells[:3])) == 1:
             result.notes.append(cells[0])
             continue
-        if not _DATE_RE.match(date_text.strip()):
-            continue
+
+        date_text = cells[0]
         week_text = cells[1] if len(cells) > 1 else ""
         arrangement = cells[2] if len(cells) > 2 else ""
+        if not (date_text or week_text or arrangement):
+            continue  # 完全空行
+        # 只要不是表头 / 说明 / 空行，就一律按候选业务行传递，
+        # 日期格式认不出来时由 apply_notice 记入 unresolved —— 不在这里丢弃。
         result.rows.append(
-            NoticeRow(
-                date_text=date_text.strip(),
-                week_text=week_text.strip(),
-                arrangement=arrangement.strip(),
-            )
+            NoticeRow(date_text=date_text, week_text=week_text, arrangement=arrangement)
+        )
+
+    if not result.rows:
+        raise NoticeParseError(
+            "找到了调课安排表格，却没有任何可处理的安排行。"
+            "页面结构可能已变化；为避免把「解析不到」误判成「本次没有调课」，"
+            "请人工查看通知原文后再决定。"
         )
     return result
 
@@ -428,8 +466,30 @@ def merge_into_config(
     现有 ``excluded_dates`` / ``overrides`` 条目优先级永远高于自动解析：
     出现同日冲突时保留现值并记录到返回的 ``warnings``。
     返回变更摘要（``added_excluded`` / ``added_makeups`` / ``warnings``）。
+
+    写回安全（fail-closed 的第二层）
+    --------------------------------
+    1. **写前校验**：读出的原配置必须先能通过
+       :meth:`AcademicCalendar.from_dict` —— 配置已经损坏时，notice
+       不应该顺手把它写回去，而应停下让人检查；
+    2. **写后校验**：合并结果再次过一遍同一套领域模型校验。
+       自动写入绝不能产出 ``export`` 读不懂的配置；
+    3. **原子替换**：先写同目录临时文件，``flush`` + ``fsync`` 后用
+       :func:`os.replace` 覆盖。用户往往只有这一份校历配置，
+       直接覆盖时若进程中途崩溃会留下截断的 JSON。
+
+    Raises
+    ------
+    ParseError
+        原配置或合并结果不满足正式 schema（此时配置文件**未被修改**）。
     """
-    raw: dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
+    try:
+        raw: dict[str, Any] = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ParseError(f"学期配置不是合法 JSON：{config_path}（{exc}）") from exc
+
+    # 1) 写前校验：正式领域模型是唯一 schema 真源。
+    AcademicCalendar.from_dict(raw)
 
     existing_excluded = {
         item if isinstance(item, str) else str(item) for item in raw.get("excluded_dates", [])
@@ -474,7 +534,11 @@ def merge_into_config(
     raw["excluded_dates"] = sorted(existing_excluded)
     raw["overrides"] = dict(sorted(overrides_raw.items()))
 
-    config_path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # 2) 写后校验：合并结果必须仍能被 export 读取。
+    AcademicCalendar.from_dict(raw)
+
+    # 3) 原子替换写入。
+    _atomic_write_text(config_path, json.dumps(raw, ensure_ascii=False, indent=2) + "\n")
     logger.info(
         "学期配置已更新（来源：%s）：新增停课 %d 天、调课 %d 条",
         source_url,
@@ -486,3 +550,23 @@ def merge_into_config(
         "added_makeups": added_makeups,
         "warnings": warnings,
     }
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """原子替换写入文本（UTF-8，LF 行尾）。
+
+    同目录临时文件 + ``os.replace`` 保证「要么旧内容、要么新内容」：
+    同一文件系统内 ``os.replace`` 是原子操作，不存在写了一半的中间态。
+    异常路径会尽力清理临时文件，不留下 ``*.tmp`` 垃圾。
+    """
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise

@@ -31,14 +31,65 @@
   - 新增 `src/xjtu_calendar/notices.py`、`tests/test_notices.py`（11 项）
     与真实通知脱敏固件 `tests/fixtures/notice_holiday_2026.html`
     （解析输出与手工维护的真实配置完全一致）。
+- **ICS 内嵌 `VTIMEZONE`（RFC 5545 §3.2.19 合规）**：事件引用
+  `TZID=Asia/Shanghai`，此前只有 `X-WR-TIMEZONE` 提示、没有对应的 `VTIMEZONE`
+  组件，属已知合规偏差。现在在 `to_ical()` 之前由官方
+  `Calendar.add_missing_timezones()` 补齐，按**本次事件范围**生成（两侧各留
+  一天余量），不手写时区定义。空日历不引用 TZID，因此不生成 `VTIMEZONE`。
+  **事件自身的 UID / `DTSTART` / `DTEND` / `SEQUENCE` 均不受影响。**
 
 ### Changed
 
+- **运行依赖下限提升到 `icalendar>=6.1.0`**（原 `>=5.0`）：
+  `add_missing_timezones()` 是 6.1.0 才引入的 API（实测 5.0.0 / 5.0.14 / 6.0.0
+  均无）。未设置版本上限——未观测到 6.1+ 的不兼容行为。
+- **RRULE 守卫语义收窄为「课程 VEVENT 不使用 RRULE」**：此前的全局文本断言
+  `"RRULE" not in ics` 会在 VEVENT 仍然正确的前提下，把标准时区组件内部的
+  规则一并误伤。红线本身未变，只是把断言落到正确的组件层级。
+- **UID 算法保持不变（显式记录已知边界）**：不引入 UID v2、不做自动迁移。
+  课程名仍参与 UID，因此同一 `course_id` 的课程被改名时，其事件会被视为
+  新事件而非原事件的新版本。这是为兼容已发布的 v0.1.x 而**刻意保留**的选择；
+  后续 UID v2 / 订阅机制再单独设计显式迁移。
 - **license 迁移到 PEP 639**：`license = "MIT"`（SPDX 表达式）+ `license-files`，
   移除 License 分类器（PEP 639 禁止两者并存）；`build-system` 提升到
   `setuptools>=77`。wheel `METADATA` 现在携带 `License-Expression: MIT`，
   构建期不再出现弃用告警。
 - CI 增加 `ruff format --check`：全仓已统一为 ruff 格式，从此防止格式漂移。
+
+### Fixed
+
+- **`notice` 子命令读不了正式学期配置（发布阻断项）**：CLI 之前在配置顶层取
+  `first_week_monday`，而正式 schema 把它放在 `semester` 里，导致完全合法的
+  配置被误报「学期配置缺少 first_week_monday」。现在统一改用
+  `AcademicCalendar.from_file()`，**正式领域模型成为学期配置 schema 的唯一真源**。
+- **`notice` 全链路 fail-closed**：
+  - 通知解析不再因日期写法不熟悉（`10 月 1 日` / `2026年10月1日` /
+    `10月1日（星期四）`）就静默丢掉整行；这类行现在进入 `unresolved`；
+  - `--apply` 在 `unresolved` 非空时**整体拒绝写盘**，配置文件字节级不变，
+    不再产出「半完整校历」（预览模式仍可用，但会标注结果不可直接应用）；
+  - 找到调课表头却没有任何业务行时直接报错，不再把「解析不到」
+    伪装成「本次没有调课」。
+- **`unsupported_adjustments` 范围判定**：改按「用户请求的导出范围」
+  （`--from-date` / `--to-date`，缺省回退学期边界）判断，而不是按最终生成出
+  的事件跨度 —— 后者会漏报「首次上课之前」的特殊安排。学期边界无法确定时
+  返回全部（宁可多报，不可漏报）。
+- **调课日的 `location` 覆盖被忽略**：`overrides[target].location` 现在无条件
+  生效；`with_override_notes` 只控制是否把备注写进 `DESCRIPTION`，
+  不再连带关掉地点覆盖。
+- **`notice --apply` 写回安全**：合并前 / 合并后都用 `AcademicCalendar` 复检，
+  并以「同目录临时文件 + `os.replace`」原子替换（异常路径清理临时文件），
+  绝不会把 `export` 读不懂的配置写回用户目录。
+
+### Added
+
+- 新增 CLI 级端到端测试 `tests/test_cli_notice.py`：正式 schema + 真实通知
+  fixture + 临时 `XJTU_CALENDAR_HOME`，覆盖预览、`--apply`、
+  unresolved 拒写三条路径（旧的单元测试抓不到「CLI 自己重新实现配置解析」）。
+- 新增 `Semester.export_date_range()`：显式给出学期导出边界，
+  供 `unsupported_adjustments` 范围判定使用。
+- 新增时区合规测试：`VTIMEZONE` 恰好一个且 `TZID=Asia/Shanghai`、
+  解析后 `get_missing_tzids() == set()`、`DTSTART`/`DTEND` 本地钟点往返不变、
+  空日历不生成 `VTIMEZONE`；RRULE 守卫改为按 VEVENT 结构化断言。
 
 ---
 

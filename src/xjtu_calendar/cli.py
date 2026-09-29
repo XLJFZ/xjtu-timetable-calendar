@@ -131,7 +131,8 @@ def build_parser() -> argparse.ArgumentParser:
     notice.add_argument(
         "--apply",
         action="store_true",
-        help="把解析结果合并写回学期配置（只新增、不覆盖现有条目）；默认只生成报告",
+        help="把解析结果合并写回学期配置（只新增、不覆盖现有条目）；默认只生成报告。"
+        "存在无法解析的行时拒绝写入（fail-closed）。",
     )
 
     # --- inspect ---
@@ -359,11 +360,13 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     logger.info("已展开：%d 次实际上课", len(events))
 
     # --- 可选日期过滤 ---
-    if args.from_date or args.to_date:
-        from datetime import date
+    # 先把边界解析出来：它同时决定「事件过滤」与「unsupported 调课的范围判定」，
+    # 两处必须用同一组边界，否则会出现「事件被裁掉、缺课告警却没报」。
+    from datetime import date
 
-        lower = date.fromisoformat(args.from_date) if args.from_date else None
-        upper = date.fromisoformat(args.to_date) if args.to_date else None
+    lower = date.fromisoformat(args.from_date) if args.from_date else None
+    upper = date.fromisoformat(args.to_date) if args.to_date else None
+    if lower is not None or upper is not None:
         events = [
             e
             for e in events
@@ -376,7 +379,9 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
         logger.warning("没有生成任何事件（可能全部落在停课日期或被日期过滤排除）")
 
     # --- 无法表达的调课：fail-closed（显式允许后转为显著警告） ---
-    unsupported = collect_unsupported(academic, events)
+    # 范围来自「用户请求导出的范围」，不是 events 的日期跨度：
+    # 首次上课之前的特殊安排同样必须被捕获。
+    unsupported = collect_unsupported(academic, lower=lower, upper=upper)
     if unsupported:
         lines = [f"  {a.date.isoformat()}：{a.description}" for a in unsupported]
         if not args.allow_unsupported_adjustments:
@@ -541,12 +546,26 @@ def _structure_report(payload: object, depth: int = 0, max_depth: int = 5) -> st
 # 入口
 # --------------------------------------------------------------------------- #
 def cmd_notice(args: argparse.Namespace, cfg: Settings) -> int:
-    """抓取并解析学校停课/调课通知，产出可合并进学期配置的条目。"""
+    """抓取并解析学校停课/调课通知，产出可合并进学期配置的条目。
+
+    fail-closed 契约（本命令的核心）：
+
+    - 只要有任意一行无法可靠解析（``application.unresolved`` 非空），
+      就**拒绝写盘**并报错退出，配置文件字节级不变；
+      绝不「写进去一半」，产出一份半完整的校历。
+    - 预览模式（不加 ``--apply``）仍然可用，但会明确标注
+      「存在无法解析的行，当前结果不可直接应用」。
+    """
     import json as json_module
-    from datetime import date as date_type
 
     from .errors import XjtuCalendarError as _Err
-    from .notices import apply_notice, fetch_notice_html, merge_into_config, parse_teaching_notice
+    from .notices import (
+        NoticeParseError,
+        apply_notice,
+        fetch_notice_html,
+        merge_into_config,
+        parse_teaching_notice,
+    )
 
     if not args.url and not args.from_file:
         raise _Err(
@@ -565,14 +584,12 @@ def cmd_notice(args: argparse.Namespace, cfg: Settings) -> int:
             f"未找到学期 {semester} 的教学日历：{config_path}",
             hint="通知里的「第 N 周星期 X」必须用学期第一周周一做交叉校验，请先建好校历配置。",
         )
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    first_monday_raw = raw.get("first_week_monday")
-    if not first_monday_raw:
-        raise _Err(
-            f"学期配置缺少 first_week_monday：{config_path}",
-            hint="没有第一周周一就无法校验通知里的周次，不能盲信解析结果。",
-        )
-    first_monday = date_type.fromisoformat(str(first_monday_raw))
+
+    # 正式领域模型是学期配置 schema 的唯一真源：
+    # 这里刻意不自己解析 JSON 取 first_week_monday，否则 CLI 会与
+    # AcademicCalendar 出现两套并行、迟早会漂移的解析逻辑。
+    academic = AcademicCalendar.from_file(config_path)
+    first_monday = academic.semester.first_week_monday
 
     if args.from_file:
         html = Path(args.from_file).read_text(encoding="utf-8")
@@ -585,7 +602,9 @@ def cmd_notice(args: argparse.Namespace, cfg: Settings) -> int:
     application = apply_notice(table, first_monday)
 
     print(f"通知来源: {source}")
-    print(f"学期: {semester}（第一教学周周一 {first_monday.isoformat()}）")
+    print(
+        f"学期: {semester}（{academic.semester.name}，第一教学周周一 {first_monday.isoformat()}）"
+    )
     print()
     print(f"停课日（{len(application.excluded_dates)} 天）:")
     for day in application.excluded_dates:
@@ -605,6 +624,19 @@ def cmd_notice(args: argparse.Namespace, cfg: Settings) -> int:
         print(f"说明：{note}")
     print()
 
+    if args.apply and application.unresolved:
+        # fail-closed：宁可什么都不写，也不写一份半完整的校历。
+        details = "\n".join(
+            f"  {row.date_text} | {row.week_text} | {row.arrangement}（{row.reason}）"
+            for row in application.unresolved
+        )
+        raise NoticeParseError(
+            f"发现 {len(application.unresolved)} 行通知无法可靠解析，因此拒绝修改学期配置。\n"
+            f"{details}\n"
+            "请先人工确认或更新解析规则。",
+            hint=f"学期配置未被改动（fail-closed）：{config_path}",
+        )
+
     if not args.apply:
         proposed = {
             "excluded_dates（建议新增）": [d.isoformat() for d in application.excluded_dates],
@@ -612,7 +644,14 @@ def cmd_notice(args: argparse.Namespace, cfg: Settings) -> int:
                 t.isoformat(): {"source_date": s.isoformat()} for t, s in application.makeups
             },
         }
-        print("以上为解析结果预览（未写入任何文件）。确认无误后加 --apply 合并进学期配置：")
+        if application.unresolved:
+            print(
+                "⚠️ 存在无法可靠解析的行（见上），当前结果**不完整，不可直接应用**；"
+                "请先人工确认或更新解析规则。"
+            )
+            print("（加 --apply 会因这些行而拒绝写入。）")
+        else:
+            print("以上为解析结果预览（未写入任何文件）。确认无误后加 --apply 合并进学期配置：")
         print(json_module.dumps(proposed, ensure_ascii=False, indent=2))
         return 0
 

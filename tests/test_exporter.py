@@ -193,6 +193,42 @@ def test_uid_stable_when_course_id_missing() -> None:
     assert make_uid("2026-fall", m, "2026-09-16") == make_uid("2026-fall", m, "2026-09-16")
 
 
+def test_uid_legacy_identity_includes_course_name_for_backward_compatibility(
+    sample_meeting: CourseMeeting,
+) -> None:
+    """**legacy UID compatibility contract**：课程名参与 UID 身份，刻意保留。
+
+    现状（契约）：``course_id`` 相同、学期/日期/节次相同，仅课程名被修订
+    （例如「大学英语（2）」->「大学英语Ⅱ」，教务系统更正常见）时，
+    ``payload`` 里的 ``course_name`` 不同 -> **UID 不同**。
+
+    这不是「理想设计」，而是**向后兼容的选择**：UID 算法自 v0.1.0 起已随
+    正式版发布，若现在删掉 ``course_name``，即便 ``course_id`` 稳定的课程
+    也会整体换 UID，已导入的用户重新导入时会把整个学期识别成新事件，
+    造成大规模重复。v0.2.0 优先保持向后兼容。
+
+    已知边界（可接受）：同一 ``course_id`` 的课程若被改名，该课程的事件会
+    被视为新事件，而不是原事件的新版本。
+
+    .. note::
+        TODO / design note：未来若引入 **UID v2**，必须设计**显式迁移**
+        （例如一次性 mapping 或新的 UID 命名空间），
+        不要在普通 minor release 中直接改变历史 UID。
+
+    本测试是契约守卫：一旦有人改动 UID 算法，它会立刻变红，
+    强迫改动者正视这次 migration，而不是当作无副作用的细节。
+    """
+    renamed_same_id = CourseMeeting(
+        course_id=sample_meeting.course_id,
+        course_name="示例课程甲（修订名）",
+        weekday=sample_meeting.weekday,
+        periods=sample_meeting.periods,
+        weeks=sample_meeting.weeks,
+    )
+    base = make_uid("2026-fall", sample_meeting, "2026-09-11")
+    assert base != make_uid("2026-fall", renamed_same_id, "2026-09-11")
+
+
 # --------------------------------------------------------------------------- #
 # 事件展开
 # --------------------------------------------------------------------------- #
@@ -338,6 +374,22 @@ def test_build_events_can_disable_override_notes(
     assert "备注" not in (target.description or "")
 
 
+def test_disabling_override_notes_keeps_location_override(
+    sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable
+) -> None:
+    """``with_override_notes`` 只控制 DESCRIPTION 备注，不能顺手关掉 location。
+
+    location 是业务事实（这一天在哪里上课），note 才是可选说明；
+    把两者绑在同一个开关上会让「不想在描述里看到备注」意外变成「去了错误的教室」。
+    """
+    day = date(2026, 10, 2)
+    calendar.overrides[day] = DateOverride(day=day, location="临时教室 A-101", note="调课")
+    events = build_events([sample_meeting], calendar, schedules, with_override_notes=False)
+    target = next(e for e in events if e.start.date() == day)
+    assert target.location == "临时教室 A-101"
+    assert "备注" not in (target.description or "")
+
+
 def test_build_events_fails_closed_on_out_of_range_week(
     calendar: AcademicCalendar, schedules: ScheduleTable
 ) -> None:
@@ -446,8 +498,7 @@ def _calendar_with_adjustments(
 def test_collect_unsupported_reports_only_in_range(
     calendar: AcademicCalendar, schedules: ScheduleTable, sample_meeting: CourseMeeting
 ) -> None:
-    """声明了的调课若落在事件日期跨度内则报告；范围外的不报告。"""
-    events = build_events([sample_meeting], calendar, schedules)
+    """声明了的调课若落在学期导出范围内则报告；范围外的不报告。"""
     cal_with = _calendar_with_adjustments(
         calendar,
         UnsupportedAdjustment(date(2026, 9, 20), "按 10-06 课表上课"),
@@ -455,24 +506,71 @@ def test_collect_unsupported_reports_only_in_range(
         UnsupportedAdjustment(date(2025, 3, 2), "上学期的事，不应命中"),
     )
 
-    got = collect_unsupported(cal_with, events)
+    got = collect_unsupported(cal_with)
     dates = {a.date for a in got}
     assert dates == {date(2026, 9, 20), date(2026, 10, 10)}
 
 
-def test_collect_unsupported_empty_when_not_declared(
+def test_collect_unsupported_uses_export_range_not_event_span(
     calendar: AcademicCalendar, schedules: ScheduleTable, sample_meeting: CourseMeeting
 ) -> None:
+    """范围必须来自「导出范围」，不是「生成出的事件跨度」。
+
+    学期第 1 周周一 = 09-07，而第一门课 09-11 才第一次上课。
+    09-08 的调课声明落在事件跨度**之外**、学期范围**之内** ——
+    旧实现取 ``min(events)..max(events)`` 会把它静默漏报，
+    而漏报一条已知但无法表达的调课，用户拿到的是一份悄悄缺课的日历。
+    """
     events = build_events([sample_meeting], calendar, schedules)
-    assert collect_unsupported(calendar, events) == []
+    assert min(e.start.date() for e in events) == date(2026, 9, 11)  # 09-08 在跨度之前
 
-
-def test_collect_unsupported_all_hit_when_no_events(calendar: AcademicCalendar) -> None:
-    """事件为空时全部命中 —— 空日历同样需要用户知情。"""
     cal_with = _calendar_with_adjustments(
-        calendar, UnsupportedAdjustment(date(2026, 9, 20), "按 10-06 课表上课")
+        calendar, UnsupportedAdjustment(date(2026, 9, 8), "学期内、首次上课之前的调课")
     )
-    assert len(collect_unsupported(cal_with, [])) == 1
+    assert [a.date for a in collect_unsupported(cal_with)] == [date(2026, 9, 8)]
+
+
+def test_collect_unsupported_restricted_by_explicit_bounds(
+    calendar: AcademicCalendar,
+) -> None:
+    """显式给出 --from-date / --to-date 时按用户边界判定。"""
+    cal_with = _calendar_with_adjustments(
+        calendar,
+        UnsupportedAdjustment(date(2026, 9, 20), "10 月之前"),
+        UnsupportedAdjustment(date(2026, 10, 10), "10 月之内"),
+    )
+    got = collect_unsupported(cal_with, lower=date(2026, 10, 1), upper=date(2026, 10, 31))
+    assert [a.date for a in got] == [date(2026, 10, 10)]
+
+
+def test_collect_unsupported_open_bound_is_filled_from_semester(
+    calendar: AcademicCalendar,
+) -> None:
+    """只给了一侧边界时，另一侧用学期边界补齐（而不是视为无穷）。"""
+    cal_with = _calendar_with_adjustments(
+        calendar,
+        UnsupportedAdjustment(date(2026, 10, 10), "学期内"),
+        UnsupportedAdjustment(date(2027, 3, 1), "学期结束之后"),
+    )
+    # 学期 16 周：2026-09-07 ~ 2026-12-27
+    got = collect_unsupported(cal_with, lower=date(2026, 10, 1))
+    assert [a.date for a in got] == [date(2026, 10, 10)]
+
+
+def test_collect_unsupported_reports_all_when_range_unknown() -> None:
+    """学期边界无从确定时 safe-side：全部报出，绝不漏报。"""
+    open_semester = Semester("t", "无边界学期", WEEK1_MONDAY, total_weeks=None)
+    cal = AcademicCalendar(open_semester)
+    cal_with = _calendar_with_adjustments(
+        cal,
+        UnsupportedAdjustment(date(2025, 3, 2), "很久以前"),
+        UnsupportedAdjustment(date(2030, 3, 2), "很久以后"),
+    )
+    assert len(collect_unsupported(cal_with)) == 2
+
+
+def test_collect_unsupported_empty_when_not_declared(calendar: AcademicCalendar) -> None:
+    assert collect_unsupported(calendar) == []
 
 
 def test_written_ics_keeps_rfc5545_crlf(
@@ -512,6 +610,57 @@ def test_render_ics_has_required_properties(
     assert PRODID in ics
 
 
+def test_render_ics_declares_vtimezone_for_every_referenced_tzid(
+    sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable
+) -> None:
+    """RFC 5545 §3.2.19 合规契约：
+
+        "An individual 'VTIMEZONE' calendar component MUST be specified for
+         each unique 'TZID' parameter value specified in the iCalendar object."
+
+    产物引用 ``TZID=Asia/Shanghai``，因此必须内嵌对应的 VTIMEZONE。
+    ``X-WR-TIMEZONE`` 只是给客户端的提示，**不能**替代 VTIMEZONE。
+
+    断言用结构化解析而不是 ``"BEGIN:VTIMEZONE" in ics`` ——
+    后者只能证明「有一坨文本」，证明不了「TZID 引用完整」。
+    """
+    events = build_events([sample_meeting], calendar, schedules)
+    ics = render_ics(events)
+    parsed = Calendar.from_ical(ics)
+
+    zones = list(parsed.walk("VTIMEZONE"))
+    assert len(zones) == 1
+    assert str(zones[0].get("TZID")) == TZ_NAME
+
+    # 这是本测试的核心断言：没有任何被引用却未定义的 TZID。
+    assert parsed.get_missing_tzids() == set()
+
+    # 且事件确实走的是命名时区，不是 UTC / floating
+    assert "DTSTART;TZID=Asia/Shanghai" in ics
+    assert "X-WR-TIMEZONE:Asia/Shanghai" in ics
+
+
+def test_vtimezone_does_not_change_event_local_times(
+    sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable
+) -> None:
+    """补 VTIMEZONE 不得把事件钟点「改坏」。
+
+    08:00 Asia/Shanghai 往返解析后仍是 08:00 Asia/Shanghai，
+    不能变成 UTC 00:00，也不能退化成 floating time。
+    """
+    events = build_events([sample_meeting], calendar, schedules)
+    parsed = Calendar.from_ical(render_ics(events))
+    vevents = sorted(parsed.walk("VEVENT"), key=lambda c: c.get("DTSTART").dt)
+    start = vevents[0].get("DTSTART").dt
+    end = vevents[0].get("DTEND").dt
+
+    assert start == datetime(2026, 9, 11, 8, 0, tzinfo=start.tzinfo)
+    assert end == datetime(2026, 9, 11, 9, 50, tzinfo=start.tzinfo)
+    assert start.tzinfo is not None  # 不是 floating time
+    assert start.utcoffset().total_seconds() == 8 * 3600
+    assert start.hour == 8 and start.minute == 0  # 不是被折成 UTC 的 00:00
+
+
 def test_render_ics_event_has_required_fields(
     sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable
 ) -> None:
@@ -533,11 +682,23 @@ def test_render_ics_event_has_required_fields(
 def test_render_ics_does_not_use_rrule(
     sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable
 ) -> None:
-    """核心设计约束：不使用 RRULE 表达整学期课程。"""
+    """核心设计约束：**课程 VEVENT 不使用 RRULE** 表达整学期课程。
+
+    守卫的语义边界（重要）：红线是「VEVENT 不得用 RRULE 表达课程重复」，
+    **不是**「整份 ICS 任意位置都不得出现 RRULE」—— VTIMEZONE 组件内部
+    合法地可能带 RRULE（用来描述时区规则），那与课程重复规则无关。
+    因此这里做结构化断言，而不是 ``assert "RRULE" not in ics``：
+    后者会在 VEVENT 仍然正确的前提下，把标准的时区定义一并误伤。
+    """
     events = build_events([sample_meeting], calendar, schedules)
     ics = render_ics(events)
-    assert "RRULE" not in ics
+    parsed = Calendar.from_ical(ics)
+
+    vevents = list(parsed.walk("VEVENT"))
+    assert len(vevents) == 8
     assert ics.count("BEGIN:VEVENT") == 8
+    for component in vevents:
+        assert component.get("RRULE") is None
 
 
 def test_render_ics_dtstart_round_trip(
@@ -593,6 +754,9 @@ def test_render_ics_empty_calendar() -> None:
     ics = render_ics([])
     assert "BEGIN:VCALENDAR" in ics
     assert "BEGIN:VEVENT" not in ics
+    # 空日历不引用任何 TZID，因此既不需要、也不应凭空造出 VTIMEZONE。
+    assert "BEGIN:VTIMEZONE" not in ics
+    assert Calendar.from_ical(ics).get_missing_tzids() == set()
 
 
 def test_render_ics_calendar_name(

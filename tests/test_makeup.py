@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import date
 
 import pytest
@@ -201,6 +202,35 @@ def test_1010_uses_winter_schedule() -> None:
     event = _events_on(events, "2026-10-10")[0]
     assert event.start.hour == 14 and event.start.minute == 0
     assert event.end.hour == 15 and event.end.minute == 50
+
+
+# --------------------------------------------------------------------------- #
+# 3.1 调课事件的 location 覆盖（业务事实，不受 with_override_notes 影响）
+# --------------------------------------------------------------------------- #
+def _payload_with_makeup_location(target: str, location: str) -> dict:
+    payload = copy.deepcopy(SEMESTER_PAYLOAD)
+    payload["overrides"][target]["location"] = location
+    return payload
+
+
+def test_makeup_event_honours_override_location() -> None:
+    """``overrides[target].location`` 是「这一天在哪里上课」的业务事实。
+
+    旧实现第二遍展开时硬写 ``location=meeting.full_location``，
+    把调课日的换教室设置整条忽略。
+    """
+    calendar, schedules = _build(_payload_with_makeup_location("2026-10-10", "临时教室 A-201"))
+    events = build_events(_make_meetings(), calendar, schedules)
+    assert _events_on(events, "2026-10-10")[0].location == "临时教室 A-201"
+
+
+def test_makeup_location_override_survives_notes_disabled() -> None:
+    """``with_override_notes=False`` 只关 DESCRIPTION 备注，不能关掉 location。"""
+    calendar, schedules = _build(_payload_with_makeup_location("2026-09-20", "临时教室 B-301"))
+    events = build_events(_make_meetings(), calendar, schedules, with_override_notes=False)
+    event = _events_on(events, "2026-09-20")[0]
+    assert event.location == "临时教室 B-301"
+    assert "备注" not in (event.description or "")
 
 
 # --------------------------------------------------------------------------- #

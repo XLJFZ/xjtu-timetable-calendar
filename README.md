@@ -132,7 +132,8 @@ UID 由课程标识 + 实际上课日期 + 节次派生（`sha256`），**不含
 
 > **已知边界**（为保持 v0.1.x 兼容，本版不改 UID 算法）：课程名也参与 UID，
 > 因此同一 `course_id` 的课程若被改名（如「大学英语（2）」→「大学英语Ⅱ」），
-> 其事件会被视为新事件而非原事件的新版本。后续 UID v2 / 订阅机制会单独处理迁移。
+> 其事件会被视为新事件而非原事件的新版本。将来若引入 UID v2，
+> 会配套一次性显式迁移方案，而不是直接改历史 UID。
 
 ### 四、SEQUENCE / LAST-MODIFIED：让「重新导入」真正生效
 
@@ -649,7 +650,7 @@ class CourseMeeting:
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 345 项测试（含 doctest）
+pytest                      # 367 项测试（含 doctest）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）
@@ -716,8 +717,12 @@ python scripts/probe_ehall.py
 
 **Q：可以自动处理节假日和调课吗？**
 
-机制已经就位（`excluded_dates` 与 `overrides`），但数据需要你从校历录入。
-自动获取属于路线图内容。
+可以 —— 见[第 3 节：停课/调课通知自动获取](#3-停课调课通知自动获取notice-子命令可选)。
+`notice` 子命令解析教务处发布的结构化通知页，把「停课日」与「按某日课表上课」
+的调课整理进学期配置（周次与学期起始日交叉校验）；解析不了的行逐条列出且不落盘，
+只要存在无法可靠解析的行，`--apply` 就整体拒绝写入（fail-closed）。
+当然也可以随时手工录 `excluded_dates` 与 `overrides`。
+**作息表**的自动获取仍属路线图内容。
 
 **Q：为什么不用一个 RRULE 简化 ICS？**
 
@@ -752,7 +757,7 @@ python -m xjtu_calendar login --force
 - [x] 冬/夏季作息解耦，节次 → 实际钟点
 - [x] 停课 / 调课覆盖机制（`source_date` 调课日：按来源教学日课表生成事件）
 - [x] 逐次上课生成独立事件，UID 稳定
-- [x] RFC 5545 `.ics` 导出（`Asia/Shanghai`）
+- [x] RFC 5545 `.ics` 导出（`Asia/Shanghai`，内嵌同 `TZID` 的 `VTIMEZONE`）
 - [x] CLI、错误体系、日志脱敏、测试
 - [x] 用真实网络请求确认 eHall 课表接口，固化到随包分发的接口定义
 - [x] 包自包含（接口定义随 wheel 分发）+ 版本号单一来源 + CI 门禁

@@ -6,7 +6,11 @@
 
 ---
 
-## [Unreleased]
+## [0.2.0] - 2026-09-29
+
+校历自动化与导出合规性收口：`notice` 子命令打通停课 / 调课通知，ICS 补齐
+RFC 5545 要求的时区定义，并修复一批「静默丢数据」与「范围判定错误」的缺陷。
+**UID 算法保持不变**（见 Changed），因此对已导入用户是安全的原地升级。
 
 ### Added
 
@@ -37,6 +41,14 @@
   `Calendar.add_missing_timezones()` 补齐，按**本次事件范围**生成（两侧各留
   一天余量），不手写时区定义。空日历不引用 TZID，因此不生成 `VTIMEZONE`。
   **事件自身的 UID / `DTSTART` / `DTEND` / `SEQUENCE` 均不受影响。**
+- 新增 CLI 级端到端测试 `tests/test_cli_notice.py`：正式 schema + 真实通知
+  fixture + 临时 `XJTU_CALENDAR_HOME`，覆盖预览、`--apply`、
+  unresolved 拒写三条路径（旧的单元测试抓不到「CLI 自己重新实现配置解析」）。
+- 新增 `Semester.export_date_range()`：显式给出学期导出边界，
+  供 `unsupported_adjustments` 范围判定使用。
+- 新增时区合规测试：`VTIMEZONE` 恰好一个且 `TZID=Asia/Shanghai`、
+  解析后 `get_missing_tzids() == set()`、`DTSTART`/`DTEND` 本地钟点往返不变、
+  空日历不生成 `VTIMEZONE`；RRULE 守卫改为按 VEVENT 结构化断言。
 
 ### Changed
 
@@ -46,10 +58,11 @@
 - **RRULE 守卫语义收窄为「课程 VEVENT 不使用 RRULE」**：此前的全局文本断言
   `"RRULE" not in ics` 会在 VEVENT 仍然正确的前提下，把标准时区组件内部的
   规则一并误伤。红线本身未变，只是把断言落到正确的组件层级。
-- **UID 算法保持不变（显式记录已知边界）**：不引入 UID v2、不做自动迁移。
-  课程名仍参与 UID，因此同一 `course_id` 的课程被改名时，其事件会被视为
-  新事件而非原事件的新版本。这是为兼容已发布的 v0.1.x 而**刻意保留**的选择；
-  后续 UID v2 / 订阅机制再单独设计显式迁移。
+- **UID 算法保持不变（显式记录已知边界）**：**本版不引入 UID v2、不做自动迁移、
+  不引入兼容开关**。课程名仍参与 UID 身份，因此同一 `course_id` 的课程被改名时，
+  其事件会被视为新事件而非原事件的新版本。这是为兼容已发布的 v0.1.x 而
+  **刻意保留**的选择；将来若要做 UID v2，必须配一次性显式迁移方案，
+  不在普通 minor release 里直接改历史 UID。
 - **license 迁移到 PEP 639**：`license = "MIT"`（SPDX 表达式）+ `license-files`，
   移除 License 分类器（PEP 639 禁止两者并存）；`build-system` 提升到
   `setuptools>=77`。wheel `METADATA` 现在携带 `License-Expression: MIT`，
@@ -80,16 +93,15 @@
   并以「同目录临时文件 + `os.replace`」原子替换（异常路径清理临时文件），
   绝不会把 `export` 读不懂的配置写回用户目录。
 
-### Added
+### 验证
 
-- 新增 CLI 级端到端测试 `tests/test_cli_notice.py`：正式 schema + 真实通知
-  fixture + 临时 `XJTU_CALENDAR_HOME`，覆盖预览、`--apply`、
-  unresolved 拒写三条路径（旧的单元测试抓不到「CLI 自己重新实现配置解析」）。
-- 新增 `Semester.export_date_range()`：显式给出学期导出边界，
-  供 `unsupported_adjustments` 范围判定使用。
-- 新增时区合规测试：`VTIMEZONE` 恰好一个且 `TZID=Asia/Shanghai`、
-  解析后 `get_missing_tzids() == set()`、`DTSTART`/`DTEND` 本地钟点往返不变、
-  空日历不生成 `VTIMEZONE`；RRULE 守卫改为按 VEVENT 结构化断言。
+- 三道 gate：pytest 367（全通过）/ `ruff format --check` 与 `ruff check` 无告警 /
+  `mypy --strict` 无错误。
+- 最低依赖实证：在 `icalendar==6.1.0`（本版下限）下，全量测试与本版 wheel 的
+  导出探针均通过。
+- 真实账号端到端导出：96 个 `VEVENT`；UID 集合、`DTSTART`/`DTEND`、`SEQUENCE`
+  与补齐时区**之前**的产物逐项一致，唯一差异是新增 `VTIMEZONE`
+  （`TZID=Asia/Shanghai`）——验证「补齐时区不影响事件本身」。
 
 ---
 

@@ -945,7 +945,8 @@ def _subscribe_push(
             f"本地留底缺失：无法安全重发布（{last_local} 不存在，但已有过成功推送）",
             hint="没有留底作基线，重建会把全部事件重置为 SEQUENCE:0，客户端历史被清空。"
             "请从远端订阅 URL 下载当前 .ics 原样放回上述路径后重试；"
-            "确认可接受全新订阅的话，运行 subscribe rotate 换新 URL 重新起步。",
+            f"确认可接受全新订阅的话，删除 {subscribe.state_path(cfg, semester)} "
+            "后重新 subscribe init。",
         )
     result_ics = build_ics_for_semester(
         cfg,

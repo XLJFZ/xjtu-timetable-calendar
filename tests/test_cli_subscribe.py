@@ -411,7 +411,7 @@ def test_push_refuses_when_last_push_exists_but_archive_missing(
 
     assert main(["subscribe", "push", "--semester", SEMESTER]) != 0
     err = capsys.readouterr().err
-    assert "本地留底缺失" in err and "rotate" in err and "Traceback" not in err
+    assert "本地留底缺失" in err and "subscribe init" in err and "Traceback" not in err
 
     assert _git("rev-parse", "cal", cwd=origin) == tip_before  # 远端仍是上一版
     state = subscribe.load_state(cfg, SEMESTER)

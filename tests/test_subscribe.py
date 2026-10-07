@@ -1,7 +1,8 @@
-"""状态层单元：token 形态、URL 推导、状态往返、private 落盘。"""
+"""状态层单元：token 形态、URL 推导、状态往返、private 落盘、rotate/新鲜度/自检。"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -70,3 +71,63 @@ def test_state_file_is_owner_only_on_posix(tmp_path: Path) -> None:
 def test_load_state_missing_returns_none(tmp_path: Path) -> None:
     cfg = make_home(tmp_path)
     assert subscribe.load_state(cfg, SEMESTER) is None
+
+
+def test_rotate_changes_token_and_keeps_history_fields(tmp_path: Path) -> None:
+    cfg = make_home(tmp_path)
+    st = SubscriptionState(
+        SEMESTER,
+        "https://github.com/a/b.git",
+        "cal",
+        subscribe.new_token(),
+        "https://a.github.io/b/",
+        PushRecord("2026-10-07T00:00:00Z", "ff" * 32, "old"),
+    )
+    subscribe.save_state(cfg, st)
+    old = st.token  # rotate 原地改 state，取旧值需先拷贝
+    rotated = subscribe.rotate_token(cfg, st)
+    assert rotated.token != old
+    assert rotated.last_push is not None
+    assert rotated.last_push.token == "old"  # rotate 不抹历史
+    reloaded = subscribe.load_state(cfg, SEMESTER)
+    assert reloaded is not None and reloaded.token == rotated.token
+    assert reloaded.last_push == st.last_push
+    assert reloaded.subscription_url.endswith(f"/{rotated.token}.ics")
+
+
+def test_snapshot_age_days(tmp_path: Path) -> None:
+    cfg = make_home(tmp_path)
+    age = subscribe.snapshot_age_days(cfg, SEMESTER)
+    assert age is not None and age < 1  # 夹具刚写的文件
+    assert subscribe.snapshot_age_days(cfg, "no-such") is None
+
+
+def test_has_unpublished_changes(tmp_path: Path) -> None:
+    cfg = make_home(tmp_path)
+    st = SubscriptionState(
+        SEMESTER,
+        "https://github.com/a/b.git",
+        "cal",
+        subscribe.new_token(),
+        "https://a.github.io/b/",
+    )
+    assert subscribe.has_unpublished_changes(cfg, st, "BEGIN:VCALENDAR\n") is True
+    ics = "BEGIN:VCALENDAR\nEND:VCALENDAR\n"
+    st.last_push = PushRecord(
+        "2026-10-07T00:00:00Z",
+        hashlib.sha256(ics.encode("utf-8")).hexdigest(),
+        st.token,
+    )
+    assert subscribe.has_unpublished_changes(cfg, st, ics) is False
+    assert subscribe.has_unpublished_changes(cfg, st, ics + "X\n") is True
+
+
+def test_verify_url_rejects_non_http() -> None:
+    ok, msg = subscribe.verify_url("file:///D:/tmp/x.ics")
+    assert not ok and "http" in msg
+
+
+def test_verify_url_reports_fetch_failure_without_network() -> None:
+    # 空 host：scheme 是 https，但连接前即失败（URLError），测试因此不碰真实网络。
+    ok, msg = subscribe.verify_url("https://")
+    assert not ok and "请求失败" in msg

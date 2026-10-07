@@ -3,6 +3,8 @@
 状态层负责 token 生成、Pages URL 推导、状态文件的私有原子落盘与往返；
 发布层（:func:`publish`）把渲染好的 .ics 文本以**无父孤儿单提交**强推到
 状态文件记录的分支，护栏拒绝覆盖非本工具产物（spec §5.1）。
+此外是四个供 CLI 组合的小工具：轮换 token、量快照新鲜度、判断有无未发布
+变更，以及对订阅 URL 做匿名 GET 自检。
 """
 
 from __future__ import annotations
@@ -12,10 +14,13 @@ import json
 import re
 import secrets
 import subprocess
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
+from urllib.parse import urlparse
 
 from .config import Settings
 from .errors import (
@@ -32,12 +37,16 @@ __all__ = [
     "PushRecord",
     "SubscriptionState",
     "derive_url_base",
+    "has_unpublished_changes",
     "load_state",
     "new_token",
     "publish",
+    "rotate_token",
     "save_state",
+    "snapshot_age_days",
     "state_path",
     "subscribe_dir",
+    "verify_url",
     "work_dir",
 ]
 
@@ -278,3 +287,55 @@ def publish(cfg: Settings, state: SubscriptionState, ics_text: str) -> PublishRe
     )
     save_state(cfg, state)
     return PublishResult(PublishOutcome.PUSHED, state.subscription_url, digest)
+
+
+# --------------------------------------------------------------------------- #
+# 轮换 / 新鲜度 / 自检
+# --------------------------------------------------------------------------- #
+
+
+def rotate_token(cfg: Settings, state: SubscriptionState) -> SubscriptionState:
+    """换新 token 并落盘；last_push 保留（下次 publish 因 token 不同必推）。"""
+    state.token = new_token()
+    save_state(cfg, state)
+    return state
+
+
+def snapshot_age_days(cfg: Settings, semester: str) -> float | None:
+    """raw 课表快照距今的天数；快照不存在返回 ``None``。"""
+    path = cfg.raw_timetable_path(semester)
+    if not path.is_file():
+        return None
+    import time
+
+    return (time.time() - path.stat().st_mtime) / 86400.0
+
+
+def has_unpublished_changes(cfg: Settings, state: SubscriptionState, ics_text: str) -> bool:
+    """渲染结果与上次成功推送的内容是否不同（从未推送视为不同）。
+
+    ``cfg`` 目前未使用，留着是为了与同族只读辅助一致的调用签名（CLI 无需区分）。
+    """
+    if state.last_push is None:
+        return True
+    return hashlib.sha256(ics_text.encode("utf-8")).hexdigest() != state.last_push.content_sha256
+
+
+def verify_url(url: str, timeout: float = 10.0) -> tuple[bool, str]:
+    """匿名 GET 自检（status --verify 用）。只接受 http/https，同 notice --url 白名单口径。"""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False, f"不支持的协议：{parsed.scheme}（仅 http/https）"
+    req = urllib.request.Request(
+        url, method="GET", headers={"User-Agent": "xjtu-calendar-subscribe-check"}
+    )
+    try:
+        # scheme 已在上面白名单里收敛到 http/https，不存在 file:// 之类的本地读取。
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            head = resp.read(64).decode("utf-8", "replace")
+            ok = resp.status == 200 and head.lstrip().startswith("BEGIN:VCALENDAR")
+            return ok, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as exc:
+        return False, f"HTTP {exc.code}"
+    except (urllib.error.URLError, TimeoutError) as exc:
+        return False, f"请求失败：{exc}"

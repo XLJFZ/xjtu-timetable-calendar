@@ -168,6 +168,14 @@ eHall
 
 需要 **Python 3.11+**。
 
+**方式一（推荐）：从 PyPI 安装**（v0.3.0 起已发布）：
+
+```bash
+pip install xjtu-timetable-calendar
+```
+
+**方式二：源码安装**（需要跟踪最新开发进度时）：
+
 ```bash
 git clone https://github.com/XLJFZ/xjtu-timetable-calendar.git
 cd xjtu-timetable-calendar
@@ -201,8 +209,7 @@ pip install httpx
 > **提示**：本项目会自动探测本机已安装的 Edge / Chrome，不需要额外下载浏览器内核。
 > 如需指定浏览器，设置环境变量 `XJTU_CALENDAR_BROWSER`。
 
-> **PyPI**：发布通道已就绪（`Publish to PyPI` 工作流，见「开发 → 发布」）。
-> 包正式发布后，直接 `pip install xjtu-timetable-calendar` 即可，无需 clone。
+> **PyPI**：包已正式发布（`pip install xjtu-timetable-calendar`），发布流程见「开发 → 发布」。
 
 ---
 
@@ -738,13 +745,13 @@ Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**�
   并上传到该 Release。CI 的质量门禁仍由 `ci.yml` 独立负责，两者互不干扰。
 - **PyPI 走手动可信发布**：`.github/workflows/publish-pypi.yml` 需在
   Actions 页手动触发（workflow_dispatch），使用 OIDC trusted publishing，
-  **仓库不保存任何 token**。一次性前置（PyPI 支持给还不存在的新包先登记
-  「待定发布者」，首次 OIDC 上传会自动建项目）：登录 pypi.org →
-  头像菜单 **Account → Publishing → Add a publisher**，依次填
-  Project name `xjtu-timetable-calendar`、Publisher type **GitHub Actions**、
-  owner `XLJFZ`、repository `xjtu-timetable-calendar`、
-  workflow name `publish-pypi.yml`、**Environment 留空**。
-  之后每次发布只需在 Actions 里点 Run workflow。PyPI 拒绝重复版本号，误发有保险。
+  **仓库不保存任何 token**。一次性前置**已完成**（2026-10-07）：已在
+  pypi.org 账号级 Publishing 页登记待定发布者（Project name
+  `xjtu-timetable-calendar`、Publisher type **GitHub Actions**、owner
+  `XLJFZ`、repository `xjtu-timetable-calendar`、workflow name
+  `publish-pypi.yml`、**Environment 留空**），v0.3.0 首传已自动建项目并绑定。
+  之后每次发布只需：合入升版提交 → 打 tag → 发 GitHub Release →
+  在 Actions 里点 Run workflow。PyPI 拒绝重复版本号，误发有保险。
 - 版本号仍是 `pyproject.toml` 单一来源；升版后记得按上文重装 editable。
 
 若你在自己的分支上看到大量 `RUF001/002/003`，那是规则的已知误报 ——

@@ -20,7 +20,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from .academic_calendar import AcademicCalendar
@@ -526,6 +526,22 @@ class ExportResult:
     sequence_stats: dict[str, int] | None
 
 
+def _stamp_from_snapshot(path: Path) -> datetime:
+    """数据源文件的 mtime（aware UTC）作为默认 DTSTAMP；不可读时回退挂钟。
+
+    subscribe publish 的幂等跳过（spec §7「内容无变化→跳过」）依赖**内容哈希
+    跨进程稳定**：若 DTSTAMP 取 ``now_local()``，同一快照每次重建字节都不同，
+    跳过分支在生产中永远命中不了。收敛到快照 mtime 后，「同一快照 + 同一配置
+    → 字节一致」成立。:func:`render_ics` 里所有非确定字段（DTSTAMP、以及
+    :func:`~xjtu_calendar.sequence.resolve_sequence` 给新事件的 LAST-MODIFIED）
+    都由这一个 stamp 派生，别处无需再钉时钟。
+    """
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+    except OSError:  # 快照在 stat 前消失等极端情形：回退挂钟，渲染仍 fail-open
+        return now_local()
+
+
 def build_ics_for_semester(
     cfg: Settings,
     semester: str,
@@ -546,6 +562,10 @@ def build_ics_for_semester(
 
     ``baseline_probe``：SEQUENCE 自动探测的「旧版本」路径（CLI export 传 -o
     输出路径；subscribe 传上次发布留底）。显式 ``sequence_from`` 优先。
+
+    ``dtstamp`` 为 ``None`` 时默认取**数据源快照的 mtime**（见
+    :func:`_stamp_from_snapshot`），保证同快照重建字节一致——subscribe
+    的「内容无变化→跳过」判定全靠这一点。
     """
     from .fetcher import load_raw
 
@@ -555,8 +575,11 @@ def build_ics_for_semester(
         if not source.is_file():
             raise XjtuCalendarError(f"课表文件不存在：{source}")
         payload = json.loads(source.read_text(encoding="utf-8"))
+        stamp_source: Path | None = source
     else:
         payload = load_raw(cfg, semester)
+        # load_raw 的落盘位置就是默认 DTSTAMP 的来源；若 fetcher 口径变动需同步。
+        stamp_source = cfg.raw_timetable_path(semester)
 
     # --- 教学日历 ---
     calendar_path = Path(calendar_config) if calendar_config else cfg.semester_config_path(semester)
@@ -671,7 +694,8 @@ def build_ics_for_semester(
             if baseline:
                 logger.info("SEQUENCE 基线：%s（%d 个事件）", baseline_path, len(baseline))
 
-    ics = render_ics(events, calendar_name=calendar_name, dtstamp=dtstamp, baseline=baseline)
+    stamp = dtstamp or _stamp_from_snapshot(stamp_source or cfg.raw_timetable_path(semester))
+    ics = render_ics(events, calendar_name=calendar_name, dtstamp=stamp, baseline=baseline)
 
     # --- 汇总 ---
     info = summarize(meetings, events)

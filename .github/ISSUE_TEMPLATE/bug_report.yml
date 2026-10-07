@@ -1,0 +1,47 @@
+name: "问题反馈 / Bug Report"
+description: "导出结果不对、命令报错、学校页面解析失败……"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。**请先加 `--debug` 重跑一次失败的命令**，并留意输出里的退出码。
+        贴日志前请自查：本项目日志已脱敏，但**你复制的终端选区**可能包含课表内容——请自行删去课程名/教师/学号等个人信息。
+  - type: dropdown
+    id: command
+    attributes:
+      label: 出问题的命令
+      options: [login, fetch, export, notice, schedule, diff, inspect, status, 其他]
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为 vs 实际行为
+      placeholder: |
+        期望：10 月 1 日之后导出为冬季作息 14:00
+        实际：仍是夏季作息 14:30
+    validations:
+      required: true
+  - type: textarea
+    id: debug
+    attributes:
+      label: --debug 输出（已去除个人信息）
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: 版本（xjtu-calendar --version）
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: 运行环境
+      placeholder: "Windows 11 / Python 3.12；或 macOS / Python 3.11"
+  - type: textarea
+    id: calendar-config
+    attributes:
+      label: 相关配置片段（学期校历 / 作息表，敏感值可打码）
+      render: json

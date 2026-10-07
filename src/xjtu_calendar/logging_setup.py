@@ -69,6 +69,10 @@ _SENSITIVE_KEYS = frozenset(
         "zymc",  # 专业名称
         "username",  # eHall 门户 userName（姓名）
         "usersex",  # 性别
+        # ---- 教师姓名（README 承诺日志不输出姓名，键必须覆盖到） ----
+        "skjs",  # 任课教师（真实 xskcb 响应首选键）
+        "teacher",  # 英文兼容键
+        "teachername",  # 英文兼容键
     }
 )
 

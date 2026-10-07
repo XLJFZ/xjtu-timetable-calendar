@@ -26,6 +26,7 @@ from typing import Any
 from .config import Settings, find_browser
 from .config import settings as default_settings
 from .errors import AuthenticationExpired, AuthenticationRequired, TimetableFetchError
+from .fileutil import atomic_write_text
 from .logging_setup import get_logger
 
 __all__ = ["SessionInfo", "ensure_login", "has_session", "load_cookies"]
@@ -205,7 +206,13 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
         "_saved_at": _iso_now(),
         "_note": "本文件等价于登录凭据，请勿提交或分享。",
     }
-    cfg.state_path().write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 凭据等价文件：原子替换 + 属主-only 权限（POSIX 0600）。
+    # 用户往往只有这一份会话，直接覆盖时进程中途崩溃会留下截断的 JSON。
+    atomic_write_text(
+        cfg.state_path(),
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+        private=True,
+    )
 
     logger.info("登录会话已保存（%d 个 cookie）", len(cookies))
     return inspect_session(cfg)

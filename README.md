@@ -453,7 +453,8 @@ python -m xjtu_calendar notice --url <通知页地址> --semester 2026-2027-1 --
 - `--apply` 合并是**只新增**操作：配置中已有的值一律保留，解析结果与现有
   条目冲突时会给出警告。
 
-> 📌 通知页是普通公开网页，`notice` 只发匿名 GET 请求，**不携带任何登录凭据**。
+> 📌 通知页是普通公开网页，`notice` 只发匿名 GET 请求，**不携带任何登录凭据**，
+> 且 `--url` 只接受 `http/https` 地址（本地保存的 HTML 请走 `--from-file`）。
 
 ---
 
@@ -513,6 +514,7 @@ xjtu-timetable-calendar/
 │   ├── cli.py                          # 命令行入口
 │   ├── config.py                       # 集中配置（URL / appId / 目录）
 │   ├── errors.py                       # 异常体系 + 退出码
+│   ├── fileutil.py                     # 原子替换写入（校历配置 / 会话文件共用）
 │   ├── logging_setup.py                # 日志与脱敏工具
 │   ├── models.py                       # Semester / Course / CourseMeeting / CalendarEvent
 │   ├── weeks.py                        # 教学周文本解析（含 SKZC 位掩码）
@@ -650,7 +652,7 @@ class CourseMeeting:
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 367 项测试（含 doctest）
+pytest                      # 379 项测试（含 doctest）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）

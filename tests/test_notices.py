@@ -18,6 +18,7 @@ import pytest
 from xjtu_calendar.errors import XjtuCalendarError
 from xjtu_calendar.notices import (
     apply_notice,
+    fetch_notice_html,
     merge_into_config,
     parse_teaching_notice,
 )
@@ -314,3 +315,16 @@ def test_merge_refuses_to_write_when_result_would_be_invalid(tmp_path: Path) -> 
         merge_into_config(path, _application(), source_url="https://example")  # type: ignore[arg-type]
 
     assert path.read_bytes() == before
+
+
+def test_fetch_notice_html_rejects_non_http_urls(tmp_path: Path) -> None:
+    """notice --url 只允许 http/https。
+
+    ``urlopen`` 本身支持 ``file://`` 等 scheme；不加白名单的话，
+    「匿名 GET 公开页、不携带任何凭据」的承诺就没有代码层面的保证。
+    """
+    local = tmp_path / "notice.html"
+    local.write_text("<html><table></table></html>", encoding="utf-8")
+
+    with pytest.raises(XjtuCalendarError):
+        fetch_notice_html(local.as_uri())

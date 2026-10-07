@@ -34,18 +34,18 @@ HTML 解析用标准库 :mod:`html.parser`（零新增依赖）；
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from .academic_calendar import AcademicCalendar
 from .errors import ParseError, XjtuCalendarError
+from .fileutil import atomic_write_text
 from .logging_setup import get_logger
 
 __all__ = [
@@ -284,7 +284,16 @@ def fetch_notice_html(url: str, *, timeout: float = 30.0) -> str:
     """下载通知页 HTML（公开页面，无需任何凭据）。
 
     只做一次 GET，带常规浏览器 UA；不跟随登录、不提交任何数据。
+    **只允许 http/https**：``urlopen`` 本身支持 ``file://`` 等 scheme，
+    不加白名单的话「匿名 GET 公开页」就只是说法而不是保证。
+    本地文件请走 ``--from-file`` 的显式入口。
     """
+    scheme = urlparse(url).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise NoticeParseError(
+            f"--url 只接受 http/https 地址，实际的 scheme 是 {scheme!r}",
+            hint="通知页是公开网页；若要解析本地保存的 HTML，请改用 --from-file。",
+        )
     request = Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
     with urlopen(request, timeout=timeout) as response:
         charset = response.headers.get_content_charset() or "utf-8"
@@ -537,8 +546,8 @@ def merge_into_config(
     # 2) 写后校验：合并结果必须仍能被 export 读取。
     AcademicCalendar.from_dict(raw)
 
-    # 3) 原子替换写入。
-    _atomic_write_text(config_path, json.dumps(raw, ensure_ascii=False, indent=2) + "\n")
+    # 3) 原子替换写入（实现见 xjtu_calendar.fileutil，与会话文件共用）。
+    atomic_write_text(config_path, json.dumps(raw, ensure_ascii=False, indent=2) + "\n")
     logger.info(
         "学期配置已更新（来源：%s）：新增停课 %d 天、调课 %d 条",
         source_url,
@@ -550,23 +559,3 @@ def merge_into_config(
         "added_makeups": added_makeups,
         "warnings": warnings,
     }
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    """原子替换写入文本（UTF-8，LF 行尾）。
-
-    同目录临时文件 + ``os.replace`` 保证「要么旧内容、要么新内容」：
-    同一文件系统内 ``os.replace`` 是原子操作，不存在写了一半的中间态。
-    异常路径会尽力清理临时文件，不留下 ``*.tmp`` 垃圾。
-    """
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    tmp_path = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp_path, path)
-    except BaseException:
-        tmp_path.unlink(missing_ok=True)
-        raise

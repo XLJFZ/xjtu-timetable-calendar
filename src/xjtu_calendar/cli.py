@@ -176,7 +176,7 @@ def cmd_status(args: argparse.Namespace, cfg: Settings) -> int:
         f"  接口定义    : {'已载入 ' + str(len(endpoints)) + ' 个' if endpoints else '缺失（需先完成 Phase 1 接口分析）'}"
     )
     if not endpoints:
-        print(f"              期望位置：config/{ENDPOINTS_FILE}")
+        print(f"              覆盖位置：{cfg.home / ENDPOINTS_FILE}（缺省用包内默认）")
 
     semesters = sorted(cfg.semesters_dir.glob("*.json")) if cfg.semesters_dir.is_dir() else []
     print(f"  学期校历    : {len(semesters)} 份")
@@ -191,7 +191,6 @@ def cmd_status(args: argparse.Namespace, cfg: Settings) -> int:
 def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
     from .auth import has_session
     from .fetcher import (
-        ENDPOINTS_FILE,
         fetch_current_semester,
         fetch_via_browser,
         fetch_via_http,
@@ -231,12 +230,11 @@ def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
     use_http = args.source in ("auto", "http") and has_timetable
 
     if args.source == "http" and not has_timetable:
-        raise EndpointNotConfigured(
-            "尚未确认课表接口路径，无法使用 HTTP 方式",
-            hint="接口路径必须来自真实观测，本项目不会猜测端点。"
-            "请运行 scripts/probe_ehall.py 完成探测后填写 "
-            f"config/{ENDPOINTS_FILE}，或改用 --source browser。",
-        )
+        # 不写自定义 hint：errors.EndpointNotConfigured 的默认指引
+        # 列出的就是 load_endpoints 真正会读取的位置（显式路径 >
+        # 用户覆盖 > 包内默认）。曾经这里让用户写 config/ 下的文件，
+        # 而该目录从来不在查找链里（见 tests/test_cli_endpoints.py）。
+        raise EndpointNotConfigured("尚未确认课表接口路径，无法使用 HTTP 方式")
 
     if use_http:
         endpoint = require_endpoint(endpoints, "timetable")

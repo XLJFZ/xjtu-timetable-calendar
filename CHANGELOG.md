@@ -6,6 +6,31 @@
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **`status` / `fetch` 的端点指引指向了不存在的查找位置**：`load_endpoints` 的查找链是
+  「显式路径 > 用户覆盖（`~/.xjtu-timetable-calendar/ehall_endpoints.json`）> 包内默认」，
+  仓库的 `config/` 目录从不被读取；旧文案却引导用户去写 `config/ehall_endpoints.json`，
+  照做会写出一个程序永远不会读的文件。现改用 `EndpointNotConfigured` 的默认指引，
+  并新增文案守门测试（`tests/test_cli_endpoints.py`）。
+- **日志脱敏未覆盖教师姓名键**：真实响应中教师姓名挂在 `SKJS` / `teacher` / `teacherName`
+  下，`redact()` 此前不按键打码，`--debug` 日志会原样输出教师姓名。补入 `_SENSITIVE_KEYS`，
+  使 README「日志绝不输出姓名」的承诺与代码一致。
+- **`storage_state.json`（自注「等价于登录凭据」）落盘非原子、无属主权限**：把 `notices`
+  的原子替换实现提取为 `xjtu_calendar.fileutil.atomic_write_text`，`ensure_login` 经其
+  `private=True` 路径写入（POSIX 0600，Windows 尽力而为）；`notices` 改用同一实现，行为不变。
+- **`notice --url` 缺少 scheme 白名单**：`urlopen` 事实上接受 `file://` 等协议，
+  「匿名 GET 公开页」的承诺没有代码保证。现在只接受 http/https，其余拒绝并引导用 `--from-file`。
+
+### Added
+
+- 新增 12 项测试（CLI 端点指引 2、日志脱敏 2、原子写入 6、会话落盘回归 1、URL 白名单 1）；
+  `pytest` 口径 367 → **379**（含 doctest）。
+
+---
+
 ## [0.2.0] - 2026-09-29
 
 校历自动化与导出合规性收口：`notice` 子命令打通停课 / 调课通知，ICS 补齐

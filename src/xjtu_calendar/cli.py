@@ -24,8 +24,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
+import urllib.error
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import __version__
 from .academic_calendar import AcademicCalendar
@@ -34,10 +37,15 @@ from .errors import (
     AuthenticationRequired,
     EndpointNotConfigured,
     SemesterNotConfigured,
+    SubscribeNotConfigured,
     XjtuCalendarError,
 )
 from .exporter import DEFAULT_CALENDAR_NAME, build_ics_for_semester
 from .logging_setup import get_logger, setup_logging
+
+if TYPE_CHECKING:
+    # cmd_subscribe 各分支内部惰性 `from . import subscribe`；这里只为类型标注。
+    from . import subscribe
 
 __all__ = ["build_parser", "main"]
 
@@ -57,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python -m xjtu_calendar login\n"
             "  python -m xjtu_calendar fetch --semester 2026-fall\n"
             "  python -m xjtu_calendar export --semester 2026-fall --output timetable.ics\n"
+            "  python -m xjtu_calendar subscribe push --semester 2026-fall\n"
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -153,6 +162,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="旧 raw JSON（默认：fetch 轮转出的上一份快照 timetable-<学期>.prev.json）",
     )
     diff.add_argument("--new", help="新 raw JSON（默认：当前缓存 timetable-<学期>.json）")
+
+    # --- subscribe ---
+    sub_p = sub.add_parser(
+        "subscribe", help="把 .ics 发布到自己的 GitHub Pages 分支，日历客户端按 URL 订阅"
+    )
+    sact = sub_p.add_subparsers(dest="action", metavar="<动作>")
+    sact.required = True
+    init_p = sact.add_parser("init", help="登记发布目标并生成订阅 token")
+    init_p.add_argument("--repo", required=True, help="git 远端 URL（GitHub Pages 仓库）")
+    init_p.add_argument("--branch", default="cal", help="专用发布分支（默认 cal）")
+    init_p.add_argument("--url-base", help="订阅 URL 前缀（GitHub 远端可自动推导）")
+    init_p.add_argument("--semester", help="学期标识，例如 2026-fall")
+    push_p = sact.add_parser("push", help="构建 .ics 并强推到发布分支")
+    push_p.add_argument("--semester")
+    push_p.add_argument("--input", help="直接指定课表 JSON（默认用 fetch 缓存）")
+    rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
+    rot_p.add_argument("--semester")
+    st_p = sact.add_parser("status", help="查看订阅状态、URL 与新鲜度")
+    st_p.add_argument("--semester")
+    st_p.add_argument("--verify", action="store_true", help="匿名 GET 自检 URL 可达性")
 
     # --- inspect ---
     inspect = sub.add_parser("inspect", help="对原始课表 JSON 做脱敏结构分析")
@@ -782,6 +811,185 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# subscribe（URL 订阅发布）
+# --------------------------------------------------------------------------- #
+def _validate_publish_branch(branch: str) -> None:
+    """任何 publish 之前必须先验分支名（git check-ref-format，退出码判定）。
+
+    空/垃圾分支若放过去，会带进 ls-remote / fetch refspec / 强推的参数拼接，
+    不同 git 版本行为不一——必须在这里以业务错误拦下，绝不触碰远端。
+    """
+    proc = subprocess.run(
+        ["git", "check-ref-format", f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise XjtuCalendarError(
+            f"发布分支名不合法：{branch!r}",
+            hint="分支名须符合 git 规则（非空，不含空格与 ~^:?*[\\ 等）。"
+            "重新 subscribe init --branch cal-<名字>，或修正状态文件后重试。",
+        )
+
+
+def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
+    """subscribe 子命令入口：学期解析 + init / push / rotate / status 分发。
+
+    学期口径与 cmd_export/cmd_diff 一致：``--semester`` 优先，其次配置默认值。
+    """
+    from . import subscribe
+
+    semester = args.semester or cfg.semester_key
+    if not semester:
+        raise SemesterNotConfigured("未指定学期", hint="用 --semester 指定，或设置 XJTU_SEMESTER。")
+
+    if args.action == "init":
+        return _subscribe_init(args, cfg, semester)
+
+    state = subscribe.load_state(cfg, semester)
+    if state is None:
+        raise SubscribeNotConfigured(
+            f"学期 {semester} 尚未登记订阅",
+            hint=f"先运行：xjtu-calendar subscribe init --repo <URL> --semester {semester}",
+        )
+
+    if args.action == "push":
+        return _subscribe_push(args, cfg, state, semester)
+    if args.action == "rotate":
+        return _subscribe_rotate(cfg, state, semester)
+    return _subscribe_status(args, cfg, state, semester)
+
+
+def _subscribe_init(args: argparse.Namespace, cfg: Settings, semester: str) -> int:
+    from . import subscribe
+
+    if subscribe.load_state(cfg, semester) is not None:
+        raise XjtuCalendarError(
+            f"学期 {semester} 已登记过订阅",
+            hint="rotate 换 token，或直接 push；重新登记请先删除 "
+            f"{subscribe.state_path(cfg, semester)}。",
+        )
+    _validate_publish_branch(args.branch)
+    url_base = args.url_base or subscribe.derive_url_base(args.repo)
+    if not url_base:
+        raise XjtuCalendarError(
+            f"无法从 repo 推导 Pages 地址：{args.repo}",
+            hint="非 GitHub 远端请用 --url-base 显式给出 .ics 的公开访问前缀。",
+        )
+    state = subscribe.SubscriptionState(
+        semester=semester,
+        repo_url=args.repo,
+        branch=args.branch,
+        token=subscribe.new_token(),
+        url_base=url_base,
+    )
+    subscribe.save_state(cfg, state)
+    print(f"订阅 URL：{state.subscription_url}")
+    print()
+    print("一次性开启 Pages（GitHub）：仓库 Settings → Pages → Deploy from branch，")
+    print(f"分支选 {state.branch}、目录选 /(root)。完成后运行 subscribe push。")
+    print("⚠️ 知道该 URL 的人即可读取你的课表；有泄露疑虑时运行 subscribe rotate。")
+    return 0
+
+
+def _subscribe_push(
+    args: argparse.Namespace, cfg: Settings, state: subscribe.SubscriptionState, semester: str
+) -> int:
+    from . import subscribe
+
+    _validate_publish_branch(state.branch)
+    age = subscribe.snapshot_age_days(cfg, semester)
+    if age is not None and age > 7:
+        logger.warning("raw 快照已 %.0f 天未更新，建议先 fetch 再 push（本次继续）", age)
+    # 留底 last-<semester>.ics：publish 成功后才更新，且是下次构建的 SEQUENCE 基线。
+    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
+    result_ics = build_ics_for_semester(
+        cfg,
+        semester,
+        input_path=getattr(args, "input", None),
+        baseline_probe=str(last_local) if last_local.is_file() else None,
+    )
+    res = subscribe.publish(cfg, state, result_ics.ics)
+    if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
+        print("无变化，跳过推送。")
+        return 0
+    # newline=""：留底必须与远端产物字节一致（CRLF 完整），否则下次把它当
+    # SEQUENCE 基线读回、以及 status 的 sha 比对都会错位（同 cmd_export）。
+    last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
+    print(f"已发布：{res.url}")
+    return 0
+
+
+def _subscribe_rotate(cfg: Settings, state: subscribe.SubscriptionState, semester: str) -> int:
+    from . import subscribe
+
+    _validate_publish_branch(state.branch)
+    old = state.token
+    subscribe.rotate_token(cfg, state)
+    print(f"新订阅 URL：{state.subscription_url}")
+    print(f"旧 token 已作废（{old[:4]}…），请更新所有日历客户端的订阅地址。")
+    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
+    if not last_local.is_file():
+        print("（本地尚无发布留底，运行 subscribe push 完成首次发布。）")
+        return 0
+    try:
+        result_ics = build_ics_for_semester(cfg, semester, baseline_probe=str(last_local))
+        subscribe.publish(cfg, state, result_ics.ics)
+    except XjtuCalendarError as exc:
+        # token 已落盘换新、发布却失败：不能报成功。远端还挂在旧文件名上
+        # （旧 URL 已失效），按指引修好后 push 即可补发。
+        reloaded = subscribe.load_state(cfg, semester)
+        if reloaded is not None:
+            state = reloaded
+        print(f"⚠️ token 已换但尚未重新发布：{exc}")
+        if exc.hint:
+            print(f"   建议：{exc.hint}")
+        print(f"修复后运行 subscribe push --semester {semester} 完成发布。")
+        return exc.exit_code
+    last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
+    print("已用新文件名重新发布。")
+    return 0
+
+
+def _subscribe_status(
+    args: argparse.Namespace, cfg: Settings, state: subscribe.SubscriptionState, semester: str
+) -> int:
+    from . import subscribe
+
+    print(f"仓库：{state.repo_url}（分支 {state.branch}）")
+    print(f"URL ：{state.subscription_url}")
+    if state.last_push:
+        print(f"上次发布：{state.last_push.pushed_at}")
+        last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
+        # has_unpublished_changes 只比 sha；publish 的跳过条件还要求 token 一致，
+        # rotate 刚落盘（未重发布）时 sha 相同也绝不能说「无变更」。
+        synced = (
+            state.last_push.token == state.token
+            and last_local.is_file()
+            and not subscribe.has_unpublished_changes(
+                cfg, state, last_local.read_bytes().decode("utf-8")
+            )
+        )
+        if synced:
+            print("本地留底：一致，无变更。")
+        else:
+            print("本地留底：与上次发布不一致（内容或 token 已变），运行 subscribe push 重新发布。")
+    else:
+        print("尚未发布过。")
+    age = subscribe.snapshot_age_days(cfg, semester)
+    print(f"raw 快照：{'缺失' if age is None else f'{age:.1f} 天前'}")
+    if getattr(args, "verify", False):
+        try:
+            ok, msg = subscribe.verify_url(state.subscription_url)
+        except (ValueError, urllib.error.URLError, TimeoutError) as exc:
+            # CLI 边界兜底：自检失败永远是「未通过 + 原因」，不是 traceback。
+            ok, msg = False, f"{type(exc).__name__}: {exc}"
+        print(f"URL 自检：{'通过' if ok else '未通过'}（{msg}）")
+    return 0
+
+
 _HANDLERS = {
     "login": cmd_login,
     "status": cmd_status,
@@ -791,6 +999,7 @@ _HANDLERS = {
     "notice": cmd_notice,
     "schedule": cmd_schedule,
     "diff": cmd_diff,
+    "subscribe": cmd_subscribe,
 }
 
 

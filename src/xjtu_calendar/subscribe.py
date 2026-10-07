@@ -314,6 +314,11 @@ def snapshot_age_days(cfg: Settings, semester: str) -> float | None:
 def has_unpublished_changes(cfg: Settings, state: SubscriptionState, ics_text: str) -> bool:
     """渲染结果与上次成功推送的内容是否不同（从未推送视为不同）。
 
+    .. warning::
+        本函数**只比内容 sha**；``publish`` 的跳过条件还要求 ``last_push.token``
+        与当前 token 一致——rotate 之后数据未变时这里可能返回 ``False``，
+        但 publish 仍会重推（旧 URL 已死，必须让远端挂上新文件名）。
+
     ``cfg`` 目前未使用，留着是为了与同族只读辅助一致的调用签名（CLI 无需区分）。
     """
     if state.last_push is None:

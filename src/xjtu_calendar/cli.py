@@ -154,6 +154,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="合并进 schedules/schedule.json（只新增、不覆盖；有无法归类的行时拒绝写入）",
     )
 
+    # --- diff ---
+    diff = sub.add_parser(
+        "diff",
+        help="比对两份课表快照，列出新增/删除/调整（纯本地，不发网络请求）",
+    )
+    diff.add_argument("--semester", help="学期标识；未显式给路径时用它定位 fetch 的快照")
+    diff.add_argument(
+        "--old",
+        help="旧 raw JSON（默认：fetch 轮转出的上一份快照 timetable-<学期>.prev.json）",
+    )
+    diff.add_argument("--new", help="新 raw JSON（默认：当前缓存 timetable-<学期>.json）")
+
     # --- inspect ---
     inspect = sub.add_parser("inspect", help="对原始课表 JSON 做脱敏结构分析")
     inspect.add_argument("--input", help="课表 JSON 路径（默认用本地缓存）")
@@ -805,6 +817,99 @@ def cmd_schedule(args: argparse.Namespace, cfg: Settings) -> int:
     return 0
 
 
+def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
+    """比对新旧课表快照。
+
+    默认比较「上一次 fetch」与「这一次 fetch」——``fetch`` 会在覆盖前把旧快照
+    原子轮转成 ``*.prev.json``，所以正常用过两次 fetch 后本命令零参数可用。
+    只 fetch 过一次时不猜、不假装成功，明确说明基线缺失以及如何补救。
+    """
+    from .diff import describe_periods, describe_slot, diff_meetings
+    from .parser import TimetableParser
+
+    semester = args.semester or cfg.semester_key
+
+    if args.old:
+        old_path = Path(args.old)
+    elif semester:
+        old_path = cfg.raw_timetable_prev_path(semester)
+    else:
+        raise SemesterNotConfigured(
+            "未指定学期",
+            hint="diff 需要知道比较哪两份快照：用 --semester 定位 fetch 的缓存，"
+            "或用 --old/--new 显式给文件。",
+        )
+
+    if args.new:
+        new_path = Path(args.new)
+    elif semester:
+        new_path = cfg.raw_timetable_path(semester)
+    else:
+        new_path = old_path  # 不会走到：old 分支已要求 semester 或 --old
+
+    def _load(path: Path, label: str) -> object:
+        if not path.is_file():
+            raise XjtuCalendarError(
+                f"{label}课表快照不存在：{path}",
+                hint="快照来自 fetch（每次 fetch 会把上一份轮转为 *.prev.json 作为比较基线）。"
+                "刚 fetch 过一次还没有基线属正常；也可以先用 --old 指定一份之前保存的 raw JSON。",
+            )
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise XjtuCalendarError(f"{label}快照不是合法 JSON：{path}（{exc}）") from exc
+
+    old_parser = TimetableParser()
+    new_parser = TimetableParser()
+    _, old_meetings = old_parser.parse(_load(old_path, "旧"))
+    _, new_meetings = new_parser.parse(_load(new_path, "新"))
+
+    print(f"旧快照: {old_path}（{old_parser.report.summary()}）")
+    print(f"新快照: {new_path}（{new_parser.report.summary()}）")
+    for parser in (old_parser, new_parser):
+        for reason in parser.report.skipped:
+            logger.warning("解析跳过（可能影响比对完整性）：%s", reason)
+    print()
+
+    result = diff_meetings(old_meetings, new_meetings)
+    if result.is_empty:
+        print("无变化：两份快照的课程、时段、周次、教室与教师完全一致。")
+        return 0
+
+    if result.added_courses:
+        print(f"新增课程（{len(result.added_courses)} 门）:")
+        for name in result.added_courses:
+            print(f"  + {name}")
+        print()
+    if result.removed_courses:
+        print(f"删除课程（{len(result.removed_courses)} 门）:")
+        for name in result.removed_courses:
+            print(f"  - {name}")
+        print()
+    if result.added_slots:
+        print(f"新增上课时段（{len(result.added_slots)} 个）:")
+        for slot in result.added_slots:
+            print(f"  + {describe_slot(slot)}")
+        print()
+    if result.removed_slots:
+        print(f"取消上课时段（{len(result.removed_slots)} 个）:")
+        for slot in result.removed_slots:
+            print(f"  - {describe_slot(slot)}")
+        print()
+    if result.changes:
+        print(f"调整明细（{len(result.changes)} 项）:")
+        for change in result.changes:
+            print(
+                f"  ~ {change.course_name} 星期{'一二三四五六日'[change.weekday - 1]}"
+                f" {describe_periods(change.periods)}：{change.field}: "
+                f"{change.old} → {change.new}"
+            )
+        print()
+
+    print("提示：确认无误后重新 export 即可拿到更新后的 .ics（UID 稳定，原地更新）。")
+    return 0
+
+
 _HANDLERS = {
     "login": cmd_login,
     "status": cmd_status,
@@ -813,6 +918,7 @@ _HANDLERS = {
     "inspect": cmd_inspect,
     "notice": cmd_notice,
     "schedule": cmd_schedule,
+    "diff": cmd_diff,
 }
 
 

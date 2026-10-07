@@ -36,6 +36,7 @@ from xjtu_calendar.fetcher import (
     fetch_via_http,
     load_endpoints,
     require_endpoint,
+    save_raw,
 )
 
 #: 会话失效后 eHall 常见的响应形态：**200 + 登录页 HTML**，而不是 401
@@ -265,3 +266,24 @@ def test_classify_body_detects_login_markers_late_in_long_page() -> None:
     text = f"<html><head>{filler}<title>统一身份认证</title></head><body>请登录</body></html>"
     assert len(filler) > 4000
     assert classify_body(text) == "login-html"
+
+
+def test_save_raw_rotates_previous_snapshot(cfg: Settings) -> None:
+    """fetch 落盘前把上一份快照轮转为 .prev.json（diff 的比较基线，单代）。
+
+    没有轮转时用户想比对变化就得手工复制缓存文件——「调课检测」的
+    前提是把「上一次」自动留住。旧快照不存在时不造空 prev。
+    """
+    current = cfg.raw_timetable_path("2026-fall")
+    previous = cfg.raw_timetable_prev_path("2026-fall")
+
+    save_raw({"v": 1}, cfg, "2026-fall")
+    assert current.is_file() and not previous.exists()
+
+    save_raw({"v": 2}, cfg, "2026-fall")
+    assert json.loads(previous.read_text(encoding="utf-8")) == {"v": 1}
+    assert json.loads(current.read_text(encoding="utf-8")) == {"v": 2}
+
+    save_raw({"v": 3}, cfg, "2026-fall")
+    assert json.loads(previous.read_text(encoding="utf-8")) == {"v": 2}
+    assert json.loads(current.read_text(encoding="utf-8")) == {"v": 3}

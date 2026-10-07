@@ -37,6 +37,7 @@ from .errors import (
     PermissionDenied,
     TimetableFetchError,
 )
+from .fileutil import atomic_write_text
 from .logging_setup import get_logger, redact, redact_url
 
 __all__ = [
@@ -554,15 +555,23 @@ def fetch_via_browser(
 
 
 def save_raw(payload: Any, cfg: Settings, semester_key: str) -> Path:
-    """把原始课表 JSON 缓存到本地。
+    """把原始课表 JSON 缓存到本地，并把上一份轮转为 ``*.prev.json``。
 
     .. danger::
-        该文件含个人信息，**必须留在 .gitignore 排除目录内**，绝不可提交。
+        两个文件都含个人信息，**必须留在 .gitignore 排除目录内**，绝不可提交。
+
+    轮转语义（单代）：旧当前快照原子移动到 prev，成为 ``diff`` 的默认比较基线；
+    首次 fetch 没有旧快照，也就不会凭空造出一个空的 prev。
     """
     cfg.ensure_dirs()
     path = cfg.raw_timetable_path(semester_key)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    previous = cfg.raw_timetable_prev_path(semester_key)
+    if path.is_file():
+        path.replace(previous)  # 同目录 os.replace，原子
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     logger.debug("原始课表已缓存到 %s（含个人信息，请勿提交）", path)
+    if previous.is_file():
+        logger.debug("上一份快照已轮转到 %s（diff 的默认比较基线）", previous)
     return path
 
 

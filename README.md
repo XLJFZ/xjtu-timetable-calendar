@@ -500,7 +500,8 @@ python -m xjtu_calendar schedule --semester 2026-2027-1 --apply
 |---|---|
 | `login [--force]` | 浏览器手动登录，保存本地会话 |
 | `status` | 查看会话与配置状态（不发起网络请求） |
-| `fetch [--semester S] [--source auto\|http\|browser] [--from-file F]` | 获取课表原始 JSON |
+| `fetch [--semester S] [--source auto\|http\|browser] [--from-file F]` | 获取课表原始 JSON（覆盖前自动把上一份轮转为 `*.prev.json`，作为 `diff` 基线） |
+| `diff [--semester S] [--old F] [--new F]` | 比对新旧课表快照：新增/删除课程、时段增减、周次/教室/教师变化（纯本地） |
 | `export [--semester S] [-o OUT] [--input F] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence]` | 生成 `.ics` |
 | `notice --url U \| --from-file F [--semester S] [--apply]` | 解析停课/调课通知，预览或合并进学期配置 |
 | `schedule [--url U \| --from-file F] [--semester S] [--apply]` | 解析官方「学生作息时间表」页，预览或合并进作息表配置 |
@@ -562,6 +563,7 @@ xjtu-timetable-calendar/
 │   ├── auth.py                         # 会话管理
 │   ├── fetcher.py                      # 课表抓取（HTTP / 浏览器双路径）
 │   ├── exporter.py                     # → CalendarEvent → .ics
+│   ├── diff.py                         # 新旧课表快照比对（调课检测）
 │   ├── notices.py                      # 停课/调课通知解析（HTML 表格 → 配置条目）
 │   ├── schedule_notice.py              # 官方作息页解析（表格 → schedule.json 合并方案）
 │   ├── sequence.py                     # SEQUENCE / LAST-MODIFIED 版本管理
@@ -585,6 +587,8 @@ xjtu-timetable-calendar/
 │   ├── test_notices.py                 # 通知解析 / 周次交叉校验 / 只新增合并
 │   ├── test_schedule_notice.py         # 作息页解析 / 区间铺排 / 只新增合并 / 幂等
 │   ├── test_cli_schedule.py            # schedule 子命令 CLI 级 e2e（fail-closed 契约）
+│   ├── test_diff.py                    # 课表快照比对（课程/时段/字段三级口径）
+│   ├── test_cli_diff.py                # diff 子命令 e2e + fetch 快照轮转联动
 │   ├── test_cli_notice.py              # notice 子命令 CLI 级 e2e
 │   └── fixtures/
 │       ├── timetable_sample.json           # 手工构造的脱敏样例
@@ -694,7 +698,7 @@ class CourseMeeting:
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 407 项测试（含 doctest）
+pytest                      # 421 项测试（含 doctest）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）
@@ -806,6 +810,14 @@ python scripts/probe_ehall.py
 [4. 作息表自动获取](#4-作息表自动获取schedule-子命令可选)（`schedule` 子命令，
 官方作息页，切换点取自页面原文，fail-closed 同口径）。
 
+**Q：怎么发现课表被调过（换教室、改时间、加减课）？**
+
+重复 `fetch` 即可：每次 fetch 会把上一份快照轮转为 `timetable-<学期>.prev.json`，
+然后 `python -m xjtu_calendar diff --semester <学期>` 列出新增/删除课程、
+时段增减与周次/教室/教师变化（纯本地比对，不发网络请求）。
+确认变化后重新 `export`，UID 稳定所以日历会原地更新。
+也可以用 `--old/--new` 显式指定任意两份 raw JSON 做比较。
+
 **Q：为什么不用一个 RRULE 简化 ICS？**
 
 见上文[核心设计](#二不为整学期课程使用单个-rrule)。简单说：作息切换会让
@@ -850,6 +862,8 @@ python -m xjtu_calendar login --force
 - [x] 停课/调课通知自动解析合并（`notice` 子命令，含周次交叉校验）
 - [x] 作息表自动获取（`schedule` 子命令，官方作息页；切换点取自表头原文，
   覆盖范围来自学期校历，fail-closed + 只新增 + 幂等）
+- [x] 调课检测（`diff` 子命令 + `fetch` 快照轮转：新增/删除课程、时段增减、
+  周次/教室/教师/课程名变化，纯本地比对）
 
 **待完成**
 
@@ -858,10 +872,9 @@ python -m xjtu_calendar login --force
 **未来扩展（架构已预留）**
 
 1. **URL 订阅式 ICS** —— 服务端定期重新生成，日历自动同步课表变化
-2. **调课检测** —— 新旧课表比对，输出新增 / 删除 / 时间变化 / 教室变化
-3. **考试安排** —— eHall 考试信息 → 日历
-4. **校历事件** —— 开学、放假、考试周、校庆、节假日
-5. **多学期管理**
+2. **考试安排** —— eHall 考试信息 → 日历
+3. **校历事件** —— 开学、放假、考试周、校庆、节假日
+4. **多学期管理**
 
 **第一版明确不做**：Web UI、手机 App、小程序、服务器账号系统、数据库、
 Google / Apple 日历 API、CalDAV 双向同步、自动后台登录。

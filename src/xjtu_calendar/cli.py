@@ -834,13 +834,28 @@ def _validate_publish_branch(branch: str) -> None:
         )
 
 
+def _load_subscribe_state(cfg: Settings, semester: str) -> subscribe.SubscriptionState | None:
+    """读取订阅状态文件；损坏时以业务错误呈现，而不是把解码异常甩给用户。
+
+    load_state 只做 `json.loads` + `from_dict`：非法 JSON（ValueError）、顶层
+    类型不对（AttributeError/TypeError）、缺键（KeyError）都会原样上抛。
+    """
+    from . import subscribe
+
+    try:
+        return subscribe.load_state(cfg, semester)
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        raise XjtuCalendarError(
+            f"学期 {semester} 的订阅状态文件已损坏：{subscribe.state_path(cfg, semester)}",
+            hint=f"删除该文件后重新 subscribe init --semester {semester}（会换新 token）。",
+        ) from exc
+
+
 def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
     """subscribe 子命令入口：学期解析 + init / push / rotate / status 分发。
 
     学期口径与 cmd_export/cmd_diff 一致：``--semester`` 优先，其次配置默认值。
     """
-    from . import subscribe
-
     semester = args.semester or cfg.semester_key
     if not semester:
         raise SemesterNotConfigured("未指定学期", hint="用 --semester 指定，或设置 XJTU_SEMESTER。")
@@ -848,7 +863,7 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
     if args.action == "init":
         return _subscribe_init(args, cfg, semester)
 
-    state = subscribe.load_state(cfg, semester)
+    state = _load_subscribe_state(cfg, semester)
     if state is None:
         raise SubscribeNotConfigured(
             f"学期 {semester} 尚未登记订阅",
@@ -865,7 +880,7 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
 def _subscribe_init(args: argparse.Namespace, cfg: Settings, semester: str) -> int:
     from . import subscribe
 
-    if subscribe.load_state(cfg, semester) is not None:
+    if _load_subscribe_state(cfg, semester) is not None:
         raise XjtuCalendarError(
             f"学期 {semester} 已登记过订阅",
             hint="rotate 换 token，或直接 push；重新登记请先删除 "

@@ -340,3 +340,22 @@ def test_requires_init_and_semester(
     with pytest.raises(SystemExit) as wrapped:
         main(["subscribe"])
     assert wrapped.value.code == 2
+
+
+def test_corrupt_state_file_surfaces_domain_error(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Task 2 carryover：状态文件损坏时 CLI 给业务错误，不把 KeyError/JSONDecodeError 甩给用户。"""
+    home, origin = env
+    assert _init(origin) == 0
+    capsys.readouterr()
+    state_file = home / "subscribe" / f"subscribe-{SEMESTER}.json"
+    state_file.write_text("{ not json", encoding="utf-8")
+
+    assert main(["subscribe", "status", "--semester", SEMESTER]) != 0
+    err = capsys.readouterr().err
+    assert "损坏" in err and "Traceback" not in err
+
+    # init 的重复登记检查走同一读路径，同样必须拦下（而不是假装没登记过）
+    assert _init(origin) != 0
+    assert "损坏" in capsys.readouterr().err

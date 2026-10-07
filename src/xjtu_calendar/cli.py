@@ -42,7 +42,7 @@ from .errors import (
     SubscribeNotConfigured,
     XjtuCalendarError,
 )
-from .exporter import DEFAULT_CALENDAR_NAME, build_ics_for_semester
+from .exporter import build_ics_for_semester
 from .logging_setup import get_logger, setup_logging
 
 if TYPE_CHECKING:
@@ -101,7 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--input", help="直接指定课表 JSON（默认用 fetch 的本地缓存）")
     export.add_argument("--calendar-config", help="教学日历 JSON 路径（覆盖默认查找）")
     export.add_argument("--schedule-config", help="作息表 JSON 路径（覆盖默认查找）")
-    export.add_argument("--name", default=DEFAULT_CALENDAR_NAME, help="日历名称")
+    export.add_argument(
+        "--name",
+        default=None,
+        help="日历名称；不填则自动按课表推导（如「西安交通大学课表 · 大三-上」），"
+        "显式给出则原样使用",
+    )
     export.add_argument("--from-date", help="只导出该日期（含）之后的事件，ISO 格式")
     export.add_argument("--to-date", help="只导出该日期（含）之前的事件，ISO 格式")
     export.add_argument(

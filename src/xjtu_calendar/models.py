@@ -232,6 +232,10 @@ class CourseMeeting:
         教学周列表，例如 ``[1, 2, 3, 4, 5, 6, 7, 8]``。
     raw_week_text / raw_period_text:
         原始文本留档，便于排查解析偏差，并用于 DESCRIPTION 回显。
+    grade_year:
+        该课程的入学年级（教务字段 ``NJDM``，例如 ``"2024"``），仅用于日历标题
+        推导「大X」；**刻意不参与 UID 计算、也不写入 VEVENT**，否则补上这个字段
+        会让订阅端把整学期课程当成新一批事件重收。
     """
 
     course_id: str | None
@@ -244,6 +248,7 @@ class CourseMeeting:
     campus: str | None = None
     raw_week_text: str | None = None
     raw_period_text: str | None = None
+    grade_year: str | None = None
 
     def __post_init__(self) -> None:
         if not 1 <= self.weekday <= 7:

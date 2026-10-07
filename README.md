@@ -244,6 +244,18 @@ python -m xjtu_calendar fetch --semester 2026-fall
 python -m xjtu_calendar export --semester 2026-fall --output timetable.ics
 ```
 
+日历标题（`X-WR-CALNAME`，也就是客户端里显示的名字）默认**按课表自动推导**为
+「西安交通大学课表 · 大三-上」这样的形式：年级来自课表的入学年级字段（`NJDM`，
+按 `学年起始年 − 入学年 + 1` 换算，只在大一…大五范围内显示），上/下来自学期代码
+`YYYY-YYYY-N` 的尾号。凡是**不敢定**的情况一律退回基础名「西安交通大学课表」——
+自定义的学期 key（如 `2026-fall`）、课表里没有 `NJDM`、年级分布出现并列，都不追加
+后缀，宁可少信息也不给一个错的年级。跨年级（插班、跨年级选课、留级）时取多数，并在
+日志里留一句提示。用 `--name` 显式命名则完全照用、不追加任何后缀。
+**年级只影响标题，不参与 UID 计算、也不写进事件**，所以订阅端不会因为换了标题而重收课程。
+至于已建立的订阅会不会跟着改显示名，各家客户端行为不同（有的会一直保留首次订阅时的名字，
+需要重新添加才更新）——这一点本仓库未在真机上验证；可以确定的是事件的 UID 与 SEQUENCE
+都不变，课程不会被重收一遍。
+
 输出示例：
 
 ```
@@ -643,7 +655,7 @@ python -m xjtu_calendar schedule --semester 2026-2027-1 --apply
 | `status` | 查看会话与配置状态（不发起网络请求） |
 | `fetch [--semester S] [--source auto\|http\|browser] [--from-file F]` | 获取课表原始 JSON（覆盖前自动把上一份轮转为 `*.prev.json`，作为 `diff` 基线） |
 | `diff [--semester S] [--old F] [--new F]` | 比对新旧课表快照：新增/删除课程、时段增减、周次/教室/教师变化（纯本地） |
-| `export [--semester S] [-o OUT] [--input F] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence]` | 生成 `.ics` |
+| `export [--semester S] [-o OUT] [--input F] [--name N] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence]` | 生成 `.ics`（`--name` 不给时标题按课表自动推导，见上文「导出」） |
 | `notice --url U \| --from-file F [--semester S] [--apply]` | 解析停课/调课通知，预览或合并进学期配置 |
 | `schedule [--url U \| --from-file F] [--semester S] [--apply]` | 解析官方「学生作息时间表」页，预览或合并进作息表配置 |
 | `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F]` \| `subscribe rotate` \| `subscribe status [--verify]`（均可带 `--semester S`） | 把 .ics 发布到自己的 GitHub Pages，日历客户端按 URL 订阅（见上文「URL 订阅」） |
@@ -707,6 +719,7 @@ xjtu-timetable-calendar/
 │   ├── auth.py                         # 会话管理
 │   ├── fetcher.py                      # 课表抓取（HTTP / 浏览器双路径）
 │   ├── exporter.py                     # → CalendarEvent → .ics
+│   ├── naming.py                       # 日历标题推导（大X-上/下；不确定就退回基础名）
 │   ├── diff.py                         # 新旧课表快照比对（调课检测）
 │   ├── notices.py                      # 停课/调课通知解析（HTML 表格 → 配置条目）
 │   ├── schedule_notice.py              # 官方作息页解析（表格 → schedule.json 合并方案）

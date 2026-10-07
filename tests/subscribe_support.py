@@ -14,10 +14,10 @@ SEMESTER = "2026-fall"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def semester_config() -> dict[str, Any]:
+def semester_config(semester: str = SEMESTER) -> dict[str, Any]:
     cfg: dict[str, Any] = {
         "semester": {
-            "key": SEMESTER,
+            "key": semester,
             "name": "2026-2027 学年秋季学期",
             "first_week_monday": "2026-09-07",
             "total_weeks": 16,
@@ -50,19 +50,29 @@ def payload_row(**over: str) -> dict[str, str]:
     return row
 
 
-def make_home(tmp_path: Path, rows: list[dict[str, str]] | None = None) -> Settings:
-    """在 tmp_path 下布置 home（校历/作息/raw 快照三件套），返回 Settings。"""
+def make_home(
+    tmp_path: Path,
+    rows: list[dict[str, str]] | None = None,
+    *,
+    semester: str = SEMESTER,
+) -> Settings:
+    """在 tmp_path 下布置 home（校历/作息/raw 快照三件套），返回 Settings。
+
+    ``semester`` 可给成真实学期代码（如 ``2026-2027-1``）——日历标题的
+    「大X-上/下」推导只在这样的代码下才启用，默认值是用户自定义风格的
+    ``2026-fall``，正好用来验证「自定义 key 不追加后缀」。
+    """
     cfg = Settings(home=tmp_path)
     cfg.ensure_dirs()
-    cfg.semester_config_path(SEMESTER).write_text(
-        json.dumps(semester_config(), ensure_ascii=False), encoding="utf-8"
+    cfg.semester_config_path(semester).write_text(
+        json.dumps(semester_config(semester), ensure_ascii=False), encoding="utf-8"
     )
     cfg.schedule_config_path().write_text(
         (REPO_ROOT / "examples" / "schedule.example.json").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     payload = {"kbList": rows if rows is not None else [payload_row()]}
-    raw = cfg.raw_timetable_path(SEMESTER)
+    raw = cfg.raw_timetable_path(semester)
     raw.parent.mkdir(parents=True, exist_ok=True)
     raw.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     return cfg

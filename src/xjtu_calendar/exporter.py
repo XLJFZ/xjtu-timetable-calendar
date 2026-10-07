@@ -34,6 +34,7 @@ from .errors import (
 )
 from .logging_setup import get_logger
 from .models import CalendarEvent, CourseMeeting, UnsupportedAdjustment
+from .naming import DEFAULT_CALENDAR_NAME, calendar_title
 from .parser import TimetableParser
 from .periods import format_periods
 from .schedules import ScheduleTable
@@ -59,8 +60,9 @@ PRODID = "-//xjtu-timetable-calendar//XJTU Personal Timetable Export//CN"
 #: UID 的域名后缀，便于在日历客户端中识别来源
 UID_DOMAIN = "xjtu-timetable-calendar"
 
-#: 生产环境默认的日历名称
-DEFAULT_CALENDAR_NAME = "西安交通大学课表"
+# 默认日历名称与标题推导口径集中在 naming 模块（见 .naming 导入），
+# exporter 只在渲染时取用；DEFAULT_CALENDAR_NAME 仍可从本模块导入，
+# 以兼容既有 CLI / 测试引用。
 
 _WEEKDAY_NAMES = ("一", "二", "三", "四", "五", "六", "日")
 
@@ -549,7 +551,7 @@ def build_ics_for_semester(
     input_path: str | None = None,
     calendar_config: str | None = None,
     schedule_config: str | None = None,
-    calendar_name: str = DEFAULT_CALENDAR_NAME,
+    calendar_name: str | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
     allow_unsupported_adjustments: bool = False,
@@ -559,6 +561,11 @@ def build_ics_for_semester(
     dtstamp: datetime | None = None,
 ) -> ExportResult:
     """按学期构建 RFC 5545 文本。export 与 subscribe push 共用的唯一管线。
+
+    ``calendar_name``：``None`` 表示由课表数据自动推导日历标题
+    （「西安交通大学课表 · 大三-上」，见 :mod:`xjtu_calendar.naming`）；显式给定
+    则原样使用、不追加任何后缀。标题只落在 ``X-WR-CALNAME``，不进 UID/VEVENT，
+    因此订阅端不会因标题变化而重收事件。
 
     ``baseline_probe``：SEQUENCE 自动探测的「旧版本」路径（CLI export 传 -o
     输出路径；subscribe 传上次发布留底）。显式 ``sequence_from`` 优先。
@@ -695,6 +702,10 @@ def build_ics_for_semester(
                 logger.info("SEQUENCE 基线：%s（%d 个事件）", baseline_path, len(baseline))
 
     stamp = dtstamp or _stamp_from_snapshot(stamp_source or cfg.raw_timetable_path(semester))
+    if calendar_name is None:
+        # 标题从课表数据推导；年级缺失/并列时 calendar_title 自己会退回基础名。
+        calendar_name = calendar_title(semester, (m.grade_year for m in meetings))
+        logger.info("日历标题：%s", calendar_name)
     ics = render_ics(events, calendar_name=calendar_name, dtstamp=stamp, baseline=baseline)
 
     # --- 汇总 ---

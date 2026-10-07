@@ -114,6 +114,8 @@ FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
     "weeks_mask": ("SKZC",),
     "weeks": ("ZCMC", "weeks", "zcd"),
     "credits": ("XF", "credits", "credit"),
+    # 入学年级：只用于日历标题（naming.calendar_title），不进 UID、不进 VEVENT
+    "grade_year": ("NJDM", "gradeYear", "grade"),
     "course_list": ("datas", "kbList", "courses", "list"),
 }
 
@@ -434,6 +436,7 @@ class TimetableParser:
             weeks=weeks,
             raw_week_text=_as_text(raw_weeks),
             raw_period_text=_as_text(raw_periods),
+            grade_year=_join_text(self._get(record, "grade_year")),
         )
 
         self.report.parsed += 1

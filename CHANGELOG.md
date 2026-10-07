@@ -6,6 +6,19 @@
 
 ---
 
+## [Unreleased]
+
+### Fixed
+
+- **CLI 在非 UTF-8 输出环境下不再崩溃**：中文 Windows 上把输出重定向或管道化
+  （如 `subscribe rotate > log.txt`）时，stdout 回落到 locale 编码（cp936），
+  打印含 `⚠️` 的警示行会抛 `UnicodeEncodeError`——`subscribe rotate` 因此可能
+  中断在「token 已换、尚未补发」的中间态。现在 CLI 启动时统一加固输出流：
+  重定向场景按 UTF-8 落盘；GBK 控制台保持原编码、个别不可编码字符降级为 `?`，
+  警示行与退出码不受影响。
+
+---
+
 ## [0.4.0] - 2026-10-07
 
 订阅通道落地：`subscribe` 把同一份 .ics 发布到**用户自己的** GitHub Pages

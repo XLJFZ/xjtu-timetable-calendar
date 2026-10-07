@@ -1055,8 +1055,38 @@ _HANDLERS = {
 }
 
 
+def _harden_output_streams() -> None:
+    """把 stdout/stderr 调整为「永不因编码崩」的形态。
+
+    中文 Windows 上 stdout 一旦被重定向/管道化，编码回落到 locale（cp936），
+    ``print("⚠️ …")`` 直接抛 UnicodeEncodeError——对 ``subscribe rotate`` 而言
+    崩溃点落在「token 已换、尚未补发」的中间态（spec §7 最危险状态），
+    用户只会看到一条未预期异常。策略：
+
+    - 非 TTY（重定向/管道，消费方多为文件与工具）：统一改 UTF-8，
+      不可编码字符 ``replace`` 兜底；
+    - TTY（控制台本身可能是 GBK）：保持原编码，仅把错误模式降为
+      ``replace``——个别 emoji 变 ``?``，中文正文不受影响。
+
+    一切调整都是尽力而为：stream 被宿主（pythonw、测试框架）换掉或缺
+    ``reconfigure`` 时原样放行，绝不在护栏自身抛异常。
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        try:
+            if stream is None:
+                continue
+            if not stream.isatty():
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            elif (stream.encoding or "").lower().replace("-", "") != "utf8":
+                stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            continue
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI 主函数。返回进程退出码。"""
+    _harden_output_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
 

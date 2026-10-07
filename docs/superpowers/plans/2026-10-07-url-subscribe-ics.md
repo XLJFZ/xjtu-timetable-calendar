@@ -500,8 +500,10 @@ def _git(*args: str, cwd: Path | None = None) -> str:
 
 
 GIT_ENV = {
-    "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
-    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e",
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@e",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@e",
 }
 
 
@@ -511,8 +513,11 @@ def bare(tmp_path: Path) -> tuple[SubscriptionState, Path]:
     _git("init", "-q", "--bare", str(origin))
     cfg = make_home(tmp_path / "home")
     state = SubscriptionState(
-        semester=SEMESTER, repo_url=origin.resolve().as_uri(),
-        branch="cal", token=new_token(), url_base="https://x.github.io/cal/",
+        semester=SEMESTER,
+        repo_url=origin.resolve().as_uri(),
+        branch="cal",
+        token=new_token(),
+        url_base="https://x.github.io/cal/",
     )
     subscribe.save_state(cfg, state)
     return cfg, state  # 顺序对齐调用方解构
@@ -530,7 +535,9 @@ def _tip_parents(origin: Path) -> int:
 
 def test_publish_creates_single_orphan_commit(cfg_state) -> None:
     cfg, state = cfg_state  # 见 fixture 注：返回 (cfg, state)
-    origin = Path(state.repo_url.removeprefix("file:///")).resolve().parent  # 直取更稳：fixture 另存 origin
+    origin = (
+        Path(state.repo_url.removeprefix("file:///")).resolve().parent
+    )  # 直取更稳：fixture 另存 origin
     ...
 ```
 
@@ -543,8 +550,11 @@ def env(tmp_path: Path) -> tuple:
     _git("init", "-q", "--bare", str(origin))
     cfg = make_home(tmp_path / "home")
     state = SubscriptionState(
-        semester=SEMESTER, repo_url=origin.resolve().as_uri(),
-        branch="cal", token=new_token(), url_base="https://x.github.io/cal/",
+        semester=SEMESTER,
+        repo_url=origin.resolve().as_uri(),
+        branch="cal",
+        token=new_token(),
+        url_base="https://x.github.io/cal/",
     )
     subscribe.save_state(cfg, state)
     return cfg, state, origin
@@ -683,7 +693,9 @@ def publish(cfg: Settings, state: SubscriptionState, ics_text: str) -> PublishRe
             raise SubscribePublishError("git init 失败", hint="确认 git 在 PATH 中。")
         subprocess.run(  # init 不在 .git 内，-C 前置于 work 可能不存在，故单独一次
             ["git", *_GIT_COMMON, "init", "-q", str(work)],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         _must_git(work, "remote", "add", "origin", state.repo_url)
 
@@ -721,9 +733,7 @@ def publish(cfg: Settings, state: SubscriptionState, ics_text: str) -> PublishRe
     _must_git(work, "push", "-q", "--force", "origin", f"HEAD:refs/heads/{state.branch}")
 
     state.last_push = PushRecord(
-        pushed_at=datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
-            "+00:00", "Z"
-        ),
+        pushed_at=datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         content_sha256=digest,
         token=state.token,
     )
@@ -759,9 +769,14 @@ git commit -m "feat(subscribe): orphan-commit publish with tree guard and idempo
 ```python
 def test_rotate_changes_token_and_keeps_history_fields(tmp_path) -> None:
     cfg = make_home(tmp_path)
-    st = SubscriptionState(SEMESTER, "https://github.com/a/b.git", "cal",
-                           subscribe.new_token(), "https://a.github.io/b/",
-                           PushRecord("2026-10-07T00:00:00Z", "ff" * 32, "old"))
+    st = SubscriptionState(
+        SEMESTER,
+        "https://github.com/a/b.git",
+        "cal",
+        subscribe.new_token(),
+        "https://a.github.io/b/",
+        PushRecord("2026-10-07T00:00:00Z", "ff" * 32, "old"),
+    )
     subscribe.save_state(cfg, st)
     rotated = subscribe.rotate_token(cfg, st)
     assert rotated.token != st.token  # 注意：rotate 原地改 state，取旧值需先拷贝
@@ -813,11 +828,15 @@ def verify_url(url: str, timeout: float = 10.0) -> tuple[bool, str]:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         return False, f"不支持的协议：{parsed.scheme}（仅 http/https）"
-    req = urllib.request.Request(url, method="GET", headers={"User-Agent": "xjtu-calendar-subscribe-check"})
+    req = urllib.request.Request(
+        url, method="GET", headers={"User-Agent": "xjtu-calendar-subscribe-check"}
+    )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (scheme 已白名单)
             head = resp.read(64).decode("utf-8", "replace")
-            return resp.status == 200 and head.lstrip().startswith("BEGIN:VCALENDAR"), f"HTTP {resp.status}"
+            return resp.status == 200 and head.lstrip().startswith(
+                "BEGIN:VCALENDAR"
+            ), f"HTTP {resp.status}"
     except urllib.error.HTTPError as exc:
         return False, f"HTTP {exc.code}"
     except (urllib.error.URLError, TimeoutError) as exc:
@@ -858,8 +877,12 @@ import pytest
 from subscribe_support import SEMESTER, make_home, payload_row
 from xjtu_calendar.cli import main
 
-GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
-           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+GIT_ENV = {
+    "GIT_AUTHOR_NAME": "t",
+    "GIT_AUTHOR_EMAIL": "t@e",
+    "GIT_COMMITTER_NAME": "t",
+    "GIT_COMMITTER_EMAIL": "t@e",
+}
 
 
 @pytest.fixture
@@ -879,8 +902,11 @@ def test_full_flow(env, capsys, tmp_path) -> None:
     out = capsys.readouterr().out
     assert "https://" in out or "订阅" in out  # 打印了 URL 与 Pages 指引
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
-    tip = subprocess.run(["git", "-C", str(home / "origin.git"), "ls-tree", "-r",
-                          "--name-only", "cal"], capture_output=True, text=True).stdout.split()
+    tip = subprocess.run(
+        ["git", "-C", str(home / "origin.git"), "ls-tree", "-r", "--name-only", "cal"],
+        capture_output=True,
+        text=True,
+    ).stdout.split()
     assert len(tip) == 1 and tip[0].endswith(".ics")
     # 再 push 无变化
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
@@ -904,6 +930,7 @@ def test_debug_logs_never_contain_token(env, tmp_path, capsys) -> None:
     main(["subscribe", "init", "--repo", repo, "--semester", SEMESTER])
     main(["--debug", "subscribe", "push", "--semester", SEMESTER])
     from xjtu_calendar.subscribe import load_state
+
     token = load_state(make_home(tmp_path), SEMESTER).token  # cfg 同 home
     captured = capsys.readouterr()
     assert token not in captured.err
@@ -920,23 +947,25 @@ stdout，二者分流正是该设计的验收点）。`init/push/status` 主动�
 `build_parser()` 中 `inspect` 之前插入：
 
 ```python
-    # --- subscribe ---
-    sub_p = sub.add_parser("subscribe", help="把 .ics 发布到自己的 GitHub Pages 分支，日历客户端按 URL 订阅")
-    sact = sub_p.add_subparsers(dest="action", metavar="<动作>")
-    sact.required = True
-    init_p = sact.add_parser("init", help="登记发布目标并生成订阅 token")
-    init_p.add_argument("--repo", required=True, help="git 远端 URL（GitHub Pages 仓库）")
-    init_p.add_argument("--branch", default="cal", help="专用发布分支（默认 cal）")
-    init_p.add_argument("--url-base", help="订阅 URL 前缀（GitHub 远端可自动推导）")
-    init_p.add_argument("--semester", help="学期标识，例如 2026-fall")
-    push_p = sact.add_parser("push", help="构建 .ics 并强推到发布分支")
-    push_p.add_argument("--semester")
-    push_p.add_argument("--input", help="直接指定课表 JSON（默认用 fetch 缓存）")
-    rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
-    rot_p.add_argument("--semester")
-    st_p = sact.add_parser("status", help="查看订阅状态、URL 与新鲜度")
-    st_p.add_argument("--semester")
-    st_p.add_argument("--verify", action="store_true", help="匿名 GET 自检 URL 可达性")
+# --- subscribe ---
+sub_p = sub.add_parser(
+    "subscribe", help="把 .ics 发布到自己的 GitHub Pages 分支，日历客户端按 URL 订阅"
+)
+sact = sub_p.add_subparsers(dest="action", metavar="<动作>")
+sact.required = True
+init_p = sact.add_parser("init", help="登记发布目标并生成订阅 token")
+init_p.add_argument("--repo", required=True, help="git 远端 URL（GitHub Pages 仓库）")
+init_p.add_argument("--branch", default="cal", help="专用发布分支（默认 cal）")
+init_p.add_argument("--url-base", help="订阅 URL 前缀（GitHub 远端可自动推导）")
+init_p.add_argument("--semester", help="学期标识，例如 2026-fall")
+push_p = sact.add_parser("push", help="构建 .ics 并强推到发布分支")
+push_p.add_argument("--semester")
+push_p.add_argument("--input", help="直接指定课表 JSON（默认用 fetch 缓存）")
+rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
+rot_p.add_argument("--semester")
+st_p = sact.add_parser("status", help="查看订阅状态、URL 与新鲜度")
+st_p.add_argument("--semester")
+st_p.add_argument("--verify", action="store_true", help="匿名 GET 自检 URL 可达性")
 ```
 
 `cmd_subscribe`（放 `cmd_diff` 之后；`_HANDLERS` 加 `"subscribe": cmd_subscribe`）：
@@ -952,11 +981,23 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
 
     if args.action == "init":
         if subscribe.load_state(cfg, semester) is not None:
-            raise XjtuCalendarError(f"学期 {semester} 已登记过订阅", hint="rotate 换 token，或直接 push；重新登记请先删除 ~/.xjtu-timetable-calendar/subscribe/subscribe-<学期>.json。")
+            raise XjtuCalendarError(
+                f"学期 {semester} 已登记过订阅",
+                hint="rotate 换 token，或直接 push；重新登记请先删除 ~/.xjtu-timetable-calendar/subscribe/subscribe-<学期>.json。",
+            )
         url_base = args.url_base or subscribe.derive_url_base(args.repo)
         if not url_base:
-            raise XjtuCalendarError(f"无法从 repo 推导 Pages 地址：{args.repo}", hint="非 GitHub 远端请用 --url-base 显式给出 .ics 的公开访问前缀。")
-        state = subscribe.SubscriptionState(semester=semester, repo_url=args.repo, branch=args.branch, token=subscribe.new_token(), url_base=url_base)
+            raise XjtuCalendarError(
+                f"无法从 repo 推导 Pages 地址：{args.repo}",
+                hint="非 GitHub 远端请用 --url-base 显式给出 .ics 的公开访问前缀。",
+            )
+        state = subscribe.SubscriptionState(
+            semester=semester,
+            repo_url=args.repo,
+            branch=args.branch,
+            token=subscribe.new_token(),
+            url_base=url_base,
+        )
         subscribe.save_state(cfg, state)
         print(f"订阅 URL：{state.subscription_url}")
         print()
@@ -967,14 +1008,22 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
 
     state = subscribe.load_state(cfg, semester)
     if state is None:
-        raise SubscribeNotConfigured(f"学期 {semester} 尚未登记订阅", hint=f"先运行：xjtu-calendar subscribe init --repo <URL> --semester {semester}")
+        raise SubscribeNotConfigured(
+            f"学期 {semester} 尚未登记订阅",
+            hint=f"先运行：xjtu-calendar subscribe init --repo <URL> --semester {semester}",
+        )
 
     if args.action == "push":
         age = subscribe.snapshot_age_days(cfg, semester)
         if age is not None and age > 7:
             logger.warning("raw 快照已 %.0f 天未更新，建议先 fetch 再 push（本次继续）", age)
         last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
-        result_ics = build_ics_for_semester(cfg, semester, input_path=getattr(args, "input", None), baseline_probe=str(last_local) if last_local.is_file() else None)
+        result_ics = build_ics_for_semester(
+            cfg,
+            semester,
+            input_path=getattr(args, "input", None),
+            baseline_probe=str(last_local) if last_local.is_file() else None,
+        )
         res = subscribe.publish(cfg, state, result_ics.ics)
         if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
             print("无变化，跳过推送。")

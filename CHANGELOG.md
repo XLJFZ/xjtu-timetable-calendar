@@ -6,7 +6,49 @@
 
 ---
 
-## [Unreleased]
+## [0.3.0] - 2026-10-07
+
+能力与安全的收口版本：`schedule` 打通作息表自动获取（v0.2 路线图待办清零）、
+`diff` 提供课表变化检测；一批「承诺与代码的缝隙」类缺陷修复（端点指引、日志脱敏、
+凭据落盘、cookie 域隔离）；发布通道（Release 资产自动挂载 + PyPI 可信发布）就绪。
+**UID 算法与导出事件内容均无变化**，对已导入用户是安全的原地升级。
+
+### Added
+
+- **作息表自动获取（`schedule` 子命令）**：解析教务处公开「学生作息时间表」页
+  （`due.xjtu.edu.cn/xxfw/zxsj.htm`），第 1~10 节课两季钟点取自页面网格，
+  切换点（5月1日 / 10月1日开始实行）取自列表头原文；生效区间的年份覆盖来自学期校历
+  （校历给不出学期末时 `--apply` 拒绝，不猜截止日）。与 `notice` 同口径：
+  默认预览、`--apply` 只新增不覆盖、未知行类别进 unresolved 并整体拒写、
+  写前写后 `ScheduleTable` 校验、原子替换、幂等（无新增时文件字节不变）。
+  新增 `src/xjtu_calendar/schedule_notice.py`、官方页脱敏固件
+  `tests/fixtures/schedule_zxsj.html` 与 23 项测试（含 CLI 级 e2e）。
+  **v0.2 路线图的唯一待办就此完成。**
+- **调课检测（`diff` 子命令 + `fetch` 快照轮转）**：`fetch` 覆盖缓存前把上一份 raw
+  快照原子轮转为 `timetable-<semester>.prev.json`（单代基线，无需手工留底）；
+  `diff` 纯本地比对新旧快照，按「课程级（整门新增/删除）→ 时段级（星期+节次配对，
+  增减时段）→ 字段级（周次 / 教室 / 教师 / 课程名）」三层输出变化清单。
+  课程改名按时段变化呈现——正是 UID 已知边界会被日历当成新事件的情形，提前可见。
+  无基线时明确说明补救方式（`--old` 显式指定），不假装成功。
+  新增 `src/xjtu_calendar/diff.py`、`tests/test_diff.py`、`tests/test_cli_diff.py`。
+- **发布通道**：
+  - `.github/workflows/release.yml`——GitHub Release 发布时自动构建 sdist + wheel、
+    `twine check` 后挂载到该 Release；
+  - `.github/workflows/publish-pypi.yml`——手动触发的 PyPI 可信发布（OIDC trusted
+    publishing，仓库不存 token；需在 PyPI 侧一次性登记 publisher，步骤见文件注释与
+    README「开发 → 发布」）。
+- **GitHub Pages 落地页**（`index.html`）：替换默认 Jekyll 的 README 硬渲染，
+  手写单文件响应式设计（内联 CSS、零外部依赖）。
+- 新增 54 项测试（CLI 端点指引 2、日志脱敏 2、原子写入 6、会话落盘回归 1、
+  URL 白名单 1、作息获取 23、cookie 域过滤 2、登录页长页识别 1、VTIMEZONE 守卫 1、
+  指纹一致性守卫 1、diff 14）；`pytest` 口径 367 → **421**（含 doctest）。
+
+### Changed
+
+- **VTIMEZONE 改为全量定义（不再按事件范围裁剪 ±1 天）**：`Asia/Shanghai` 1991 年起恒为
+  +08:00，组件本就只有一个 `STANDARD`，裁剪省不下体积；而个别日历客户端按 `TZID`
+  全局缓存时区定义，一份「只在 X~Y 有效」的裁剪定义可能污染其他日历。事件钟点零变化
+  （有结构回归守卫）。0.2.0 条目中「按本次事件范围生成」的描述以本条为准。
 
 ### Fixed
 
@@ -31,48 +73,12 @@
   前 4000 字符之外（长 `<head>`/样式脚本）会被误判成普通的「响应不是 JSON」。特征扫描
   放宽到 64 KiB，让用户看到「该重新 login」而不是含糊的获取失败。
 
-### Changed
-
-- **VTIMEZONE 改为全量定义（不再按事件范围裁剪 ±1 天）**：`Asia/Shanghai` 1991 年起恒为
-  +08:00，组件本就只有一个 `STANDARD`，裁剪省不下体积；而个别日历客户端按 `TZID`
-  全局缓存时区定义，一份「只在 X~Y 有效」的裁剪定义可能污染其他日历。事件钟点零变化
-  （有结构回归守卫）。
-
 ### Removed
 
 - 清理零引用死代码（git 历史可随时找回）：`weeks._ODD_KEYWORDS/_EVEN_KEYWORDS`、
   `parser.iter_meeting_groups` / `parser.parse_date_range`、`auth.clear_session` /
   `auth.assert_not_expired`、`errors.WeekError` / `errors.PeriodError`、
   `ScheduleProfile.covers`、`timeutil.ensure_tz`。
-
-### Added
-
-- **调课检测（`diff` 子命令 + `fetch` 快照轮转）**：`fetch` 覆盖缓存前把上一份 raw
-  快照原子轮转为 `timetable-<学期>.prev.json`（单代基线，无需手工留底）；
-  `diff` 纯本地比对新旧快照，按「课程级（整门新增/删除）→ 时段级（星期+节次配对，
-  增减时段）→ 字段级（周次 / 教室 / 教师 / 课程名）」三层输出变化清单。
-  课程改名按时段变化呈现——正是 UID 已知边界会被日历当成新事件的情形，提前可见。
-  无基线时明确说明补救方式（`--old` 显式指定），不假装成功。
-  新增 `src/xjtu_calendar/diff.py`、`tests/test_diff.py`、`tests/test_cli_diff.py`。
-- **作息表自动获取（`schedule` 子命令）**：解析教务处公开「学生作息时间表」页
-  （`due.xjtu.edu.cn/xxfw/zxsj.htm`），第 1~10 节课两季钟点取自页面网格，
-  切换点（5月1日 / 10月1日开始实行）取自列表头原文；生效区间的年份覆盖来自学期校历
-  （校历给不出学期末时 `--apply` 拒绝，不猜截止日）。与 `notice` 同口径：
-  默认预览、`--apply` 只新增不覆盖、未知行类别进 unresolved 并整体拒写、
-  写前写后 `ScheduleTable` 校验、原子替换、幂等（无新增时文件字节不变）。
-  新增 `src/xjtu_calendar/schedule_notice.py`、官方页脱敏固件
-  `tests/fixtures/schedule_zxsj.html` 与 23 项测试（含 CLI 级 e2e）。
-  **v0.2 路线图的唯一待办就此完成。**
-- **发布通道**：
-  - `.github/workflows/release.yml`——GitHub Release 发布时自动构建 sdist + wheel、
-    `twine check` 后挂载到该 Release；
-  - `.github/workflows/publish-pypi.yml`——手动触发的 PyPI 可信发布（OIDC trusted
-    publishing，仓库不存 token；需在 PyPI 侧一次性登记 publisher，步骤见文件注释与
-    README「开发 → 发布」）。
-- 新增 12 项测试（CLI 端点指引 2、日志脱敏 2、原子写入 6、会话落盘回归 1、URL 白名单 1）
-  与 5 项测试（cookie 域过滤 2、登录页长页识别 1、VTIMEZONE 全量定义守卫 1、
-  VEVENT 属性 ⊆ 指纹字段一致性守卫 1）与 14 项测试（diff 单元 9、快照轮转 1、
-  diff CLI e2e 4）；`pytest` 口径 367 → **421**（含 doctest，另含 `schedule` 的 23 项）。
 
 ---
 

@@ -318,13 +318,15 @@ python -m xjtu_calendar fetch --semester 2026-fall
 python -m xjtu_calendar subscribe push --semester 2026-fall
 ```
 
-- push 与 `export` 共用同一条构建管线，数据源参数也相同
-  （`--input` 可直接指定课表 JSON，默认用 fetch 缓存）。
-- 内容与上次发布完全一致时报「无变化，跳过推送」，不动远端。
+- push 与 `export` 共用同一条构建管线，但只暴露两个数据源参数：
+  `--input`（可直接指定课表 JSON，默认用 fetch 缓存）与 `--semester`。
+- 内容与上次发布完全一致时，工具会尽量跳过推送；即便重复推送，效果也是
+  幂等的——远端始终只有一个提交，课表没变就不会产生新的变化。
 - raw 快照超过 7 天会警告「建议先 fetch」，但不阻断。
 - SEQUENCE 基线来自本地留底 `subscribe/last-<学期>.ics`：未变动的事件在客户端
   保持安静，变动的事件原地更新——与重新导入的行为同一口径。
-- `subscribe status` 汇总 URL、上次发布时间、留底与远端是否一致、快照年龄。
+- `subscribe status` 汇总 URL、上次发布时间、本地留底与上次发布记录是否一致、
+  快照年龄。
 
 ### 换 token（rotate）
 
@@ -338,6 +340,7 @@ python -m xjtu_calendar subscribe rotate --semester 2026-fall
 `subscribe push`）。新文件挂上分支、旧文件名从 tip 消失，**旧 URL 自此 404**；
 **所有日历客户端都要重新粘贴新 URL**——这是换 token 的固有成本。
 极端情况 rotate 后发布失败（网络/权限）：token 已换、远端还挂着旧文件名，
+**补发成功前旧 URL 仍可读取**——这正是需要尽快补发（或清理）的原因；
 按终端提示修复后跑 `subscribe push` 补发即可。
 
 ### 隐私口径
@@ -350,7 +353,7 @@ python -m xjtu_calendar subscribe rotate --semester 2026-fall
    Pages 构建完成后的下一次自动拉取才呈现新状态。`status --verify` 可确认。
 
 token 状态文件按收紧的文件权限写盘（与 `storage_state.json` 同等待遇）；
-日志只记分支名与内容哈希，**不记订阅 URL / token**。
+日志**不落订阅 URL / token**。
 
 ### 已知边界
 

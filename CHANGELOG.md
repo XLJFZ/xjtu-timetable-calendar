@@ -26,8 +26,23 @@
 
 ### Added
 
+- **作息表自动获取（`schedule` 子命令）**：解析教务处公开「学生作息时间表」页
+  （`due.xjtu.edu.cn/xxfw/zxsj.htm`），第 1~10 节课两季钟点取自页面网格，
+  切换点（5月1日 / 10月1日开始实行）取自列表头原文；生效区间的年份覆盖来自学期校历
+  （校历给不出学期末时 `--apply` 拒绝，不猜截止日）。与 `notice` 同口径：
+  默认预览、`--apply` 只新增不覆盖、未知行类别进 unresolved 并整体拒写、
+  写前写后 `ScheduleTable` 校验、原子替换、幂等（无新增时文件字节不变）。
+  新增 `src/xjtu_calendar/schedule_notice.py`、官方页脱敏固件
+  `tests/fixtures/schedule_zxsj.html` 与 23 项测试（含 CLI 级 e2e）。
+  **v0.2 路线图的唯一待办就此完成。**
+- **发布通道**：
+  - `.github/workflows/release.yml`——GitHub Release 发布时自动构建 sdist + wheel、
+    `twine check` 后挂载到该 Release；
+  - `.github/workflows/publish-pypi.yml`——手动触发的 PyPI 可信发布（OIDC trusted
+    publishing，仓库不存 token；需在 PyPI 侧一次性登记 publisher，步骤见文件注释与
+    README「开发 → 发布」）。
 - 新增 12 项测试（CLI 端点指引 2、日志脱敏 2、原子写入 6、会话落盘回归 1、URL 白名单 1）；
-  `pytest` 口径 367 → **379**（含 doctest）。
+  `pytest` 口径 367 → **402**（含 doctest，另含上条的 23 项）。
 
 ---
 

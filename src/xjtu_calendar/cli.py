@@ -135,6 +135,25 @@ def build_parser() -> argparse.ArgumentParser:
         "存在无法解析的行时拒绝写入（fail-closed）。",
     )
 
+    # --- schedule ---
+    from .schedule_notice import DEFAULT_SCHEDULE_URL
+
+    schedule = sub.add_parser(
+        "schedule",
+        help="获取教务处公开「学生作息时间表」页，预览或合并进作息表配置（默认官方页，无需登录）",
+    )
+    schedule.add_argument("--url", help=f"作息页地址，默认 {DEFAULT_SCHEDULE_URL}")
+    schedule.add_argument("--from-file", help="离线模式：读取本地保存的 HTML")
+    schedule.add_argument(
+        "--semester",
+        help="学期标识。生效区间的覆盖范围来自该学期校历（--apply 时必填）",
+    )
+    schedule.add_argument(
+        "--apply",
+        action="store_true",
+        help="合并进 schedules/schedule.json（只新增、不覆盖；有无法归类的行时拒绝写入）",
+    )
+
     # --- inspect ---
     inspect = sub.add_parser("inspect", help="对原始课表 JSON 做脱敏结构分析")
     inspect.add_argument("--input", help="课表 JSON 路径（默认用本地缓存）")
@@ -665,6 +684,127 @@ def cmd_notice(args: argparse.Namespace, cfg: Settings) -> int:
     return 0
 
 
+def cmd_schedule(args: argparse.Namespace, cfg: Settings) -> int:
+    """获取并解析教务处公开的「学生作息时间表」，预览或合并进作息表配置。
+
+    fail-closed 契约（与 ``notice`` 同口径）：
+
+    - 有无法归类的行 → ``--apply`` 整体拒绝写入；
+    - 校历给不出学期末（``total_weeks`` / ``end_date`` 都没有）→ 拒绝并说明，
+      **不猜**覆盖截止日期；
+    - 合并只新增，现配置永远优先。
+    """
+    from .notices import NoticeParseError, fetch_notice_html
+    from .schedule_notice import (
+        DEFAULT_SCHEDULE_URL,
+        merge_schedule_config,
+        parse_schedule_page,
+        plan_schedule,
+    )
+
+    if args.from_file:
+        html = Path(args.from_file).read_text(encoding="utf-8")
+        source = str(args.from_file)
+    else:
+        url = args.url or DEFAULT_SCHEDULE_URL
+        html = fetch_notice_html(url)
+        source = url
+
+    notice = parse_schedule_page(html)
+
+    def fmt(pair: tuple[str, str] | None) -> str:
+        return f"{pair[0]}-{pair[1]}" if pair else "—"
+
+    print(f"来源: {source}")
+    if notice.summer_switch and notice.winter_switch:
+        s, w = notice.summer_switch, notice.winter_switch
+        print(f"切换点: 夏秋季 {s[0]}月{s[1]}日起 | 冬春季 {w[0]}月{w[1]}日起（取自列表头原文）")
+    print()
+    print("教学节次（节次 | 夏、秋季 | 冬、春季）:")
+    for number in sorted(set(notice.summer) | set(notice.winter)):
+        print(f"  第{number}节  {fmt(notice.summer.get(number))}  {fmt(notice.winter.get(number))}")
+    print()
+    if notice.notes:
+        print(f"非教学行（仅作说明，共 {len(notice.notes)} 条，不写入配置）:")
+        for item, summer_raw, winter_raw in notice.notes:
+            print(f"  {item}: {summer_raw} / {winter_raw}")
+        print()
+    if notice.unresolved:
+        print(f"⚠️ 需人工确认（{len(notice.unresolved)} 行，不会自动写入）:")
+        for row in notice.unresolved:
+            print(f"  {row.item_text} | {row.summer_text} / {row.winter_text}（{row.reason}）")
+        print()
+
+    semester = args.semester or cfg.semester_key
+
+    if not args.apply:
+        if notice.unresolved:
+            print(
+                "⚠️ 存在无法可靠归类的行，当前结果**不完整，不可直接应用**；--apply 会因此拒绝写入。"
+            )
+        else:
+            print("以上为预览（未写入任何文件）。")
+        print(
+            "加 --semester <学期> --apply 可合并进 schedules/schedule.json："
+            "生效区间的覆盖范围来自该学期校历。"
+        )
+        return 0
+
+    if not semester:
+        raise SemesterNotConfigured(
+            "未指定学期",
+            hint="--apply 需要学期校历确定生效区间覆盖范围：用 --semester 指定，"
+            "或设置环境变量 XJTU_SEMESTER。",
+        )
+    calendar_path = cfg.semester_config_path(semester)
+    if not calendar_path.is_file():
+        raise SemesterNotConfigured(
+            f"未找到学期 {semester} 的教学日历：{calendar_path}",
+            hint="作息生效区间要用 first_week_monday 与学期末确定覆盖范围，请先建好校历配置。",
+        )
+    academic = AcademicCalendar.from_file(calendar_path)
+    lower = academic.semester.first_week_monday
+    _, upper = academic.semester.export_date_range()
+    if upper is None:
+        raise XjtuCalendarError(
+            f"无法确定学期 {semester} 的学期末（校历既没有 total_weeks 也没有 end_date），"
+            "拒绝猜测覆盖截止日期。"
+        )
+
+    if notice.unresolved:
+        details = "\n".join(
+            f"  {row.item_text} | {row.summer_text} / {row.winter_text}（{row.reason}）"
+            for row in notice.unresolved
+        )
+        raise NoticeParseError(
+            f"发现 {len(notice.unresolved)} 行无法可靠归类的作息条目，因此拒绝修改作息表配置。\n"
+            f"{details}\n"
+            "请先人工确认（新行类别需要先补充解析白名单，不做静默归类）。",
+            hint="作息表配置未被改动（fail-closed）。",
+        )
+
+    plan = plan_schedule(notice, lower=lower, upper=upper)
+    target = cfg.schedule_config_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    summary = merge_schedule_config(target, plan)
+
+    print(
+        f"已合并进作息表配置（只新增，现有条目未被覆盖；覆盖范围 "
+        f"{lower.isoformat()} ~ {upper.isoformat()}）:"
+    )
+    for key in summary["added_profiles"]:
+        print(f"  + 作息表 {key}")
+    for item in summary["added_periods"]:
+        print(f"  + 区间 {item}")
+    if not summary["added_profiles"] and not summary["added_periods"]:
+        print("  （无新增：配置已是最新，文件未被改写）")
+    for warning in summary["warnings"]:
+        logger.warning("%s", warning)
+    print(f"\n配置文件：{target}")
+    print("  已通过 ScheduleTable 校验；节次钟点以页面原文为准，如需修订请直接编辑该文件。")
+    return 0
+
+
 _HANDLERS = {
     "login": cmd_login,
     "status": cmd_status,
@@ -672,6 +812,7 @@ _HANDLERS = {
     "export": cmd_export,
     "inspect": cmd_inspect,
     "notice": cmd_notice,
+    "schedule": cmd_schedule,
 }
 
 

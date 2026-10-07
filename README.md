@@ -201,6 +201,9 @@ pip install httpx
 > **提示**：本项目会自动探测本机已安装的 Edge / Chrome，不需要额外下载浏览器内核。
 > 如需指定浏览器，设置环境变量 `XJTU_CALENDAR_BROWSER`。
 
+> **PyPI**：发布通道已就绪（`Publish to PyPI` 工作流，见「开发 → 发布」）。
+> 包正式发布后，直接 `pip install xjtu-timetable-calendar` 即可，无需 clone。
+
 ---
 
 ## 快速开始
@@ -411,6 +414,8 @@ Output:
 
 > 📌 上面这套节次时间按**西安交通大学当前公开作息时间**填写（夏秋季 05-01 起、
 > 冬春季 10-01 起）。**学校如调整作息，请以最新官方通知为准。**
+> 这张表本身可以由 `schedule` 子命令从教务处官方页自动解析并合并 ——
+> 见下文 [4. 作息表自动获取](#4-作息表自动获取schedule-子命令可选)。
 
 注意生效区间是按**切换日**划分，不是按学期：学校的作息切换不是时区夏令时
 （`Asia/Shanghai` 全年不变），切换点会落在学期中间——一个学期完全可能跨越两套作息。
@@ -456,6 +461,37 @@ python -m xjtu_calendar notice --url <通知页地址> --semester 2026-2027-1 --
 > 📌 通知页是普通公开网页，`notice` 只发匿名 GET 请求，**不携带任何登录凭据**，
 > 且 `--url` 只接受 `http/https` 地址（本地保存的 HTML 请走 `--from-file`）。
 
+### 4. 作息表自动获取（`schedule` 子命令，可选）
+
+教务处公开页「学生作息时间表」（`due.xjtu.edu.cn/xxfw/zxsj.htm`）以表格列出
+夏/冬两套作息第 1~10 节课的起止钟点，切换点就写在列表头原文里
+（「5月1日开始实行」「10月1日开始实行」）。`schedule` 自动解析并（在你确认后）
+合并进 `schedules/schedule.json`：
+
+```bash
+# 预览：抓取官方页打印解析结果，不写任何文件
+python -m xjtu_calendar schedule
+
+# 离线解析本地保存的 HTML
+python -m xjtu_calendar schedule --from-file zxsj.html
+
+# 合并进作息配置（生效区间的覆盖范围来自学期校历）
+python -m xjtu_calendar schedule --semester 2026-2027-1 --apply
+```
+
+解析规则与安全边界（与 `notice` 同口径）：
+
+- 只把「第N节课」行提取为 profiles；早餐/午餐/午休/预备铃等行仅作说明、不写入；
+  **新增的行类别会进 `unresolved` 并让 `--apply` 整体拒绝写入**——不做静默猜测；
+- 切换点取自列表头原文（月-日），年份覆盖区间来自学期校历
+  （`first_week_monday` ~ 学期末）；校历没有 `total_weeks` / `end_date` 时
+  `--apply` 拒绝——**不猜**截止日期；
+- 合并**只新增**：已有 profile 键 / 已有区间一律保留现值并警告；
+  无任何新增时文件字节不变（幂等，可重复执行）；
+- 写前 / 写后都过 `ScheduleTable` 正式校验（区间重叠、引用未定义 → 拒绝），
+  并以原子替换落盘；
+- 页面是普通公开网页，匿名 GET、无凭据，且 `--url` 只接受 `http/https`。
+
 ---
 
 ## 命令参考
@@ -467,6 +503,7 @@ python -m xjtu_calendar notice --url <通知页地址> --semester 2026-2027-1 --
 | `fetch [--semester S] [--source auto\|http\|browser] [--from-file F]` | 获取课表原始 JSON |
 | `export [--semester S] [-o OUT] [--input F] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence]` | 生成 `.ics` |
 | `notice --url U \| --from-file F [--semester S] [--apply]` | 解析停课/调课通知，预览或合并进学期配置 |
+| `schedule [--url U \| --from-file F] [--semester S] [--apply]` | 解析官方「学生作息时间表」页，预览或合并进作息表配置 |
 | `inspect [--input F] [-o OUT]` | 对原始 JSON 做**脱敏**结构分析 |
 
 全局参数：`--debug`（详细异常）、`-q`（静默）、`--version`
@@ -514,7 +551,7 @@ xjtu-timetable-calendar/
 │   ├── cli.py                          # 命令行入口
 │   ├── config.py                       # 集中配置（URL / appId / 目录）
 │   ├── errors.py                       # 异常体系 + 退出码
-│   ├── fileutil.py                     # 原子替换写入（校历配置 / 会话文件共用）
+│   ├── fileutil.py                     # 原子替换写入（校历配置 / 作息表 / 会话文件共用）
 │   ├── logging_setup.py                # 日志与脱敏工具
 │   ├── models.py                       # Semester / Course / CourseMeeting / CalendarEvent
 │   ├── weeks.py                        # 教学周文本解析（含 SKZC 位掩码）
@@ -526,6 +563,7 @@ xjtu-timetable-calendar/
 │   ├── fetcher.py                      # 课表抓取（HTTP / 浏览器双路径）
 │   ├── exporter.py                     # → CalendarEvent → .ics
 │   ├── notices.py                      # 停课/调课通知解析（HTML 表格 → 配置条目）
+│   ├── schedule_notice.py              # 官方作息页解析（表格 → schedule.json 合并方案）
 │   ├── sequence.py                     # SEQUENCE / LAST-MODIFIED 版本管理
 │   ├── timeutil.py                     # 时区常量（Asia/Shanghai）
 │   └── data/
@@ -545,10 +583,14 @@ xjtu-timetable-calendar/
 │   ├── test_packaging.py               # 版本号单一来源 + 包内资源随 wheel 分发
 │   ├── test_sequence.py                # SEQUENCE / LAST-MODIFIED 版本管理
 │   ├── test_notices.py                 # 通知解析 / 周次交叉校验 / 只新增合并
+│   ├── test_schedule_notice.py         # 作息页解析 / 区间铺排 / 只新增合并 / 幂等
+│   ├── test_cli_schedule.py            # schedule 子命令 CLI 级 e2e（fail-closed 契约）
+│   ├── test_cli_notice.py              # notice 子命令 CLI 级 e2e
 │   └── fixtures/
 │       ├── timetable_sample.json           # 手工构造的脱敏样例
 │       ├── ehall_timetable_real_sanitized.json  # 真实结构脱敏固件
-│       └── notice_holiday_2026.html        # 真实停课/调课通知固件（样式已剥离）
+│       ├── notice_holiday_2026.html        # 真实停课/调课通知固件（样式已剥离）
+│       └── schedule_zxsj.html              # 官方「学生作息时间表」页固件（2026-10-07 抓取）
 └── examples/
     ├── academic_calendar.example.json
     └── schedule.example.json
@@ -652,7 +694,7 @@ class CourseMeeting:
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 379 项测试（含 doctest）
+pytest                      # 402 项测试（含 doctest）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）
@@ -685,6 +727,18 @@ Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**�
 > 处置任选其一：重装 editable、`python -m build` 重建、或直接把该目录移走。
 > 该目录**不要**提交，也**不需要**改测试去迁就它。
 
+### 发布
+
+- **GitHub Release 全自动挂资产**：Release 一旦发布（`published`），
+  `.github/workflows/release.yml` 构建 sdist + wheel、过 `twine check`，
+  并上传到该 Release。CI 的质量门禁仍由 `ci.yml` 独立负责，两者互不干扰。
+- **PyPI 走手动可信发布**：`.github/workflows/publish-pypi.yml` 需在
+  Actions 页手动触发（workflow_dispatch），使用 OIDC trusted publishing，
+  **仓库不保存任何 token**。一次性前置：在 pypi.org 为本仓库登记
+  trusted publisher（Workflow 填 `publish-pypi.yml`，Environment 填 `pypi`），
+  细节写在该 workflow 文件头部注释里。PyPI 拒绝重复版本号，误发有保险。
+- 版本号仍是 `pyproject.toml` 单一来源；升版后记得按上文重装 editable。
+
 若你在自己的分支上看到大量 `RUF001/002/003`，那是规则的已知误报 ——
 它把**中文全角标点**当成「易混淆 Unicode」，而本项目的 docstring、注释与
 面向用户的文案本身就是中文。这些规则已在 `pyproject.toml` 里显式关闭，
@@ -699,6 +753,8 @@ Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**�
 - **UID**：重复导出不变、不同日期不同、不含地点（换教室不产生新事件）
 - **SEQUENCE / LAST-MODIFIED**：无基线归零、内容未变保留、内容变更递增、UTC 规范、基线解析容错
 - **通知解析**：表格网格展开（rowspan/colspan）、周次交叉校验、停课/调课分类、只新增合并、无法识别行不落盘
+- **作息获取**：官方作息页网格解析（第 1~10 节课、切换点取自表头原文）、非教学行仅作说明、
+  未知行类别进 unresolved 并拒写、生效区间跨切换点/跨年铺排、幂等（无新增时文件字节不变）
 - **ICS**：必需属性齐全、**课程 VEVENT 不使用 RRULE**（时区组件内部的规则不受此约束）、
   CRLF、时区 `Asia/Shanghai` 且内嵌 `VTIMEZONE`（TZID 引用完整）、特殊字符转义
 - **接口层**：响应分类（含「200 + 登录页 HTML」判为会话失效）、占位符端点拒绝、401/403 不重试
@@ -742,7 +798,9 @@ python scripts/probe_ehall.py
 的调课整理进学期配置（周次与学期起始日交叉校验）；解析不了的行逐条列出且不落盘，
 只要存在无法可靠解析的行，`--apply` 就整体拒绝写入（fail-closed）。
 当然也可以随时手工录 `excluded_dates` 与 `overrides`。
-**作息表**的自动获取仍属路线图内容。
+**作息表**的自动获取同样已经实现 —— 见上文
+[4. 作息表自动获取](#4-作息表自动获取schedule-子命令可选)（`schedule` 子命令，
+官方作息页，切换点取自页面原文，fail-closed 同口径）。
 
 **Q：为什么不用一个 RRULE 简化 ICS？**
 
@@ -786,10 +844,12 @@ python -m xjtu_calendar login --force
 - [x] 产出首份真实 `.ics`
 - [x] `SEQUENCE` / `LAST-MODIFIED` 版本管理（重新导入可正确更新）
 - [x] 停课/调课通知自动解析合并（`notice` 子命令，含周次交叉校验）
+- [x] 作息表自动获取（`schedule` 子命令，官方作息页；切换点取自表头原文，
+  覆盖范围来自学期校历，fail-closed + 只新增 + 幂等）
 
 **待完成**
 
-- [ ] 从学校官方来源自动获取**作息表**（校历停课/调课部分已由 `notice` 覆盖）
+- （本条路线图的待办已全部完成；下方「未来扩展」为架构已预留的新一批方向）
 
 **未来扩展（架构已预留）**
 

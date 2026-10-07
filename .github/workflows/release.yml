@@ -1,0 +1,47 @@
+name: Release assets
+
+# Release 发布（GitHub Release published 事件）时构建 sdist + wheel
+# 并挂载到该 Release。与 ci.yml 的分工：
+#   ci.yml     —— push/PR 的质量门禁（测试/mypy/ruff/wheel 自包含），刻意不做发布；
+#   本 workflow —— 由人发布 Release 触发，产物只挂 GitHub Release，不上 PyPI。
+# PyPI 发布是另一个**手动** workflow（publish-pypi.yml），见 README「发布」一节。
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-upload:
+    name: build & attach assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Sanity check metadata
+        run: |
+          python -m pip install twine
+          python -m twine check dist/*
+          ls -l dist
+
+      - name: Upload to this GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber

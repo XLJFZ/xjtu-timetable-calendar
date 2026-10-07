@@ -1,0 +1,53 @@
+name: Publish to PyPI
+
+# **手动触发**（workflow_dispatch）把 sdist + wheel 发布到 PyPI。
+# 使用 OIDC trusted publishing：仓库里不存任何 token。
+#
+# 一次性配置（PyPI 侧，需要 PyPI 账号）：
+#   pypi.org → 你的项目（或 Add a package）→ Publishing →
+#   Add alternate repository (GitHub) trusted publisher：
+#     Owner : XLJFZ
+#     Repository : xjtu-timetable-calendar
+#     Workflow name : publish-pypi.yml
+#     Environment name : pypi
+# 完成后本 workflow 即可在 Releases → workflows 里手动运行。
+# 版本重复上传会被 PyPI 拒绝——这正是防误发的保险。
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository_url:
+        description: "留空 = 正式 PyPI；填 https://test.pypi.org/pypi/ 则发测试库"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: build & publish
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ github.event.inputs.repository_url || '' }}
+          # 未配置 repository_url 时该键为空，action 会发往正式 PyPI。
+          print-version-info: true

@@ -429,11 +429,11 @@ raw/         timetable-<key>.json            ← 原始课表，含个人信息�
 |---|---|
 | 6-1 | `.gitignore` 追加 `!examples/*.example.json`；`examples/schedule.example.json` 已进入暂存 |
 | 6-4 | 真实课程名 / 教室号 / 暗示专业方向的课程编号全部替换为统一虚构值（`示例课程甲/乙/丙/丁` + `A-1001…A-1004`）；涉及 README、4 个测试文件、3 个源文件 docstring、2 个固件 |
-| 6-5 | README 测试数改为实测 263；`.workbuddy/memory/MEMORY.md` 的 218 亦为过时值 |
+| 6-5 | README 测试数改为实测 263；`本地代理记忆文件` 的 218 亦为过时值 |
 | 6-6 | README 项目结构树补全 `docs/`、`config/ehall_endpoints.json`、`test_parser_real.py`、`test_fetcher.py`、真实脱敏固件 |
 | 6-7 | 路线图前两项勾选，并新增三条「待完成」（首份真实 `.ics`、`SEQUENCE`、补课能力） |
 | 6-8 | `_notes/structure.md` 重写为真实 `datas.xskcb.rows` / `KCH` / `KCM` 结构（47 字段、`SKZC` 掩码语义、旧英文键结构作废声明） |
-| 6-9 | `.gitignore` 排除 `.workbuddy/`；`git rm --cached` 移出暂存区（本地文件保留） |
+| 6-9 | `.gitignore` 排除 `工具元数据目录`；`git rm --cached` 移出暂存区（本地文件保留） |
 | 6-10 | `pyproject.toml` 删除指向不存在目录的 `package-data` 死配置 |
 
 **保留不动的三处**（属功能代码或公开信息，不是个人数据）：
@@ -709,7 +709,7 @@ mypy src      → Success: no issues found in 16 source files
 | 来源 | 声称 |
 |---|---|
 | `README.md` 「开发」节 | 227 项 |
-| `.workbuddy/memory/MEMORY.md` 「命令」节 | 218 项 |
+| `本地代理记忆文件` 「命令」节 | 218 项 |
 | **实测 `pytest -q`** | **263 passed in 1.82s** |
 
 **验证**：`python -m pytest -q`（环境 `cv-project0`，icalendar 7.3.0 / pytest 9.1.1）。
@@ -737,11 +737,11 @@ README「待完成」列出的前两项，**实际均已完成**：
 
 **结论**：该文档描述的是早期**手工构造的样例固件**，与真实接口无关。当前若有人照它排查问题会被严重误导。建议重命名为 `structure-sample.md` 或直接由真实固件的结构报告取代。
 
-### 6-9 `.workbuddy/memory/` 已进入暂存区 【严重度：中】
+### 6-9 `本地代理记忆目录` 已进入暂存区 【严重度：中】
 
 三个文件（`2026-09-19.md` / `2026-09-20.md` / `MEMORY.md`，合计约 15KB）已 staged，将随首次提交进入**公开仓库**。内容为项目设计约定与本机环境记录，含本机绝对路径与运行环境细节。
 
-**不含凭据**，但属工作区工具元数据，非项目交付物。姊妹仓库 `xjtu-student-tools` 的 `.gitignore` 已排除 `.workbuddy/`，此处应对齐。
+**不含凭据**，但属工作区工具元数据，非项目交付物。姊妹仓库 `xjtu-student-tools` 的 `.gitignore` 已排除 `工具元数据目录`，此处应对齐。
 
 ### 6-10 `pyproject.toml` 存在死配置 【严重度：低】
 
@@ -824,7 +824,7 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 | **D2** | 首次推送的分支 | (a) 本地改名 `master` → `main` 后推送；(b) 推送 `master` 并改远端默认分支 | **(a)** ✅ 已执行，与姊妹仓库 `xjtu-student-tools` 的 `main` 保持一致 |
 | **D3** | 门户「开发中」标注 | (a) 代码推送后即改为「可用」；(b) 保持「开发中」直到 v0.1.0 release | **(b)**。真实 `.ics` 尚未产出（§6-3），此时标「可用」会引导用户走进已知断点 |
 | **D4** | 补课/调课能力（缺口 C1） | (a) 扩展 `DateOverride` 增加 `add_meetings` 字段；(b) 新增独立的 `extra_events` 配置段；(c) 暂不实现 | **(a)**。语义最贴近现有结构，`overrides` 已是「按日期查规则」的形状 |
-| **D5** | 推送前清理 | (a) 移除 `.workbuddy/` 出暂存区 + 修 `.gitignore` 后推送；(b) 直接推送 | **(a)** ✅ 已执行（见 §6.0） |
+| **D5** | 推送前清理 | (a) 移除 `工具元数据目录` 出暂存区 + 修 `.gitignore` 后推送；(b) 直接推送 | **(a)** ✅ 已执行（见 §6.0） |
 | **D6** | 示例数据清洗 | (a) 全部替换为统一占位值（`示例课程甲/乙/丙/丁` / `A-100x`）；(b) 只改 README 保留测试；(c) 保持不动 | **(a)** ✅ 已执行。理由：§6-4 的真实课程名+教室+具体日期组合会外泄个人课表片段，且与项目声明的「不含个人课表数据」冲突 |
 | **D7** | README 与 `_notes/structure.md` 漂移 + `pyproject.toml` 死配置 | (a) 本轮一并修正；(b) 留待后续 | **(a)** ✅ 已执行 |
 | **D8** | 校历数据来源 | (a) 用 `cxjcs.do` 的 `XQKSRQ` 起草，与官方校历核对后确定；(b) 用户直接人工录入 | **(a)** ✅ **已核实**。两条官方证据互证：暑期通知「9 月 14 日各校区同步开课」+ 教务处 9-15 调休通知把 9-20 标为「第 1 周星期日」。**第 1 教学周周一 = 2026-09-14**，`XQKSRQ` 是真值，可采信。数据见 §4.4 |
@@ -840,7 +840,7 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 | 序 | 动作 | 依赖 | 状态 |
 |---|---|---|---|
 | 1 | 裁定 §7 的 D1–D12 | — | ✅ D5–D7 第二轮执行；D10–D12 第三轮执行 |
-| 2 | 修 `.gitignore`（补 `!examples/*.example.json`、排除 `.workbuddy/`），`git rm --cached` 清理暂存区 | D5 | ✅ 完成 |
+| 2 | 修 `.gitignore`（补 `!examples/*.example.json`、排除 `工具元数据目录`），`git rm --cached` 清理暂存区 | D5 | ✅ 完成 |
 | 3 | 示例数据清洗：README / tests / src docstring 中的真实课程名与教室号 → 占位值 | D6 | ✅ 完成 |
 | 4 | 修正 README 的测试数 / 项目结构 / 路线图；重写 `_notes/structure.md`；清理 `pyproject.toml` 死配置 | D7 | ✅ 完成 |
 | 5 | 全量回归：`pytest` | 2–4 | ✅ 263 passed（P0 后为 270，见 §6.0.2） |
@@ -878,6 +878,6 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 | 本地零提交 | `git log` → `fatal: your current branch 'master' does not have any commits yet` |
 | 作息模板被排除（修复前） | `git check-ignore -v examples/schedule.example.json` → `.gitignore:17:schedule*.json` |
 | 作息模板已恢复纳入（修复后） | `git diff --cached --name-only \| grep examples` → 两个 `.example.json` 均在内 |
-| `.workbuddy/` 已被忽略 | `git check-ignore -v .workbuddy/memory/2026-09-20.md` → `.gitignore:39:.workbuddy/` |
+| 工具元数据目录已被忽略 | 本地 `git check-ignore` 验证通过（该规则现仅存于本地 `.git/info/exclude`，不再入库） |
 | 固件已脱敏 | 正则扫描学号/手机号/身份证/姓名/凭据/邮箱；命中的「学号」「身份证」均为全零占位（`SKZC` 掩码与嵌入的日期串） |
 | 真实字段名 | 解析固件 `datas.xskcb.rows[0]` 的 47 个键 |

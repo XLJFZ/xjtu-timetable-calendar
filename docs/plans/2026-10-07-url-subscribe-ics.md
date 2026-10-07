@@ -1,6 +1,6 @@
 # URL 订阅式 ICS 发布（`subscribe`）实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行方式：** 按任务逐条实现（TDD），每个任务收尾过一次独立评审，全部完成后再做全分支终审。步骤用 checkbox（`- [ ]`）跟踪。
 
 **Goal:** 新增 `subscribe` 子命令，把 export 产物以「孤儿提交 + 不可猜 token 文件名」发布到用户自己的 GitHub Pages 分支，供日历客户端 URL 订阅。
 
@@ -8,15 +8,15 @@
 
 **Tech Stack:** Python 3.11+（stdlib only：secrets/hashlib/subprocess/urllib），pytest，mypy --strict，ruff。
 
-**Spec:** `docs/superpowers/specs/2026-10-07-url-subscribe-ics-design.md`（本计划逐节对应；唯一收紧：`status` 的「未发布变化」以内容哈希布尔呈现，明细仍由 `diff` 命令负责，避免与 diff 内部结构耦合）。
+**Spec:** `docs/design/2026-10-07-url-subscribe-ics.md`（本计划逐节对应；唯一收紧：`status` 的「未发布变化」以内容哈希布尔呈现，明细仍由 `diff` 命令负责，避免与 diff 内部结构耦合）。
 
 ## Global Constraints
 
 - 零新增运行时依赖；不触碰 UID 算法与导出内容（冻结策略）。
 - token/订阅 URL **绝不进 INFO 日志**；`subscribe-<semester>.json` 经 `atomic_write_text(private=True)` 写盘。
 - 全部面向用户文案为中文，风格对照 README 既有章节（fail-closed、给补救指引、不假装成功）。
-- 每个任务收尾：`pytest -q` 全绿 + `mypy` + `ruff check .` + `ruff format --check .`；本地跑 pytest 一律加 `--basetemp=D:/tmp/pytest-tmpSubscribe`（沙箱限制）。
-- 测试命令统一 `C:/Users/lenovo/.workbuddy/binaries/python/envs/cv-project0/Scripts/python.exe -m pytest …`。
+- 每个任务收尾：`pytest -q` 全绿 + `mypy` + `ruff check .` + `ruff format --check .`（本机若默认临时目录受限，给 pytest 指定可写的 `--basetemp`）。
+- 测试命令统一用开发环境的 `python -m pytest …`（环境搭建见 README「开发」节）。
 - git 子进程统一参数列表形式调用，公共参数 `-c core.autocrlf=false -c commit.gpgsign=false`；测试通过环境变量 `GIT_AUTHOR_NAME/GIT_AUTHOR_EMAIL/GIT_COMMITTER_NAME/GIT_COMMITTER_EMAIL` 提供身份（不改动生产行为）。
 - 强推护栏：远端分支 tip 的 tree 必须**恰好只含一个 `*.ics`**，否则 `SubscribeGuardError` 拒绝。
 
@@ -335,7 +335,7 @@ class SubscribePublishError(XjtuCalendarError):
 `subscribe.py`：
 
 ```python
-"""URL 订阅发布：状态文件 + git 孤儿提交发布（设计见 docs/superpowers/specs/…）。"""
+"""URL 订阅发布：状态文件 + git 孤儿提交发布（设计见 docs/design/2026-10-07-url-subscribe-ics.md）。"""
 
 from __future__ import annotations
 

@@ -658,7 +658,9 @@ xjtu-timetable-calendar/
 ├── pyproject.toml
 ├── CHANGELOG.md                        # 版本变更记录
 ├── docs/
-│   └── design-v0.1.md                  # 技术设计 v0.1（设计基准与漂移记录）
+│   ├── design-v0.1.md                  # 技术设计 v0.1（设计基准与漂移记录）
+│   ├── design/                         # 功能设计规格（spec，评审后的权威口径）
+│   └── plans/                          # 对应实现计划（plan，含任务拆分与验收口径）
 ├── .github/workflows/
 │   └── ci.yml                          # CI：pytest / mypy / ruff + wheel 自包含自检
 ├── config/
@@ -684,6 +686,7 @@ xjtu-timetable-calendar/
 │   ├── notices.py                      # 停课/调课通知解析（HTML 表格 → 配置条目）
 │   ├── schedule_notice.py              # 官方作息页解析（表格 → schedule.json 合并方案）
 │   ├── sequence.py                     # SEQUENCE / LAST-MODIFIED 版本管理
+│   ├── subscribe.py                    # URL 订阅：状态文件 + git 孤儿提交发布
 │   ├── timeutil.py                     # 时区常量（Asia/Shanghai）
 │   └── data/
 │       └── ehall_endpoints.json        # 接口定义（真实观测，随 wheel 分发）

@@ -1,4 +1,4 @@
-"""URL 订阅发布：状态文件 + git 孤儿提交发布（设计见 docs/superpowers/specs/…）。
+"""URL 订阅发布：状态文件 + git 孤儿提交发布（设计见 docs/design/2026-10-07-url-subscribe-ics.md）。
 
 状态层负责 token 生成、Pages URL 推导、状态文件的私有原子落盘与往返；
 发布层（:func:`publish`）把渲染好的 .ics 文本以**无父孤儿单提交**强推到

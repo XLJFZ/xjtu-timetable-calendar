@@ -132,6 +132,26 @@ def test_guard_refuses_dirty_branch(env: tuple) -> None:
     assert reloaded is not None and reloaded.last_push is None
 
 
+def test_guard_refuses_nested_single_ics(env: tuple) -> None:
+    cfg, state, origin = env
+    # tip 含且仅含一个文件，但在子目录里（dir/x.ics）：递归 ls-tree 会误判为
+    # 「单个 .ics」放行，随后 add -A 把嵌套文件一并带上新 tip → 强推成两文件。
+    seed = origin.parent / "seed"
+    _git("clone", "-q", origin.resolve().as_uri(), str(seed))
+    (seed / "dir").mkdir()
+    (seed / "dir" / "x.ics").write_text("nested", encoding="utf-8")
+    _git("checkout", "-q", "-b", "cal", cwd=seed)
+    _git("add", "-A", cwd=seed)
+    _git("commit", "-qm", "nested ics", cwd=seed)
+    _git("push", "-q", "origin", "cal", cwd=seed)
+    with pytest.raises(SubscribeGuardError):
+        publish(cfg, state, ICS)
+    assert _tip_tree(origin) == ["dir/x.ics"]  # 远端分毫未动
+    assert state.last_push is None
+    reloaded = subscribe.load_state(cfg, SEMESTER)
+    assert reloaded is not None and reloaded.last_push is None
+
+
 def test_publish_failure_keeps_previous_state(env: tuple) -> None:
     cfg, state, origin = env
     publish(cfg, state, ICS)

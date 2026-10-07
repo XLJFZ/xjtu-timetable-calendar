@@ -167,7 +167,7 @@ def _must_git(work: Path, *args: str) -> str:
     if proc.returncode != 0:
         raise SubscribePublishError(
             f"git {' '.join(args)} 失败：{proc.stderr.strip() or proc.stdout.strip()}",
-            hint="远端仍是上一版。检查网络/凭据后直接重试 push，本地状态未被污染。",
+            hint="远端仍是上一版，本地状态未被污染。修复原因后重新运行 subscribe push。",
         )
     return (proc.stdout or "").strip()
 
@@ -244,7 +244,10 @@ def publish(cfg: Settings, state: SubscriptionState, ics_text: str) -> PublishRe
         )
         _must_git(work, "checkout", "-q", "-B", state.branch, f"origin/{state.branch}")
         listing = _must_git(work, "ls-tree", "-r", "--name-only", "HEAD").split()
-        if len(listing) != 1 or not listing[0].endswith(".ics"):
+        # -r 递归列出：单条 `dir/x.ics` 也能过 len==1/endswith(".ics")，随后
+        # add -A 会把嵌套文件带上新 tip，强推成两文件。故额外拒绝任何含 "/" 的路径，
+        # 护栏要求的是「根目录下唯一一个 *.ics」。
+        if len(listing) != 1 or "/" in listing[0] or not listing[0].endswith(".ics"):
             raise SubscribeGuardError(
                 f"远端分支 {state.branch} 的 tip 含 {len(listing)} 个文件，不是本工具的发布产物，"
                 "拒绝强推覆盖。",

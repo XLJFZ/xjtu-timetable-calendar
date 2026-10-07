@@ -24,8 +24,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
+import urllib.error
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import __version__
 from .academic_calendar import AcademicCalendar
@@ -33,23 +37,17 @@ from .config import Settings
 from .errors import (
     AuthenticationRequired,
     EndpointNotConfigured,
-    ScheduleNotConfigured,
+    GitNotAvailable,
     SemesterNotConfigured,
-    UnsupportedAdjustmentError,
+    SubscribeNotConfigured,
     XjtuCalendarError,
 )
-from .exporter import (
-    DEFAULT_CALENDAR_NAME,
-    build_events,
-    collect_unsupported,
-    render_ics,
-    summarize,
-)
+from .exporter import DEFAULT_CALENDAR_NAME, build_ics_for_semester
 from .logging_setup import get_logger, setup_logging
-from .parser import TimetableParser
-from .schedules import ScheduleTable
-from .sequence import EventBaseline, parse_baseline, sequence_stats
-from .weeks import DEFAULT_EXPANSION_LIMIT
+
+if TYPE_CHECKING:
+    # cmd_subscribe 各分支内部惰性 `from . import subscribe`；这里只为类型标注。
+    from . import subscribe
 
 __all__ = ["build_parser", "main"]
 
@@ -69,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  python -m xjtu_calendar login\n"
             "  python -m xjtu_calendar fetch --semester 2026-fall\n"
             "  python -m xjtu_calendar export --semester 2026-fall --output timetable.ics\n"
+            "  python -m xjtu_calendar subscribe push --semester 2026-fall\n"
         ),
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -165,6 +164,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="旧 raw JSON（默认：fetch 轮转出的上一份快照 timetable-<学期>.prev.json）",
     )
     diff.add_argument("--new", help="新 raw JSON（默认：当前缓存 timetable-<学期>.json）")
+
+    # --- subscribe ---
+    sub_p = sub.add_parser(
+        "subscribe", help="把 .ics 发布到自己的 GitHub Pages 分支，日历客户端按 URL 订阅"
+    )
+    sact = sub_p.add_subparsers(dest="action", metavar="<动作>")
+    sact.required = True
+    init_p = sact.add_parser("init", help="登记发布目标并生成订阅 token")
+    init_p.add_argument("--repo", required=True, help="git 远端 URL（GitHub Pages 仓库）")
+    init_p.add_argument("--branch", default="cal", help="专用发布分支（默认 cal）")
+    init_p.add_argument("--url-base", help="订阅 URL 前缀（GitHub 远端可自动推导）")
+    init_p.add_argument("--semester", help="学期标识，例如 2026-fall")
+    push_p = sact.add_parser("push", help="构建 .ics 并强推到发布分支")
+    push_p.add_argument("--semester")
+    push_p.add_argument("--input", help="直接指定课表 JSON（默认用 fetch 缓存）")
+    rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
+    rot_p.add_argument("--semester")
+    st_p = sact.add_parser("status", help="查看订阅状态、URL 与新鲜度")
+    st_p.add_argument("--semester")
+    st_p.add_argument("--verify", action="store_true", help="匿名 GET 自检 URL 可达性")
 
     # --- inspect ---
     inspect = sub.add_parser("inspect", help="对原始课表 JSON 做脱敏结构分析")
@@ -310,154 +329,38 @@ def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
 
 
 def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
-    from .fetcher import load_raw
-
     semester = args.semester or cfg.semester_key
     if not semester:
         raise SemesterNotConfigured(
             "未指定学期", hint="请用 --semester 指定，或设置环境变量 XJTU_SEMESTER"
         )
 
-    # --- 课表数据 ---
-    if args.input:
-        source = Path(args.input)
-        if not source.is_file():
-            raise XjtuCalendarError(f"课表文件不存在：{source}")
-        payload = json.loads(source.read_text(encoding="utf-8"))
-    else:
-        payload = load_raw(cfg, semester)
-
-    # --- 教学日历 ---
-    calendar_path = (
-        Path(args.calendar_config) if args.calendar_config else cfg.semester_config_path(semester)
+    result = build_ics_for_semester(
+        cfg,
+        semester,
+        input_path=args.input,
+        calendar_config=args.calendar_config,
+        schedule_config=args.schedule_config,
+        calendar_name=args.name,
+        from_date=args.from_date,
+        to_date=args.to_date,
+        allow_unsupported_adjustments=args.allow_unsupported_adjustments,
+        sequence_from=args.sequence_from,
+        baseline_probe=args.output,
+        no_sequence=args.no_sequence,
     )
-    if not calendar_path.is_file():
-        raise SemesterNotConfigured(
-            f"未找到学期 {semester} 的教学日历：{calendar_path}",
-            hint="请参考 examples/academic_calendar.example.json 创建该文件。"
-            "注意：第 1 教学周的星期一等日期必须来自官方校历，不要凭空填写。",
-        )
-    academic = AcademicCalendar.from_file(calendar_path)
-    logger.info("教学日历：%s", academic.semester.name)
 
-    # --- 作息表 ---
-    schedule_path = (
-        Path(args.schedule_config) if args.schedule_config else cfg.schedule_config_path()
-    )
-    if not schedule_path.is_file():
-        raise ScheduleNotConfigured(
-            f"未找到作息表配置：{schedule_path}",
-            hint="请参考 examples/schedule.example.json 创建该文件。"
-            "注意：本项目不内置任何未经官方确认的作息时间，必须由你提供。",
-        )
-    schedules = ScheduleTable.from_file(schedule_path)
-
-    problems = schedules.validate()
-    for problem in problems:
-        logger.warning("作息表配置问题：%s", problem)
-
-    logger.info("作息表：%d 套作息、%d 个生效区间", len(schedules.profiles), len(schedules.periods))
-
-    # --- 解析 ---
-    # total_weeks 可省略：校历没给就用解析侧的默认安全上限。
-    # 注意别把「解析边界」和「导出校验」混为一谈 ——
-    # 导出侧的越界判定在 build_events 里独立进行，且是 fail-closed。
-    parser = TimetableParser(
-        expansion_limit=academic.semester.total_weeks or DEFAULT_EXPANSION_LIMIT
-    )
-    courses, meetings = parser.parse(payload)
-    logger.info("已解析：%d 门课程、%d 条课程安排", len(courses), len(meetings))
-    logger.info("解析报告：%s", parser.report.summary())
-    for warning in parser.report.warnings:
-        logger.warning("%s", warning)
-    for skip in parser.report.skipped:
-        logger.warning("跳过：%s", skip)
-
-    if not meetings and parser.report.total_candidates == 0:
-        # 「响应里根本没有课程记录」与「有记录但字段没对上」是两件事：
-        # 前者是该学期真的没课，后者是适配问题，不能笼统报同一个错。
-        logger.warning("课表为空：响应中没有找到任何课程记录，将生成不含事件的日历")
-    elif not meetings:
-        raise XjtuCalendarError(
-            f"响应里有 {parser.report.total_candidates} 条候选记录，但没有一条能解析出课程安排",
-            hint="字段映射很可能与实际响应不符。请运行 inspect 子命令查看脱敏结构，"
-            "并把真实字段名补进 parser.py 的 FIELD_CANDIDATES。",
-        )
-
-    # --- 展开 ---
-    events = build_events(meetings, academic, schedules)
-    logger.info("已展开：%d 次实际上课", len(events))
-
-    # --- 可选日期过滤 ---
-    # 先把边界解析出来：它同时决定「事件过滤」与「unsupported 调课的范围判定」，
-    # 两处必须用同一组边界，否则会出现「事件被裁掉、缺课告警却没报」。
-    from datetime import date
-
-    lower = date.fromisoformat(args.from_date) if args.from_date else None
-    upper = date.fromisoformat(args.to_date) if args.to_date else None
-    if lower is not None or upper is not None:
-        events = [
-            e
-            for e in events
-            if (lower is None or e.start.date() >= lower)
-            and (upper is None or e.start.date() <= upper)
-        ]
-        logger.info("按日期过滤后剩余 %d 次上课", len(events))
-
-    if not events:
-        logger.warning("没有生成任何事件（可能全部落在停课日期或被日期过滤排除）")
-
-    # --- 无法表达的调课：fail-closed（显式允许后转为显著警告） ---
-    # 范围来自「用户请求导出的范围」，不是 events 的日期跨度：
-    # 首次上课之前的特殊安排同样必须被捕获。
-    unsupported = collect_unsupported(academic, lower=lower, upper=upper)
-    if unsupported:
-        lines = [f"  {a.date.isoformat()}：{a.description}" for a in unsupported]
-        if not args.allow_unsupported_adjustments:
-            raise UnsupportedAdjustmentError(
-                f"教学日历声明了 {len(unsupported)} 条本工具无法表达的调课，"
-                f"它们落在本次导出范围内：\n" + "\n".join(lines) + "\n"
-                "继续导出将得到一份**缺少这些时段**的日历。"
-            )
-        for line in lines:
-            logger.warning("⚠️ 未表达的调课（该时段事件缺失）：%s", line)
-
-    # --- 渲染 ---
-    # SEQUENCE / LAST-MODIFIED 基线：
-    #   显式 --sequence-from 指定；否则自动探测输出文件的旧版本；
-    #   --no-sequence 关闭。基线让日历客户端能区分「没变」与「变了」，
-    #   避免重新导入时更新被忽略或产生全量「已更新」噪音。
-    baseline: dict[str, EventBaseline] | None = None
-    if not args.no_sequence:
-        explicit = Path(args.sequence_from) if args.sequence_from else None
-        auto = Path(args.output)
-        baseline_path = explicit or auto
-        if baseline_path is not None and baseline_path.is_file():
-            if explicit is not None:
-                baseline = parse_baseline(baseline_path.read_text(encoding="utf-8"))
-            else:
-                try:
-                    baseline = parse_baseline(baseline_path.read_text(encoding="utf-8"))
-                except XjtuCalendarError as exc:
-                    # 自动探测的基线解析失败：降级为空基线（全部按新增），
-                    # 不阻断导出——ICS 内容本身不会因此出错。
-                    logger.warning("自动探测的基线 ICS 不可用（%s），事件将全部按新增处理", exc)
-                    baseline = None
-            if baseline:
-                logger.info("SEQUENCE 基线：%s（%d 个事件）", baseline_path, len(baseline))
-
-    ics = render_ics(events, calendar_name=args.name, baseline=baseline)
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     # newline=""：render_ics 已按 RFC 5545 产出 CRLF 行尾，
     # 若用默认 newline=None，Windows 会再翻译一次得到 \r\r\n。
-    output.write_text(ics, encoding="utf-8", newline="")
+    output.write_text(result.ics, encoding="utf-8", newline="")
 
     # --- 汇总 ---
-    info = summarize(meetings, events)
+    info = result.info
     print()
     print("Semester:")
-    print(f"  {academic.semester.name}")
+    print(f"  {info['semester_name']}")
     print()
     print("Courses:")
     print(f"  {info['courses']}")
@@ -468,8 +371,8 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     print("Events:")
     print(f"  {info['events']}")
     print()
-    if baseline is not None:
-        stats = sequence_stats(events, baseline)
+    if result.sequence_stats is not None:
+        stats = result.sequence_stats
         print("Changes vs baseline:")
         print(
             f"  unchanged {stats['preserved']} / updated {stats['updated']} / new {stats['added']}"
@@ -910,6 +813,235 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------- #
+# subscribe（URL 订阅发布）
+# --------------------------------------------------------------------------- #
+def _require_git() -> None:
+    """git 可用性前置探测（spec §7，探测风格同 ``config.find_browser``：which）。
+
+    init/push/rotate 都会调用 git 子进程（check-ref-format、ls-remote、强推）；
+    git 缺失时 ``subprocess.run`` 抛 ``FileNotFoundError`` traceback，必须在这里
+    先拦成业务错误。``status`` 纯本地读 + HTTP 自检，不触碰 git，不必拦。
+    """
+    if shutil.which("git") is None:
+        raise GitNotAvailable("未在 PATH 中找到 git 可执行文件")
+
+
+def _validate_publish_branch(branch: str) -> None:
+    """任何 publish 之前必须先验分支名（git check-ref-format，退出码判定）。
+
+    空/垃圾分支若放过去，会带进 ls-remote / fetch refspec / 强推的参数拼接，
+    不同 git 版本行为不一——必须在这里以业务错误拦下，绝不触碰远端。
+    """
+    proc = subprocess.run(
+        ["git", "check-ref-format", f"refs/heads/{branch}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise XjtuCalendarError(
+            f"发布分支名不合法：{branch!r}",
+            hint="分支名须符合 git 规则（非空，不含空格与 ~^:?*[\\ 等）。"
+            "重新 subscribe init --branch cal-<名字>，或修正状态文件后重试。",
+        )
+
+
+def _load_subscribe_state(cfg: Settings, semester: str) -> subscribe.SubscriptionState | None:
+    """读取订阅状态文件；损坏时以业务错误呈现，而不是把解码异常甩给用户。
+
+    load_state 只做 `json.loads` + `from_dict`：非法 JSON（ValueError）、顶层
+    类型不对（AttributeError/TypeError）、缺键（KeyError）都会原样上抛。
+    """
+    from . import subscribe
+
+    try:
+        return subscribe.load_state(cfg, semester)
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        raise XjtuCalendarError(
+            f"学期 {semester} 的订阅状态文件已损坏：{subscribe.state_path(cfg, semester)}",
+            hint=f"删除该文件后重新 subscribe init --semester {semester}（会换新 token）。",
+        ) from exc
+
+
+def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
+    """subscribe 子命令入口：学期解析 + init / push / rotate / status 分发。
+
+    学期口径与 cmd_export/cmd_diff 一致：``--semester`` 优先，其次配置默认值。
+    """
+    semester = args.semester or cfg.semester_key
+    if not semester:
+        raise SemesterNotConfigured("未指定学期", hint="用 --semester 指定，或设置 XJTU_SEMESTER。")
+
+    if args.action != "status":
+        # init/push/rotate 都会调用 git；status 不触碰 git（纯本地 + HTTP 自检）。
+        _require_git()
+
+    if args.action == "init":
+        return _subscribe_init(args, cfg, semester)
+
+    state = _load_subscribe_state(cfg, semester)
+    if state is None:
+        raise SubscribeNotConfigured(
+            f"学期 {semester} 尚未登记订阅",
+            hint=f"先运行：xjtu-calendar subscribe init --repo <URL> --semester {semester}",
+        )
+
+    if args.action == "push":
+        return _subscribe_push(args, cfg, state, semester)
+    if args.action == "rotate":
+        return _subscribe_rotate(cfg, state, semester)
+    return _subscribe_status(args, cfg, state, semester)
+
+
+def _subscribe_init(args: argparse.Namespace, cfg: Settings, semester: str) -> int:
+    from . import subscribe
+
+    if _load_subscribe_state(cfg, semester) is not None:
+        raise XjtuCalendarError(
+            f"学期 {semester} 已登记过订阅",
+            hint="rotate 换 token，或直接 push；重新登记请先删除 "
+            f"{subscribe.state_path(cfg, semester)}。",
+        )
+    _validate_publish_branch(args.branch)
+    url_base = args.url_base or subscribe.derive_url_base(args.repo)
+    if not url_base:
+        raise XjtuCalendarError(
+            f"无法从 repo 推导 Pages 地址：{args.repo}",
+            hint="非 GitHub 远端请用 --url-base 显式给出 .ics 的公开访问前缀。",
+        )
+    state = subscribe.SubscriptionState(
+        semester=semester,
+        repo_url=args.repo,
+        branch=args.branch,
+        token=subscribe.new_token(),
+        url_base=url_base,
+    )
+    subscribe.save_state(cfg, state)
+    print(f"订阅 URL：{state.subscription_url}")
+    print()
+    print("一次性开启 Pages（GitHub）：仓库 Settings → Pages → Deploy from branch，")
+    print(f"分支选 {state.branch}、目录选 /(root)。完成后运行 subscribe push。")
+    print("⚠️ 知道该 URL 的人即可读取你的课表；有泄露疑虑时运行 subscribe rotate。")
+    return 0
+
+
+def _subscribe_push(
+    args: argparse.Namespace, cfg: Settings, state: subscribe.SubscriptionState, semester: str
+) -> int:
+    from . import subscribe
+
+    _validate_publish_branch(state.branch)
+    age = subscribe.snapshot_age_days(cfg, semester)
+    if age is not None and age > 7:
+        logger.warning("raw 快照已 %.0f 天未更新，建议先 fetch 再 push（本次继续）", age)
+    # 留底 last-<semester>.ics：publish 成功后才更新，且是下次构建的 SEQUENCE 基线。
+    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
+    if state.last_push is not None and not last_local.is_file():
+        # 有上次发布记录却没了留底 = 没有 SEQUENCE 基线。放任重建的话所有事件
+        # 打回 SEQUENCE:0，客户端把整份课表当新日历重新收，旧事件历史被静默重置。
+        # fail-closed：拒绝重建，让用户先找回留底（远端上就有）。
+        raise XjtuCalendarError(
+            f"本地留底缺失：无法安全重发布（{last_local} 不存在，但已有过成功推送）",
+            hint="没有留底作基线，重建会把全部事件重置为 SEQUENCE:0，客户端历史被清空。"
+            "请从远端订阅 URL 下载当前 .ics 原样放回上述路径后重试；"
+            f"确认可接受全新订阅的话，删除 {subscribe.state_path(cfg, semester)} "
+            "后重新 subscribe init。",
+        )
+    result_ics = build_ics_for_semester(
+        cfg,
+        semester,
+        input_path=getattr(args, "input", None),
+        baseline_probe=str(last_local) if last_local.is_file() else None,
+    )
+    res = subscribe.publish(cfg, state, result_ics.ics)
+    if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
+        print("无变化，跳过推送。")
+        return 0
+    # newline=""：留底必须与远端产物字节一致（CRLF 完整），否则下次把它当
+    # SEQUENCE 基线读回、以及 status 的 sha 比对都会错位（同 cmd_export）。
+    last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
+    print(f"已发布：{res.url}")
+    return 0
+
+
+def _subscribe_rotate(cfg: Settings, state: subscribe.SubscriptionState, semester: str) -> int:
+    from . import subscribe
+
+    _validate_publish_branch(state.branch)
+    old = state.token
+    subscribe.rotate_token(cfg, state)
+    print(f"新订阅 URL：{state.subscription_url}（补发成功前旧 URL 仍可读取）")
+    print(f"旧 token（{old[:4]}…）在本次补发成功后失效，请更新所有日历客户端的订阅地址。")
+    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
+    if not last_local.is_file():
+        if state.last_push is not None:
+            # 已有成功推送却没留底：push 会拒绝重建（SEQUENCE 归零护栏），
+            # 这里同步口径，别让「运行 push」成为死路指引。
+            print(
+                "（本地留底缺失：push 会拒绝以防事件历史被重置；请先从旧 URL 下载 .ics 放回该路径。）"
+            )
+        else:
+            print("（本地尚无发布留底，运行 subscribe push 完成首次发布。）")
+        return 0
+    try:
+        result_ics = build_ics_for_semester(cfg, semester, baseline_probe=str(last_local))
+        subscribe.publish(cfg, state, result_ics.ics)
+    except XjtuCalendarError as exc:
+        # token 已落盘换新、发布却失败：不能报成功。远端还挂在旧文件名上
+        # （补发成功前旧 URL 仍可读取），按指引修好后 push 即可补发。
+        reloaded = _load_subscribe_state(cfg, semester)
+        if reloaded is not None:
+            state = reloaded
+        print(f"⚠️ token 已换但尚未重新发布：{exc}")
+        if exc.hint:
+            print(f"   建议：{exc.hint}")
+        print(f"修复后运行 subscribe push --semester {semester} 完成发布。")
+        return exc.exit_code
+    last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
+    print("已用新文件名重新发布。")
+    return 0
+
+
+def _subscribe_status(
+    args: argparse.Namespace, cfg: Settings, state: subscribe.SubscriptionState, semester: str
+) -> int:
+    from . import subscribe
+
+    print(f"仓库：{state.repo_url}（分支 {state.branch}）")
+    print(f"URL ：{state.subscription_url}")
+    if state.last_push:
+        print(f"上次发布：{state.last_push.pushed_at}")
+        last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
+        # has_unpublished_changes 只比 sha；publish 的跳过条件还要求 token 一致，
+        # rotate 刚落盘（未重发布）时 sha 相同也绝不能说「无变更」。
+        synced = (
+            state.last_push.token == state.token
+            and last_local.is_file()
+            and not subscribe.has_unpublished_changes(
+                cfg, state, last_local.read_bytes().decode("utf-8")
+            )
+        )
+        if synced:
+            print("本地留底：一致，无变更。")
+        else:
+            # 「留底缺失」也走这条：synced 要求 last_local.is_file()。措辞不能再
+            # 断言「内容或 token 已变」；缺失时 push 有 SEQUENCE 归零护栏（I4）。
+            print("本地留底：缺失或已变（内容/token），运行 subscribe push 重新发布。")
+    else:
+        print("尚未发布过。")
+    age = subscribe.snapshot_age_days(cfg, semester)
+    print(f"raw 快照：{'缺失' if age is None else f'{age:.1f} 天前'}")
+    if getattr(args, "verify", False):
+        try:
+            ok, msg = subscribe.verify_url(state.subscription_url)
+        except (ValueError, urllib.error.URLError, TimeoutError) as exc:
+            # CLI 边界兜底：自检失败永远是「未通过 + 原因」，不是 traceback。
+            ok, msg = False, f"{type(exc).__name__}: {exc}"
+        print(f"URL 自检：{'通过' if ok else '未通过'}（{msg}）")
+    return 0
+
+
 _HANDLERS = {
     "login": cmd_login,
     "status": cmd_status,
@@ -919,6 +1051,7 @@ _HANDLERS = {
     "notice": cmd_notice,
     "schedule": cmd_schedule,
     "diff": cmd_diff,
+    "subscribe": cmd_subscribe,
 }
 
 

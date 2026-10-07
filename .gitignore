@@ -98,3 +98,6 @@ coverage.xml
 Thumbs.db
 desktop.ini
 vibe_images/
+
+# git worktrees for isolated feature work
+.worktrees/

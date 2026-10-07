@@ -18,6 +18,7 @@ Microsoft Outlook 等应用。
 - [核心设计：为什么不是简单的「课表转 ICS」](#核心设计为什么不是简单的课表转-ics)
 - [安装](#安装)
 - [快速开始](#快速开始)
+- [URL 订阅（subscribe）](#url-订阅subscribe)
 - [必须由你配置的内容](#必须由你配置的内容)
 - [命令参考](#命令参考)
 - [项目结构](#项目结构)
@@ -269,6 +270,114 @@ Output:
 
 ---
 
+## URL 订阅（subscribe）
+
+「快速开始」的交付方式是「拿到文件 → 手工导入」：课表一变就要重新导出、
+重新导入，多端各来一遍。`subscribe` 增加一条 **URL 订阅通道**——把同一份 .ics
+发布到**你自己的 GitHub Pages**（公开仓库 + 不可猜的 token 文件名），
+日历客户端按 URL 订阅；之后每次课表调整只需本地跑一次 `subscribe push`，
+客户端自动拉取，不再需要导入。
+
+> **口径先说清**：刷新是**纯手动**的——本工具不做定时任务、不常驻进程，
+> 也不会替你 `fetch`。「手机 24 小时内自动呈现新状态」的前提是你自己 push 过。
+> 一个学期一个 token、一个订阅 URL；多学期合并进同一 URL 是明确不做的事。
+
+### 一次性设置
+
+1. 在 GitHub 建一个**公开**仓库（例如 `cal-alice`）。它里面只会出现一个
+   `<token>.ics` 文件。
+2. 开启 Pages：仓库 Settings → Pages → **Deploy from branch**，
+   分支选 `cal`、目录选 `/(root)`。
+   （`cal` 分支由首次 `subscribe push` 创建；下拉里选不到它时，先完成下面
+   两步再回来开启，顺序不影响结果。）
+3. 登记发布目标，生成 token：
+
+   ```bash
+   python -m xjtu_calendar subscribe init --repo https://github.com/<用户名>/cal-alice.git --semester 2026-fall
+   ```
+
+   init 会打印订阅 URL 和上面那条 Pages 指引。GitHub 远端的 URL 前缀自动推导；
+   非 GitHub 远端必须用 `--url-base` 显式给出公开访问前缀，否则 init 直接拒绝。
+   每学期一个状态文件（`subscribe/subscribe-<学期>.json`），重复 init 会报错，
+   重新登记需先删除该状态文件（换新 token）。
+4. 发布第一版：
+
+   ```bash
+   python -m xjtu_calendar subscribe push --semester 2026-fall
+   ```
+
+5. 把订阅 URL 复制到日历客户端（入口见下）。Pages 首次生效有数分钟延迟，
+   可运行 `subscribe status --verify` 对 URL 做一次匿名 GET 自检。
+
+### 日常更新
+
+课表有变动时（建议先用 `diff` 确认）：
+
+```bash
+python -m xjtu_calendar fetch --semester 2026-fall
+python -m xjtu_calendar subscribe push --semester 2026-fall
+```
+
+- push 与 `export` 共用同一条构建管线，但只暴露两个数据源参数：
+  `--input`（可直接指定课表 JSON，默认用 fetch 缓存）与 `--semester`。
+- 内容与上次发布完全一致时，工具会尽量跳过推送；即便重复推送，效果也是
+  幂等的——远端始终只有一个提交，课表没变就不会产生新的变化。
+- raw 快照超过 7 天会警告「建议先 fetch」，但不阻断。
+- SEQUENCE 基线来自本地留底 `subscribe/last-<学期>.ics`：未变动的事件在客户端
+  保持安静，变动的事件原地更新——与重新导入的行为同一口径。
+- `subscribe status` 汇总 URL、上次发布时间、本地留底与上次发布记录是否一致、
+  快照年龄。
+
+### 换 token（rotate）
+
+把 URL 转发给了不该给的人、换了课表环境、或有任何泄露疑虑时：
+
+```bash
+python -m xjtu_calendar subscribe rotate --semester 2026-fall
+```
+
+换新 token 后 rotate 会顺手重新发布（若之前从未 push 过，则提示你跑
+`subscribe push`）。新文件挂上分支、旧文件名从 tip 消失，**旧 URL 自此 404**；
+**所有日历客户端都要重新粘贴新 URL**——这是换 token 的固有成本。
+极端情况 rotate 后发布失败（网络/权限）：token 已换、远端还挂着旧文件名，
+**补发成功前旧 URL 仍可读取**——这正是需要尽快补发（或清理）的原因；
+按终端提示修复后跑 `subscribe push` 补发即可。
+
+### 隐私口径
+
+1. **URL 即能力**：token 是 32 位十六进制随机串，猜不到；但知道完整 URL 的
+   人就能匿名读取你的课表——**转发 URL 等于授权**。
+2. **历史零残留**：发布分支永远是「无父孤儿单提交 + 强推」，课表的旧版本
+   不进 git 历史，仓库里翻不到你上周的课表。
+3. **Pages 生效延迟数分钟**：push 成功 ≠ 订阅 URL 立刻是新内容；客户端要等
+   Pages 构建完成后的下一次自动拉取才呈现新状态。`status --verify` 可确认。
+
+token 状态文件按收紧的文件权限写盘（与 `storage_state.json` 同等待遇）；
+日志**不落订阅 URL / token**。
+
+### 已知边界
+
+- **课程改名会表现为新事件**：UID 含课程名（见「核心设计」的 UID 冻结边界），
+  改名前后是两个事件，订阅端与手工导入的表现一致；`diff` 能在 push 之前
+  先看到改名条目。
+- **换 token 后所有客户端要重贴 URL**（见上）。
+- 发布通道只有静态 URL（以 GitHub Pages 为主）；不做 CalDAV 直写、
+  不做中心托管服务。
+
+> ⚠️ `~/.xjtu-timetable-calendar/subscribe/work-<学期>/` 是**工具专用**的 git
+> 工作区：手工放进去的文件会被下一次 `subscribe push` 原样发布出去
+> （记住仓库是公开的！），此后分支 tip 不再满足「根目录仅一个 .ics」的
+> tree 护栏，后续发布被 fail-closed 拒绝，直到你清空该目录并自行清空
+> （或换名重建）那个分支。**不要往这个目录放任何东西。**
+
+### 常见客户端订阅入口
+
+- Apple 日历：「通过订阅添加日历」（macOS 文件 → 添加日历 → 订阅；
+  iPhone 设置 → 日历 → 添加日历）。
+- Google Calendar：「通过 URL 创建日历」（左侧「其他日历」→「通过 URL 添加」）。
+
+---
+
 ## 必须由你配置的内容
 
 本项目**刻意不编造**任何学校信息。以下两项必须由你提供：
@@ -512,6 +621,7 @@ python -m xjtu_calendar schedule --semester 2026-2027-1 --apply
 | `export [--semester S] [-o OUT] [--input F] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence]` | 生成 `.ics` |
 | `notice --url U \| --from-file F [--semester S] [--apply]` | 解析停课/调课通知，预览或合并进学期配置 |
 | `schedule [--url U \| --from-file F] [--semester S] [--apply]` | 解析官方「学生作息时间表」页，预览或合并进作息表配置 |
+| `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F]` \| `subscribe rotate` \| `subscribe status [--verify]`（均可带 `--semester S`） | 把 .ics 发布到自己的 GitHub Pages，日历客户端按 URL 订阅（见上文「URL 订阅」） |
 | `inspect [--input F] [-o OUT]` | 对原始 JSON 做**脱敏**结构分析 |
 
 全局参数：`--debug`（详细异常）、`-q`（静默）、`--version`
@@ -687,6 +797,15 @@ class CourseMeeting:
 遇到 `401` / `403` 会明确提示「登录状态失效」或「当前账号无权限」，
 **而不是继续重试**。
 
+### 订阅 URL 的风险口径（subscribe）
+
+`subscribe` 是对上述准则的**例外通道**，风险模型也不同：它把你的课表发布到
+一个**匿名可读的公开地址**上。安全边界只有一层——URL 里的随机 token 猜不到，
+但**知道 URL 就能读**，转发即授权。为此实现上做了配套约束：发布分支恒为
+孤儿单提交（课表旧版本不进 git 历史）、状态文件收紧权限写盘、日志不含
+URL/token、强推前有 tree 护栏（拒绝覆盖非本工具产物）。
+完整口径与操作方式见上文[「URL 订阅（subscribe）」](#url-订阅subscribe)。
+
 ### 测试数据
 
 `tests/fixtures/` 中的全部数据均为**虚构的脱敏样例**，不含任何真实个人信息：
@@ -823,6 +942,7 @@ python scripts/probe_ehall.py
 然后 `python -m xjtu_calendar diff --semester <学期>` 列出新增/删除课程、
 时段增减与周次/教室/教师变化（纯本地比对，不发网络请求）。
 确认变化后重新 `export`，UID 稳定所以日历会原地更新。
+用订阅通道的话，把「重新 export」换成 `subscribe push` 即可。
 也可以用 `--old/--new` 显式指定任意两份 raw JSON 做比较。
 
 **Q：为什么不用一个 RRULE 简化 ICS？**
@@ -871,6 +991,8 @@ python -m xjtu_calendar login --force
   覆盖范围来自学期校历，fail-closed + 只新增 + 幂等）
 - [x] 调课检测（`diff` 子命令 + `fetch` 快照轮转：新增/删除课程、时段增减、
   周次/教室/教师/课程名变化，纯本地比对）
+- [x] URL 订阅发布（`subscribe` 子命令：.ics 以孤儿单提交强推到个人
+  GitHub Pages 分支，客户端按不可猜的 token URL 订阅，`rotate` 一键换链接）
 
 **待完成**
 
@@ -878,7 +1000,9 @@ python -m xjtu_calendar login --force
 
 **未来扩展（架构已预留）**
 
-1. **URL 订阅式 ICS** —— 服务端定期重新生成，日历自动同步课表变化
+1. **URL 订阅式 ICS** —— 已交付 `subscribe` 手动发布通道（见上文
+   「URL 订阅」：本地构建 + 强推 GitHub Pages，客户端按 URL 自动拉取）；
+   **服务端定期重新生成**仍未实现（当前口径是纯手动 push）
 2. **考试安排** —— eHall 考试信息 → 日历
 3. **校历事件** —— 开学、放假、考试周、校庆、节假日
 4. **多学期管理**

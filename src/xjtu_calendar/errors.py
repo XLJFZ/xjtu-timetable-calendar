@@ -18,10 +18,14 @@ __all__ = [
     "AuthenticationRequired",
     "CalendarExportError",
     "EndpointNotConfigured",
+    "GitNotAvailable",
     "ParseError",
     "PermissionDenied",
     "ScheduleNotConfigured",
     "SemesterNotConfigured",
+    "SubscribeGuardError",
+    "SubscribeNotConfigured",
+    "SubscribePublishError",
     "TimetableFetchError",
     "XjtuCalendarError",
 ]
@@ -131,3 +135,31 @@ class UnsupportedAdjustmentError(XjtuCalendarError):
         "核对上面列出的调课是否影响你；确认可以接受缺失后，"
         "加 --allow-unsupported-adjustments 重新导出。"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 订阅发布
+# --------------------------------------------------------------------------- #
+class SubscribeNotConfigured(XjtuCalendarError):
+    """尚未 subscribe init 就使用订阅命令。"""
+
+
+class GitNotAvailable(XjtuCalendarError):
+    """PATH 中没有 git：subscribe 的发布流程（init/push/rotate）无从谈起。
+
+    必须在任何 git 子进程调用之前以业务错误拦下——否则 ``subprocess.run``
+    直接抛 ``FileNotFoundError``，用户看到的是 traceback 而不是「装 git」。
+    """
+
+    hint = (
+        "请先安装 git 并确保其在 PATH 中（https://git-scm.com/downloads，"
+        "Windows 安装时勾选 Add to PATH），再重新运行本命令。"
+    )
+
+
+class SubscribeGuardError(XjtuCalendarError):
+    """发布护栏拒绝：远端分支内容不像本工具产物，绝不强推覆盖。"""
+
+
+class SubscribePublishError(XjtuCalendarError):
+    """git 探测/推送失败：远端保持上一版，本地状态不变。"""

@@ -108,7 +108,8 @@ xjtu-calendar subscribe status [--semester KEY] [--verify]
 
 - `init`：校验/推导 `url_base`（非 GitHub 远端必须显式给）；生成 token；
   打印订阅 URL 与**一次性 Pages 开启指引**（Settings → Pages →
-  Deploy from branch → `cal` /(root)）；已存在状态时报错，`--rotate` 才换 token。
+  Deploy from branch → `cal` /(root)）；已存在状态时报错。换 token 是独立
+  动作 `subscribe rotate`（init 不提供 `--rotate` 标志）。
 - `push`：前置检查（已 init、raw 快照存在、git 可用）→ 内存构建 .ics →
   `publish`；快照超过 7 天 → 警告「数据可能过期，建议先 fetch」但不阻断；
   有未发布变化时正常，无变化报「无变化，跳过」。
@@ -151,13 +152,13 @@ def build_ics_for_semester(cfg, semester, *, input_path=None) -> bytes
 |---|---|
 | 未 init 就 push/rotate/status | 报错 + 给出 init 命令示例 |
 | 无 raw 快照 | 复用 export 的既有错误口径 |
-| git 不在 PATH | 明确提示安装 git（探测风格同 `find_browser`） |
+| git 不在 PATH | init/push/rotate 前置 `shutil.which("git")` 探测（风格同 `find_browser`），缺失即明确提示安装 git，绝不进入子进程调用；status 不触碰 git、不受影响 |
 | 非 GitHub 远端且未给 --url-base | init 即拒绝，解释推导规则 |
 | 远端分支不是本工具产物 | `SubscribeGuardError`，拒绝并提示换分支 |
 | push 网络/权限失败 | 状态不落盘；报「远端仍是上一版」；下次 push 自动重建工作区 |
 | 内容无变化 | 跳过推送，退出码 0 |
 | 快照 > 7 天 | 警告不阻断 |
-| rotate 中途失败 | 旧 token 继续有效（状态未变），重试安全 |
+| rotate 中途失败 | 新 token 已先落盘（锁定语义）：补发成功前远端旧 URL 仍可读取，补发完成后才失效；status/push 给出补发指引，修复原因后 `subscribe push` 即完成轮换，重试安全 |
 
 ## 8. 测试策略
 

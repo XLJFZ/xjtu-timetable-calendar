@@ -17,26 +17,42 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 
 from .academic_calendar import AcademicCalendar
-from .errors import CalendarExportError
+from .config import Settings
+from .errors import (
+    CalendarExportError,
+    ScheduleNotConfigured,
+    SemesterNotConfigured,
+    UnsupportedAdjustmentError,
+    XjtuCalendarError,
+)
+from .logging_setup import get_logger
 from .models import CalendarEvent, CourseMeeting, UnsupportedAdjustment
+from .parser import TimetableParser
 from .periods import format_periods
 from .schedules import ScheduleTable
-from .sequence import EventBaseline, resolve_sequence
+from .sequence import EventBaseline, parse_baseline, resolve_sequence, sequence_stats
 from .timeutil import TZ_XIAN, now_local
-from .weeks import format_weeks
+from .weeks import DEFAULT_EXPANSION_LIMIT, format_weeks
 
 __all__ = [
     "PRODID",
+    "ExportResult",
     "build_events",
+    "build_ics_for_semester",
     "collect_unsupported",
     "make_uid",
     "render_ics",
     "summarize",
 ]
+
+logger = get_logger()
 
 PRODID = "-//xjtu-timetable-calendar//XJTU Personal Timetable Export//CN"
 
@@ -499,3 +515,170 @@ def summarize(
         "events": len(events),
         "date_range": date_range,
     }
+
+
+@dataclass
+class ExportResult:
+    """build_ics_for_semester 的返回：渲染文本 + 汇总数据（CLI 打印用）。"""
+
+    ics: str
+    info: dict[str, object]
+    sequence_stats: dict[str, int] | None
+
+
+def build_ics_for_semester(
+    cfg: Settings,
+    semester: str,
+    *,
+    input_path: str | None = None,
+    calendar_config: str | None = None,
+    schedule_config: str | None = None,
+    calendar_name: str = DEFAULT_CALENDAR_NAME,
+    from_date: str | None = None,
+    to_date: str | None = None,
+    allow_unsupported_adjustments: bool = False,
+    sequence_from: str | None = None,
+    baseline_probe: str | None = None,
+    no_sequence: bool = False,
+    dtstamp: datetime | None = None,
+) -> ExportResult:
+    """按学期构建 RFC 5545 文本。export 与 subscribe push 共用的唯一管线。
+
+    ``baseline_probe``：SEQUENCE 自动探测的「旧版本」路径（CLI export 传 -o
+    输出路径；subscribe 传上次发布留底）。显式 ``sequence_from`` 优先。
+    """
+    from .fetcher import load_raw
+
+    # --- 课表数据 ---
+    if input_path:
+        source = Path(input_path)
+        if not source.is_file():
+            raise XjtuCalendarError(f"课表文件不存在：{source}")
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    else:
+        payload = load_raw(cfg, semester)
+
+    # --- 教学日历 ---
+    calendar_path = Path(calendar_config) if calendar_config else cfg.semester_config_path(semester)
+    if not calendar_path.is_file():
+        raise SemesterNotConfigured(
+            f"未找到学期 {semester} 的教学日历：{calendar_path}",
+            hint="请参考 examples/academic_calendar.example.json 创建该文件。"
+            "注意：第 1 教学周的星期一等日期必须来自官方校历，不要凭空填写。",
+        )
+    academic = AcademicCalendar.from_file(calendar_path)
+    logger.info("教学日历：%s", academic.semester.name)
+
+    # --- 作息表 ---
+    schedule_path = Path(schedule_config) if schedule_config else cfg.schedule_config_path()
+    if not schedule_path.is_file():
+        raise ScheduleNotConfigured(
+            f"未找到作息表配置：{schedule_path}",
+            hint="请参考 examples/schedule.example.json 创建该文件。"
+            "注意：本项目不内置任何未经官方确认的作息时间，必须由你提供。",
+        )
+    schedules = ScheduleTable.from_file(schedule_path)
+
+    problems = schedules.validate()
+    for problem in problems:
+        logger.warning("作息表配置问题：%s", problem)
+
+    logger.info("作息表：%d 套作息、%d 个生效区间", len(schedules.profiles), len(schedules.periods))
+
+    # --- 解析 ---
+    # total_weeks 可省略：校历没给就用解析侧的默认安全上限。
+    # 注意别把「解析边界」和「导出校验」混为一谈 ——
+    # 导出侧的越界判定在 build_events 里独立进行，且是 fail-closed。
+    parser = TimetableParser(
+        expansion_limit=academic.semester.total_weeks or DEFAULT_EXPANSION_LIMIT
+    )
+    courses, meetings = parser.parse(payload)
+    logger.info("已解析：%d 门课程、%d 条课程安排", len(courses), len(meetings))
+    logger.info("解析报告：%s", parser.report.summary())
+    for warning in parser.report.warnings:
+        logger.warning("%s", warning)
+    for skip in parser.report.skipped:
+        logger.warning("跳过：%s", skip)
+
+    if not meetings and parser.report.total_candidates == 0:
+        # 「响应里根本没有课程记录」与「有记录但字段没对上」是两件事：
+        # 前者是该学期真的没课，后者是适配问题，不能笼统报同一个错。
+        logger.warning("课表为空：响应中没有找到任何课程记录，将生成不含事件的日历")
+    elif not meetings:
+        raise XjtuCalendarError(
+            f"响应里有 {parser.report.total_candidates} 条候选记录，但没有一条能解析出课程安排",
+            hint="字段映射很可能与实际响应不符。请运行 inspect 子命令查看脱敏结构，"
+            "并把真实字段名补进 parser.py 的 FIELD_CANDIDATES。",
+        )
+
+    # --- 展开 ---
+    events = build_events(meetings, academic, schedules)
+    logger.info("已展开：%d 次实际上课", len(events))
+
+    # --- 可选日期过滤 ---
+    # 先把边界解析出来：它同时决定「事件过滤」与「unsupported 调课的范围判定」，
+    # 两处必须用同一组边界，否则会出现「事件被裁掉、缺课告警却没报」。
+    lower = date.fromisoformat(from_date) if from_date else None
+    upper = date.fromisoformat(to_date) if to_date else None
+    if lower is not None or upper is not None:
+        events = [
+            e
+            for e in events
+            if (lower is None or e.start.date() >= lower)
+            and (upper is None or e.start.date() <= upper)
+        ]
+        logger.info("按日期过滤后剩余 %d 次上课", len(events))
+
+    if not events:
+        logger.warning("没有生成任何事件（可能全部落在停课日期或被日期过滤排除）")
+
+    # --- 无法表达的调课：fail-closed（显式允许后转为显著警告） ---
+    # 范围来自「用户请求导出的范围」，不是 events 的日期跨度：
+    # 首次上课之前的特殊安排同样必须被捕获。
+    unsupported = collect_unsupported(academic, lower=lower, upper=upper)
+    if unsupported:
+        lines = [f"  {a.date.isoformat()}：{a.description}" for a in unsupported]
+        if not allow_unsupported_adjustments:
+            raise UnsupportedAdjustmentError(
+                f"教学日历声明了 {len(unsupported)} 条本工具无法表达的调课，"
+                f"它们落在本次导出范围内：\n" + "\n".join(lines) + "\n"
+                "继续导出将得到一份**缺少这些时段**的日历。"
+            )
+        for line in lines:
+            logger.warning("⚠️ 未表达的调课（该时段事件缺失）：%s", line)
+
+    # --- 渲染 ---
+    # SEQUENCE / LAST-MODIFIED 基线：
+    #   显式 --sequence-from 指定；否则自动探测输出文件的旧版本；
+    #   --no-sequence 关闭。基线让日历客户端能区分「没变」与「变了」，
+    #   避免重新导入时更新被忽略或产生全量「已更新」噪音。
+    baseline: dict[str, EventBaseline] | None = None
+    if not no_sequence:
+        explicit = Path(sequence_from) if sequence_from else None
+        auto = Path(baseline_probe) if baseline_probe else None
+        baseline_path = explicit or auto
+        if baseline_path is not None and baseline_path.is_file():
+            if explicit is not None:
+                baseline = parse_baseline(baseline_path.read_text(encoding="utf-8"))
+            else:
+                try:
+                    baseline = parse_baseline(baseline_path.read_text(encoding="utf-8"))
+                except XjtuCalendarError as exc:
+                    # 自动探测的基线解析失败：降级为空基线（全部按新增），
+                    # 不阻断导出——ICS 内容本身不会因此出错。
+                    logger.warning("自动探测的基线 ICS 不可用（%s），事件将全部按新增处理", exc)
+                    baseline = None
+            if baseline:
+                logger.info("SEQUENCE 基线：%s（%d 个事件）", baseline_path, len(baseline))
+
+    ics = render_ics(events, calendar_name=calendar_name, dtstamp=dtstamp, baseline=baseline)
+
+    # --- 汇总 ---
+    info = summarize(meetings, events)
+    # semester_name 供 CLI 打印「Semester:」块；写文件由调用方负责。
+    info["semester_name"] = academic.semester.name
+    stats: dict[str, int] | None = None
+    if baseline is not None:
+        stats = sequence_stats(events, baseline)
+
+    return ExportResult(ics=ics, info=info, sequence_stats=stats)

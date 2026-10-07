@@ -146,9 +146,7 @@ def test_grade_year_never_leaks_into_events(tmp_path):
     """
     stamp = datetime(2026, 10, 8, 0, 0, 0, tzinfo=UTC)
     plain = make_home(tmp_path / "plain", [payload_row()], semester=_REAL_CODE)
-    graded = make_home(
-        tmp_path / "graded", [payload_row(NJDM="2024")], semester=_REAL_CODE
-    )
+    graded = make_home(tmp_path / "graded", [payload_row(NJDM="2024")], semester=_REAL_CODE)
 
     ics_plain = build_ics_for_semester(plain, _REAL_CODE, dtstamp=stamp).ics
     ics_graded = build_ics_for_semester(graded, _REAL_CODE, dtstamp=stamp).ics

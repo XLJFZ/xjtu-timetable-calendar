@@ -6,6 +6,45 @@
 
 ---
 
+## [0.4.0] - 2026-10-07
+
+订阅通道落地：`subscribe` 把同一份 .ics 发布到**用户自己的** GitHub Pages
+分支（孤儿单提交 + 不可猜 token 文件名），日历客户端按 URL 订阅，课表更新后
+无需再手动重导；导出获得**确定性**——`DTSTAMP` 取自课表快照的修改时刻而非
+渲染时刻，重复发布真正幂等、产物可复现。**UID 算法与事件内容（日期/钟点/
+周次）均无变化**，对已导入用户是安全的原地升级；仅日历级 `DTSTAMP` 的含义
+从「何时渲染」改为「数据何时变更」（更贴 RFC 语义）。
+
+### Added
+
+- **URL 订阅（`subscribe` 子命令）**：
+  - `subscribe init --repo <git-url>`：登记发布目标（专用分支，默认 `cal`），
+    生成 32 位十六进制随机 token 作为文件名；GitHub 远端自动推导 Pages 订阅
+    地址，非 GitHub 用 `--url-base` 显式给出；
+  - `subscribe push`：进程内复用导出管线构建 .ics，以**无父孤儿提交**强推
+    到发布分支——远端历史恒为单提交，旧版本课表不留档；内容一致时跳过；
+  - `subscribe rotate`：一键换 token 使旧订阅链接失效（补发成功前旧 URL 仍
+    可读取，README 写明窗口）；
+  - `subscribe status [--verify]`：URL、上次发布、快照年龄、本地留底一致性；
+    `--verify` 对订阅 URL 做匿名 GET 自检；
+  - 安全设计：状态文件按凭据待遇原子私有写盘；日志不落 URL/token；
+    强推前校验远端分支 tip 必须是「仅含一个根级 .ics」的本工具产物，否则
+    fail-closed 拒绝；留底缺失时拒绝无基线重发布（防 SEQUENCE 归零）；
+    发布走系统 git 子进程，**仓库与工具零凭据管理**。
+  - 新增 `src/xjtu_calendar/subscribe.py`、`tests/subscribe_support.py` 与
+    33 项测试（状态层 / `file://` 假远端集成 / CLI e2e / 日志守门）；
+    `pytest` 口径 421 → **454**（452 passed + 2 skipped，含 doctest）。
+
+### Changed
+
+- **`DTSTAMP` / 新事件 `LAST-MODIFIED` 改为快照时刻**：同一份课表数据重复
+  导出字节可复现，`subscribe push` 的「无变化跳过」自此真实生效；显式
+  `dtstamp` 参数保留给测试。既有事件的 SEQUENCE / LAST-MODIFIED 基线语义不变。
+- 文档结构：设计规格与实现计划迁入 `docs/design/`、`docs/plans/`；
+  README 新增「URL 订阅（subscribe）」章节并同步项目结构树。
+
+---
+
 ## [0.3.0] - 2026-10-07
 
 能力与安全的收口版本：`schedule` 打通作息表自动获取（v0.2 路线图待办清零）、

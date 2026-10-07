@@ -82,6 +82,63 @@ def fake_playwright(monkeypatch: pytest.MonkeyPatch) -> _FakeContext:
     return context
 
 
+def test_load_cookies_scopes_to_target_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """HTTP 路径只发送与 eHall 主机匹配的 cookie。
+
+    ``load_cookies`` 曾把 storage_state 里**所有域**的 cookie 压平外发：
+    CAS 登录域的会话名可能与 eHall 域同名并互相覆盖，且非 eHall 域的
+    cookie 会被无差别发给接口。凭据等价文件应按域过滤后再交给 httpx。
+    """
+    import json as jsonlib
+
+    monkeypatch.setenv("XJTU_CALENDAR_HOME", str(tmp_path))
+    monkeypatch.setenv("XJTU_EHALL_BASE", "https://ehall.xjtu.edu.cn")
+    session = tmp_path / "session"
+    session.mkdir(parents=True)
+    (session / "storage_state.json").write_text(
+        jsonlib.dumps(
+            {
+                "cookies": [
+                    {
+                        "name": "JSESSIONID",
+                        "value": "ehall-side",
+                        "domain": ".xjtu.edu.cn",
+                        "path": "/",
+                    },
+                    {"name": "TGC", "value": "cas-side", "domain": "cas.xjtu.edu.cn", "path": "/"},
+                    {"name": "SAP", "value": "elsewhere", "domain": ".example.com", "path": "/"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    from xjtu_calendar.auth import load_cookies
+
+    assert load_cookies(Settings.load()) == {"JSESSIONID": "ehall-side"}
+
+
+def test_load_cookies_keeps_legacy_entries_without_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """缺 domain 字段的旧快照保持宽容（宁多不漏，避免升级把会话打断）。"""
+    import json as jsonlib
+
+    monkeypatch.setenv("XJTU_CALENDAR_HOME", str(tmp_path))
+    monkeypatch.setenv("XJTU_EHALL_BASE", "https://ehall.xjtu.edu.cn")
+    session = tmp_path / "session"
+    session.mkdir(parents=True)
+    (session / "storage_state.json").write_text(
+        jsonlib.dumps({"cookies": [{"name": "SESSIONID", "value": "v"}]}), encoding="utf-8"
+    )
+
+    from xjtu_calendar.auth import load_cookies
+
+    assert load_cookies(Settings.load()) == {"SESSIONID": "v"}
+
+
 def test_ensure_login_writes_session_privately(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

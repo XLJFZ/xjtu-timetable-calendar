@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-__all__ = ["TZ_NAME", "TZ_XIAN", "ensure_tz", "now_local"]
+__all__ = ["TZ_NAME", "TZ_XIAN", "now_local"]
 
 TZ_NAME = "Asia/Shanghai"
 
@@ -31,13 +31,6 @@ except ZoneInfoNotFoundError:  # pragma: no cover - 仅在缺少 tzdata 的 Wind
     # 末路兜底：Asia/Shanghai 恒为 UTC+8 且无 DST，语义完全等价。
     # 优先仍建议安装 tzdata 以获得完整的 IANA 数据。
     TZ_XIAN = timezone(timedelta(hours=8), name=TZ_NAME)
-
-
-def ensure_tz(moment: datetime) -> datetime:
-    """把 naive datetime 视为 ``Asia/Shanghai``，已带时区的原样返回。"""
-    if moment.tzinfo is None:
-        return moment.replace(tzinfo=TZ_XIAN)
-    return moment
 
 
 def now_local() -> datetime:

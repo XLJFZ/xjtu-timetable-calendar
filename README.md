@@ -694,7 +694,7 @@ class CourseMeeting:
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 402 项测试（含 doctest）
+pytest                      # 407 项测试（含 doctest）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）

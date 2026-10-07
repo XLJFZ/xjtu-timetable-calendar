@@ -846,3 +846,46 @@ def test_full_location_handles_duplicate_campus() -> None:
 def test_full_location_none_when_empty() -> None:
     m = CourseMeeting("X", "课程", 1, [1], [1])
     assert m.full_location is None
+
+
+# --------------------------------------------------------------------------- #
+# 一致性守卫（characterization guards）
+# --------------------------------------------------------------------------- #
+def test_vtimezone_definition_is_not_clipped_to_event_range(
+    sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable
+) -> None:
+    """VTIMEZONE 用全量定义，不按事件范围裁剪。
+
+    事件全部自洽时裁剪无收益（Asia/Shanghai 1991 年起恒为 +08:00，
+    组件本来就只有一个 STANDARD）；而个别客户端会**按 TZID 全局缓存**
+    时区定义，一份标注「只在 X~Y 有效」的定义反而可能污染其他日历。
+    """
+    events = build_events([sample_meeting], calendar, schedules)
+    zone = next(iter(Calendar.from_ical(render_ics(events)).walk("VTIMEZONE")))
+    standard = next(iter(zone.walk("STANDARD")))
+    assert standard.get("DTSTART").dt.year <= 1971
+
+
+def test_every_rendered_vevent_property_is_covered_by_fingerprint(
+    sample_meeting: CourseMeeting, calendar: AcademicCalendar, schedules: ScheduleTable
+) -> None:
+    """SEQUENCE 指纹字段集必须覆盖 VEVENT 的**全部内容属性**。
+
+    未来给事件加新属性（STATUS、TRANSP…）而忘了纳入指纹时，
+    「内容变了但指纹没变」会让客户端跳过应得的更新——这条守卫会当场变红。
+    """
+    allowed = {
+        "UID",
+        "DTSTAMP",
+        "SEQUENCE",
+        "LAST-MODIFIED",
+        "DTSTART",
+        "DTEND",
+        "SUMMARY",
+        "LOCATION",
+        "DESCRIPTION",
+    }
+    events = build_events([sample_meeting], calendar, schedules)
+    for component in Calendar.from_ical(render_ics(events)).walk("VEVENT"):
+        extra = set(component.keys()) - allowed
+        assert not extra, f"该属性未被 sequence.py 的指纹覆盖: {sorted(extra)}"

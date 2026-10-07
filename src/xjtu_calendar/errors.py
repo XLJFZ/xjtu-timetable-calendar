@@ -19,12 +19,10 @@ __all__ = [
     "CalendarExportError",
     "EndpointNotConfigured",
     "ParseError",
-    "PeriodError",
     "PermissionDenied",
     "ScheduleNotConfigured",
     "SemesterNotConfigured",
     "TimetableFetchError",
-    "WeekError",
     "XjtuCalendarError",
 ]
 
@@ -99,14 +97,6 @@ class EndpointNotConfigured(XjtuCalendarError):
 
 class ParseError(XjtuCalendarError):
     """解析失败（原始数据与预期结构不符）。"""
-
-
-class WeekError(XjtuCalendarError):
-    """教学周次解析失败。"""
-
-
-class PeriodError(XjtuCalendarError):
-    """节次解析失败。"""
 
 
 # --------------------------------------------------------------------------- #

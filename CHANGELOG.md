@@ -23,6 +23,27 @@
   `private=True` 路径写入（POSIX 0600，Windows 尽力而为）；`notices` 改用同一实现，行为不变。
 - **`notice --url` 缺少 scheme 白名单**：`urlopen` 事实上接受 `file://` 等协议，
   「匿名 GET 公开页」的承诺没有代码保证。现在只接受 http/https，其余拒绝并引导用 `--from-file`。
+- **HTTP 路径的 cookie 不再全量外发**：`load_cookies` 过去把 storage_state 里**所有域**的
+  cookie 压平发给 eHall 接口——跨域同名（如 CAS 域与 eHall 域的会话键）会互相覆盖，
+  其他站点的 cookie 也被无谓携带。现按 RFC 6265 域匹配过滤，只发送覆盖目标主机的条目；
+  缺 `domain` 字段的旧快照保持宽容（宁多不漏，升级不打断现有会话）。
+- **登录页识别窗口过窄**：会话失效时 eHall 返回「200 + 登录页 HTML」，但特征词若出现在
+  前 4000 字符之外（长 `<head>`/样式脚本）会被误判成普通的「响应不是 JSON」。特征扫描
+  放宽到 64 KiB，让用户看到「该重新 login」而不是含糊的获取失败。
+
+### Changed
+
+- **VTIMEZONE 改为全量定义（不再按事件范围裁剪 ±1 天）**：`Asia/Shanghai` 1991 年起恒为
+  +08:00，组件本就只有一个 `STANDARD`，裁剪省不下体积；而个别日历客户端按 `TZID`
+  全局缓存时区定义，一份「只在 X~Y 有效」的裁剪定义可能污染其他日历。事件钟点零变化
+  （有结构回归守卫）。
+
+### Removed
+
+- 清理零引用死代码（git 历史可随时找回）：`weeks._ODD_KEYWORDS/_EVEN_KEYWORDS`、
+  `parser.iter_meeting_groups` / `parser.parse_date_range`、`auth.clear_session` /
+  `auth.assert_not_expired`、`errors.WeekError` / `errors.PeriodError`、
+  `ScheduleProfile.covers`、`timeutil.ensure_tz`。
 
 ### Added
 
@@ -41,8 +62,10 @@
   - `.github/workflows/publish-pypi.yml`——手动触发的 PyPI 可信发布（OIDC trusted
     publishing，仓库不存 token；需在 PyPI 侧一次性登记 publisher，步骤见文件注释与
     README「开发 → 发布」）。
-- 新增 12 项测试（CLI 端点指引 2、日志脱敏 2、原子写入 6、会话落盘回归 1、URL 白名单 1）；
-  `pytest` 口径 367 → **402**（含 doctest，另含上条的 23 项）。
+- 新增 12 项测试（CLI 端点指引 2、日志脱敏 2、原子写入 6、会话落盘回归 1、URL 白名单 1）
+  与 5 项测试（cookie 域过滤 2、登录页长页识别 1、VTIMEZONE 全量定义守卫 1、
+  VEVENT 属性 ⊆ 指纹字段一致性守卫 1）；`pytest` 口径 367 → **407**（含 doctest，
+  另含 `schedule` 的 23 项）。
 
 ---
 

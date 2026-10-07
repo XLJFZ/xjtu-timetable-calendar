@@ -129,11 +129,13 @@ def classify_body(text: str) -> str:
             return "json"
 
     head = text[:4000]
+    # 登录页标记可能出现在长 <head>（样式、脚本）之后；窗口放宽到 64 KiB，
+    # 避免把「200 + 登录页」误判成普通的「响应不是 JSON」。
+    scan = text[:65536]
+    has_login_marker = any(marker in scan for marker in LOGIN_PAGE_MARKERS)
     if head.lstrip()[:6].lower().startswith("<html") or "<html" in head.lower()[:200]:
-        if any(marker in head for marker in LOGIN_PAGE_MARKERS):
-            return "login-html"
-        return "html"
-    if any(marker in head for marker in LOGIN_PAGE_MARKERS):
+        return "login-html" if has_login_marker else "html"
+    if has_login_marker:
         return "login-html"
     return "text"
 

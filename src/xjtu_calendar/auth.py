@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .config import Settings, find_browser
 from .config import settings as default_settings
-from .errors import AuthenticationExpired, AuthenticationRequired, TimetableFetchError
+from .errors import AuthenticationRequired
 from .fileutil import atomic_write_text
 from .logging_setup import get_logger
 
@@ -218,8 +218,25 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
     return inspect_session(cfg)
 
 
+def _cookie_matches_target(domain: str, host: str) -> bool:
+    """cookie 的 Domain 属性是否覆盖目标主机（RFC 6265 的域匹配语义）。
+
+    缺 Domain 字段的旧快照按宽容处理（保留）——宁可多发不外漏，
+    升级不该把已有用户的好端端会话打断。
+    """
+    cdom = (domain or "").lstrip(".").lower()
+    if not cdom or not host:
+        return True
+    host = host.lower()
+    return host == cdom or host.endswith(f".{cdom}")
+
+
 def load_cookies(cfg: Settings | None = None) -> dict[str, str]:
-    """从 storage_state 里提取 cookie 字典，供 HTTP 客户端复用。
+    """从 storage_state 里提取**属于 eHall 主机**的 cookie，供 HTTP 客户端复用。
+
+    按域过滤是刻意的：Playwright 快照里同时存着 CAS 登录域、其他站点的
+    cookie；把它们压平全量发给接口，既可能覆盖同名会话键，也无谓扩大
+    凭据暴露面。
 
     Raises
     ------
@@ -236,11 +253,21 @@ def load_cookies(cfg: Settings | None = None) -> dict[str, str]:
     except (json.JSONDecodeError, OSError) as exc:
         raise AuthenticationRequired(f"会话文件损坏：{state_path}（{exc}）") from exc
 
-    cookies = {
-        item["name"]: item["value"]
-        for item in payload.get("cookies") or []
-        if item.get("name") and item.get("value")
-    }
+    host = urlparse(cfg.ehall_base).hostname or ""
+    cookies: dict[str, str] = {}
+    for item in payload.get("cookies") or []:
+        name = item.get("name")
+        value = item.get("value")
+        if not name or not value:
+            continue
+        if not _cookie_matches_target(str(item.get("domain") or ""), host):
+            logger.debug("跳过其他域的 cookie：%s", name)
+            continue
+        if name in cookies and cookies[name] != value:
+            logger.warning(
+                "eHall 域范围内出现同名 cookie：%s（以最后一份为准，建议重新登录）", name
+            )
+        cookies[str(name)] = str(value)
     if not cookies:
         raise AuthenticationRequired(f"会话文件中没有可用 cookie：{state_path}")
 
@@ -258,30 +285,3 @@ def storage_state_dict(cfg: Settings | None = None) -> dict[str, Any]:
         raise AuthenticationRequired(f"未找到会话文件：{state_path}")
     payload = json.loads(state_path.read_text(encoding="utf-8"))
     return {"cookies": payload.get("cookies", []), "origins": payload.get("origins", [])}
-
-
-def clear_session(cfg: Settings | None = None) -> list[Path]:
-    """删除本地会话文件（保留浏览器 profile，除非调用方另行处理）。"""
-    cfg = cfg or default_settings
-    removed: list[Path] = []
-    state_path = cfg.state_path()
-    if state_path.is_file():
-        state_path.unlink()
-        removed.append(state_path)
-    return removed
-
-
-def assert_not_expired(status_code: int, url: str) -> None:
-    """把 HTTP 状态码翻译成明确的业务异常。
-
-    401 / 403 **不重试**——它们是权限与身份的终态判定，重试只会浪费时间
-    并可能触发风控。
-    """
-    if status_code == 401:
-        raise AuthenticationExpired(f"服务端返回 401（{url}）")
-    if status_code == 403:
-        from .errors import PermissionDenied
-
-        raise PermissionDenied(f"服务端返回 403（{url}）")
-    if status_code >= 500:
-        raise TimetableFetchError(f"服务端返回 {status_code}（{url}），稍后重试")

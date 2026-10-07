@@ -253,3 +253,15 @@ def test_fetch_403_is_not_retried(cfg: Settings) -> None:
 def test_fetch_unexpected_status_raises(cfg: Settings) -> None:
     with pytest.raises(TimetableFetchError):
         fetch_via_http(endpoint(), cfg=cfg, transport=transport(404, "{}"))
+
+
+def test_classify_body_detects_login_markers_late_in_long_page() -> None:
+    """登录页标记出现在 4000 字符窗口之外时也必须识别为 login-html。
+
+    eHall 会话失效常以 200 + 登录页 HTML 响应；若标记词落在扫描窗口外，
+    会被误判成普通「不是 JSON」的获取错误，用户看不到「该重新登录」的提示。
+    """
+    filler = "<meta property='x' content='noise'/>" * 400  # >19000 字符
+    text = f"<html><head>{filler}<title>统一身份认证</title></head><body>请登录</body></html>"
+    assert len(filler) > 4000
+    assert classify_body(text) == "login-html"

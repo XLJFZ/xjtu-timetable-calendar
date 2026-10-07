@@ -15,9 +15,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from datetime import date
 from typing import Any
 
 from .errors import ParseError
@@ -554,28 +553,3 @@ def _preview(record: Mapping[str, Any], limit: int = 6) -> str:
 def resolve_campus(explicit: str | None, location: str | None) -> str:
     """对外暴露的校区解析（显式字段优先，其次推断，最后占位）。"""
     return explicit or _guess_campus(location) or CAMPUS_UNKNOWN
-
-
-def parse_date_range(value: Any) -> tuple[date, date] | None:
-    """解析 ``"2026-09-07~2026-12-27"`` 这类区间文本。"""
-    text = _as_text(value)
-    if not text:
-        return None
-    parts = re.split(r"[~至\-–—]", text)
-    if len(parts) < 2:
-        return None
-    try:
-        return date.fromisoformat(parts[0].strip()), date.fromisoformat(parts[1].strip())
-    except ValueError:
-        return None
-
-
-def iter_meeting_groups(
-    records: Sequence[Mapping[str, Any]],
-) -> Iterator[tuple[str, list[Mapping[str, Any]]]]:
-    """按课程分组记录（供未来「同课程多时段合并」使用）。"""
-    groups: dict[str, list[Mapping[str, Any]]] = {}
-    for record in records:
-        key = str(record.get("courseName") or record.get("kcmc") or len(groups))
-        groups.setdefault(key, []).append(record)
-    yield from groups.items()

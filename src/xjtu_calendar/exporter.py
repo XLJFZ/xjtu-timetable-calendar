@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 from .academic_calendar import AcademicCalendar
 from .errors import CalendarExportError
@@ -436,8 +436,8 @@ def render_ics(
     except ImportError as exc:  # pragma: no cover
         raise CalendarExportError("缺少 icalendar 依赖，请安装：pip install icalendar") from exc
 
-    # 入口处显式物化：下面既要逐条生成 VEVENT，又要遍历一遍算时区覆盖范围。
-    # 若调用方传的是 generator，第二次遍历会得到空集合（静默少写 VTIMEZONE）。
+    # 入口处显式物化：调用方传 generator 时，第二次遍历会得到空集合
+    # （事件一个都不写、VTIMEZONE 也因「无引用」被静默跳过）。
     items = list(events)
 
     stamp = dtstamp or now_local()
@@ -467,13 +467,13 @@ def render_ics(
         cal.add_component(component)
 
     # 所有 VEVENT 就位后补齐 VTIMEZONE（必须在 to_ical() 之前）。
-    # 覆盖范围按**本次事件范围**生成，两侧各留一天余量：
-    # 无脑用默认的 1970..2038 会产出跨越几十年的无意义时区定义。
+    # 采用库默认的全量定义（1970~2038），**不按事件范围裁剪**：
+    # Asia/Shanghai 自 1991 年起恒为 +08:00，组件只有一个 STANDARD，裁剪
+    # 省不下什么；而个别客户端按 TZID 全局缓存时区定义，一份「只在 X~Y
+    # 有效」的裁剪定义反而可能污染其他日历。
     # 空日历不引用任何 TZID，也就不需要（也不应凭空造出）VTIMEZONE。
     if items:
-        first_date = min(item.start.date() for item in items) - timedelta(days=1)
-        last_date = max(item.end.date() for item in items) + timedelta(days=1)
-        cal.add_missing_timezones(first_date=first_date, last_date=last_date)
+        cal.add_missing_timezones()
 
     # icalendar 未随包提供类型标注（mypy 视其为 Any），显式标注收窄返回值类型。
     # 运行时无任何变化：Calendar.to_ical() 恒返回 bytes。

@@ -316,9 +316,6 @@ class ScheduleProfile:
             normalized[idx] = (start, end)
         object.__setattr__(self, "periods", normalized)
 
-    def covers(self, period: int) -> bool:
-        return period in self.periods
-
     def missing_periods(self, periods: list[int]) -> list[int]:
         return [p for p in periods if p not in self.periods]
 

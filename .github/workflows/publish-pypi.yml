@@ -3,14 +3,17 @@ name: Publish to PyPI
 # **手动触发**（workflow_dispatch）把 sdist + wheel 发布到 PyPI。
 # 使用 OIDC trusted publishing：仓库里不存任何 token。
 #
-# 一次性配置（PyPI 侧，需要 PyPI 账号）：
-#   pypi.org → 你的项目（或 Add a package）→ Publishing →
-#   Add alternate repository (GitHub) trusted publisher：
-#     Owner : XLJFZ
-#     Repository : xjtu-timetable-calendar
-#     Workflow name : publish-pypi.yml
-#     Environment name : pypi
-# 完成后本 workflow 即可在 Releases → workflows 里手动运行。
+# 一次性配置（在 pypi.org 网页上，用你自己的 PyPI 账号登录后）：
+#   右上角头像菜单 → Account → 左侧「Publishing」→
+#   「Add a publisher」（PyPI 支持为**还不存在的新包**先登记待定发布者，
+#    首次经 OIDC 上传时会自动创建该项目）：
+#     Project name          : xjtu-timetable-calendar
+#     Publisher type        : GitHub Actions
+#     Repository owner      : XLJFZ
+#     Repository name       : xjtu-timetable-calendar
+#     Workflow name         : publish-pypi.yml
+#     Environment           : （留空——本 workflow 不使用 GitHub environment）
+# 登记完成后，在 Actions → Publish to PyPI → Run workflow 即可发布。
 # 版本重复上传会被 PyPI 拒绝——这正是防误发的保险。
 
 on:
@@ -29,7 +32,6 @@ jobs:
   publish:
     name: build & publish
     runs-on: ubuntu-latest
-    environment: pypi
     steps:
       - uses: actions/checkout@v4
 

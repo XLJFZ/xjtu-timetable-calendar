@@ -734,9 +734,13 @@ Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**�
   并上传到该 Release。CI 的质量门禁仍由 `ci.yml` 独立负责，两者互不干扰。
 - **PyPI 走手动可信发布**：`.github/workflows/publish-pypi.yml` 需在
   Actions 页手动触发（workflow_dispatch），使用 OIDC trusted publishing，
-  **仓库不保存任何 token**。一次性前置：在 pypi.org 为本仓库登记
-  trusted publisher（Workflow 填 `publish-pypi.yml`，Environment 填 `pypi`），
-  细节写在该 workflow 文件头部注释里。PyPI 拒绝重复版本号，误发有保险。
+  **仓库不保存任何 token**。一次性前置（PyPI 支持给还不存在的新包先登记
+  「待定发布者」，首次 OIDC 上传会自动建项目）：登录 pypi.org →
+  头像菜单 **Account → Publishing → Add a publisher**，依次填
+  Project name `xjtu-timetable-calendar`、Publisher type **GitHub Actions**、
+  owner `XLJFZ`、repository `xjtu-timetable-calendar`、
+  workflow name `publish-pypi.yml`、**Environment 留空**。
+  之后每次发布只需在 Actions 里点 Run workflow。PyPI 拒绝重复版本号，误发有保险。
 - 版本号仍是 `pyproject.toml` 单一来源；升版后记得按上文重装 editable。
 
 若你在自己的分支上看到大量 `RUF001/002/003`，那是规则的已知误报 ——

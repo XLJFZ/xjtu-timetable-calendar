@@ -22,6 +22,9 @@ __all__ = [
     "PermissionDenied",
     "ScheduleNotConfigured",
     "SemesterNotConfigured",
+    "SubscribeGuardError",
+    "SubscribeNotConfigured",
+    "SubscribePublishError",
     "TimetableFetchError",
     "XjtuCalendarError",
 ]
@@ -131,3 +134,18 @@ class UnsupportedAdjustmentError(XjtuCalendarError):
         "核对上面列出的调课是否影响你；确认可以接受缺失后，"
         "加 --allow-unsupported-adjustments 重新导出。"
     )
+
+
+# --------------------------------------------------------------------------- #
+# 订阅发布
+# --------------------------------------------------------------------------- #
+class SubscribeNotConfigured(XjtuCalendarError):
+    """尚未 subscribe init 就使用订阅命令。"""
+
+
+class SubscribeGuardError(XjtuCalendarError):
+    """发布护栏拒绝：远端分支内容不像本工具产物，绝不强推覆盖。"""
+
+
+class SubscribePublishError(XjtuCalendarError):
+    """git 探测/推送失败：远端保持上一版，本地状态不变。"""

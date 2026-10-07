@@ -665,6 +665,24 @@ Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**�
 版本变更记录在 `CHANGELOG.md`；版本号**单一来源**为 `pyproject.toml`
 （`importlib.metadata` 读取，未安装时回退解析同一份文件，代码里没有第二处常量）。
 
+> **升版后请重装 editable 包。** `importlib.metadata` 读的是**安装时生成**的元数据，
+> 只改 `pyproject.toml` 而不重装，`--version` 仍会报旧版本
+> （回退分支只在「压根没装」时才会走）：
+>
+> ```bash
+> python -m pip install -e . --no-deps
+> ```
+>
+> 另有一个易踩的坑：`python -m build` 会在源码树里留下 `src/*.egg-info`，
+> 而 pytest 配了 `pythonpath = ["src"]`，会让它**先于** site-packages 被
+> `importlib.metadata` 命中。若它滞后于 `pyproject.toml`（升版后既没重装、
+> 也没重建），就会出现「命令行 `--version` 说 0.2.0，`import xjtu_calendar`
+> 说 0.1.1」这种**同一份代码两个答案**——`tests/test_packaging.py` 的版本守卫
+> 会因此变红。它只是构建残留（`*.egg-info/` 已在 `.gitignore` 内，且 editable
+> 安装实际靠 site-packages 的 `__editable__*.pth`，并不依赖它），
+> 处置任选其一：重装 editable、`python -m build` 重建、或直接把该目录移走。
+> 该目录**不要**提交，也**不需要**改测试去迁就它。
+
 若你在自己的分支上看到大量 `RUF001/002/003`，那是规则的已知误报 ——
 它把**中文全角标点**当成「易混淆 Unicode」，而本项目的 docstring、注释与
 面向用户的文案本身就是中文。这些规则已在 `pyproject.toml` 里显式关闭，

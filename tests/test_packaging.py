@@ -7,6 +7,12 @@
    必须确认资源真的能被 :func:`importlib.resources` 读到。
 2. **版本号只有一个真源** —— ``pyproject.toml``。``__version__`` 无论是从
    已安装的 distribution 元数据读到，还是从源码解析，都必须与它一致。
+
+   注意一个环境陷阱：``pythonpath = ["src"]`` 会把源码树里 ``build`` 留下的
+   ``src/<name>.egg-info`` 一并放上 ``sys.path``，让 ``importlib.metadata``
+   先命中它而不是真正安装的 ``dist-info``。版本守卫因此失败时，
+   :func:`_metadata_mismatch_hint` 会直接指出该目录与处置方式 ——
+   **这是环境残留，不要去改测试迁就它**。
 """
 
 from __future__ import annotations
@@ -28,14 +34,60 @@ def _pyproject_version() -> str:
     return str(payload["project"]["version"])
 
 
+def _source_tree_metadata_dirs() -> list[Path]:
+    """源码树内、会被 ``sys.path`` 命中的元数据目录（构建产物，不是安装记录）。
+
+    背景：``python -m build`` 与部分 ``pip install -e .`` 会在源码树里生成
+    ``<name>.egg-info``。本项目 pytest 配了 ``pythonpath = ["src"]``，
+    于是 ``src/`` 会排在 ``sys.path`` 前面，
+    :func:`importlib.metadata.version` 会**先命中它**，而不是 site-packages 里
+    真正安装的那份 ``*.dist-info``。两者版本不一致时，
+    ``__version__`` 与命令行 ``--version`` 会给出**不同的答案**。
+    """
+    found: list[Path] = []
+    for base in (REPO_ROOT, REPO_ROOT / "src"):
+        found.extend(sorted(base.glob("*.egg-info")))
+        found.extend(sorted(base.glob("*.dist-info")))
+    return found
+
+
+def _metadata_mismatch_hint(actual: str, expected: str) -> str:
+    """版本对不上时给出可操作提示 —— 把「两个答案」的排查压缩成一条命令。"""
+    lines = [
+        f"实际 {actual!r}，期望 {expected!r}（pyproject.toml 的 project.version）。",
+        "版本号只允许有一个真源（pyproject.toml）；对不上说明环境里出现了第二份元数据。",
+    ]
+    dirs = _source_tree_metadata_dirs()
+    if dirs:
+        lines += [
+            "",
+            "疑似来源 —— 源码树内的构建产物（是构建残留，不是安装记录）：",
+            *(f"  - {p}" for p in dirs),
+            '它们经 pytest 的 pythonpath = ["src"] 进入 sys.path，会先于',
+            "site-packages 里的 dist-info 被 importlib.metadata 命中。",
+            "",
+            "处置（任选其一，属环境操作，不要改测试）：",
+            "  1) 重新安装：python -m pip install -e . --no-deps",
+            "  2) 重建产物：python -m build（会把它刷新到当前 pyproject 版本）",
+            "  3) 移走它：mv src/<name>.egg-info /tmp/（*.egg-info/ 已在 .gitignore 内，可安全重建）",
+        ]
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- #
 # 版本单一真源
 # --------------------------------------------------------------------------- #
 
 
 def test_version_matches_pyproject() -> None:
-    """``__version__`` 必须与 pyproject 的 project.version 一致（防双维护漂移）。"""
-    assert __version__ == _pyproject_version()
+    """``__version__`` 必须与 pyproject 的 project.version 一致（防双维护漂移）。
+
+    失败时给出可操作提示：开发环境里最容易踩的是「源码树内残留的
+    ``src/*.egg-info`` 遮蔽了已安装的 dist-info」——那会让这里的
+    ``__version__`` 与命令行 ``--version`` 给出不同答案。
+    """
+    expected = _pyproject_version()
+    assert __version__ == expected, _metadata_mismatch_hint(__version__, expected)
 
 
 def test_version_matches_installed_metadata_when_available() -> None:
@@ -50,8 +102,9 @@ def test_version_matches_installed_metadata_when_available() -> None:
     except PackageNotFoundError:
         pytest.skip("当前未安装 distribution，走 pyproject 回退分支")
 
-    assert installed == _pyproject_version()
-    assert __version__ == installed
+    expected = _pyproject_version()
+    assert installed == expected, _metadata_mismatch_hint(installed, expected)
+    assert __version__ == installed, _metadata_mismatch_hint(__version__, installed)
 
 
 def test_no_hardcoded_version_constant_in_package_init() -> None:

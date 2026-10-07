@@ -18,6 +18,7 @@ __all__ = [
     "AuthenticationRequired",
     "CalendarExportError",
     "EndpointNotConfigured",
+    "GitNotAvailable",
     "ParseError",
     "PermissionDenied",
     "ScheduleNotConfigured",
@@ -141,6 +142,19 @@ class UnsupportedAdjustmentError(XjtuCalendarError):
 # --------------------------------------------------------------------------- #
 class SubscribeNotConfigured(XjtuCalendarError):
     """尚未 subscribe init 就使用订阅命令。"""
+
+
+class GitNotAvailable(XjtuCalendarError):
+    """PATH 中没有 git：subscribe 的发布流程（init/push/rotate）无从谈起。
+
+    必须在任何 git 子进程调用之前以业务错误拦下——否则 ``subprocess.run``
+    直接抛 ``FileNotFoundError``，用户看到的是 traceback 而不是「装 git」。
+    """
+
+    hint = (
+        "请先安装 git 并确保其在 PATH 中（https://git-scm.com/downloads，"
+        "Windows 安装时勾选 Add to PATH），再重新运行本命令。"
+    )
 
 
 class SubscribeGuardError(XjtuCalendarError):

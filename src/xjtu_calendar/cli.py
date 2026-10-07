@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -36,6 +37,7 @@ from .config import Settings
 from .errors import (
     AuthenticationRequired,
     EndpointNotConfigured,
+    GitNotAvailable,
     SemesterNotConfigured,
     SubscribeNotConfigured,
     XjtuCalendarError,
@@ -814,6 +816,17 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
 # --------------------------------------------------------------------------- #
 # subscribe（URL 订阅发布）
 # --------------------------------------------------------------------------- #
+def _require_git() -> None:
+    """git 可用性前置探测（spec §7，探测风格同 ``config.find_browser``：which）。
+
+    init/push/rotate 都会调用 git 子进程（check-ref-format、ls-remote、强推）；
+    git 缺失时 ``subprocess.run`` 抛 ``FileNotFoundError`` traceback，必须在这里
+    先拦成业务错误。``status`` 纯本地读 + HTTP 自检，不触碰 git，不必拦。
+    """
+    if shutil.which("git") is None:
+        raise GitNotAvailable("未在 PATH 中找到 git 可执行文件")
+
+
 def _validate_publish_branch(branch: str) -> None:
     """任何 publish 之前必须先验分支名（git check-ref-format，退出码判定）。
 
@@ -859,6 +872,10 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
     semester = args.semester or cfg.semester_key
     if not semester:
         raise SemesterNotConfigured("未指定学期", hint="用 --semester 指定，或设置 XJTU_SEMESTER。")
+
+    if args.action != "status":
+        # init/push/rotate 都会调用 git；status 不触碰 git（纯本地 + HTTP 自检）。
+        _require_git()
 
     if args.action == "init":
         return _subscribe_init(args, cfg, semester)
@@ -920,6 +937,16 @@ def _subscribe_push(
         logger.warning("raw 快照已 %.0f 天未更新，建议先 fetch 再 push（本次继续）", age)
     # 留底 last-<semester>.ics：publish 成功后才更新，且是下次构建的 SEQUENCE 基线。
     last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
+    if state.last_push is not None and not last_local.is_file():
+        # 有上次发布记录却没了留底 = 没有 SEQUENCE 基线。放任重建的话所有事件
+        # 打回 SEQUENCE:0，客户端把整份课表当新日历重新收，旧事件历史被静默重置。
+        # fail-closed：拒绝重建，让用户先找回留底（远端上就有）。
+        raise XjtuCalendarError(
+            f"本地留底缺失：无法安全重发布（{last_local} 不存在，但已有过成功推送）",
+            hint="没有留底作基线，重建会把全部事件重置为 SEQUENCE:0，客户端历史被清空。"
+            "请从远端订阅 URL 下载当前 .ics 原样放回上述路径后重试；"
+            "确认可接受全新订阅的话，运行 subscribe rotate 换新 URL 重新起步。",
+        )
     result_ics = build_ics_for_semester(
         cfg,
         semester,
@@ -943,19 +970,26 @@ def _subscribe_rotate(cfg: Settings, state: subscribe.SubscriptionState, semeste
     _validate_publish_branch(state.branch)
     old = state.token
     subscribe.rotate_token(cfg, state)
-    print(f"新订阅 URL：{state.subscription_url}")
-    print(f"旧 token 已作废（{old[:4]}…），请更新所有日历客户端的订阅地址。")
+    print(f"新订阅 URL：{state.subscription_url}（补发成功前旧 URL 仍可读取）")
+    print(f"旧 token（{old[:4]}…）在本次补发成功后失效，请更新所有日历客户端的订阅地址。")
     last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
     if not last_local.is_file():
-        print("（本地尚无发布留底，运行 subscribe push 完成首次发布。）")
+        if state.last_push is not None:
+            # 已有成功推送却没留底：push 会拒绝重建（SEQUENCE 归零护栏），
+            # 这里同步口径，别让「运行 push」成为死路指引。
+            print(
+                "（本地留底缺失：push 会拒绝以防事件历史被重置；请先从旧 URL 下载 .ics 放回该路径。）"
+            )
+        else:
+            print("（本地尚无发布留底，运行 subscribe push 完成首次发布。）")
         return 0
     try:
         result_ics = build_ics_for_semester(cfg, semester, baseline_probe=str(last_local))
         subscribe.publish(cfg, state, result_ics.ics)
     except XjtuCalendarError as exc:
         # token 已落盘换新、发布却失败：不能报成功。远端还挂在旧文件名上
-        # （旧 URL 已失效），按指引修好后 push 即可补发。
-        reloaded = subscribe.load_state(cfg, semester)
+        # （补发成功前旧 URL 仍可读取），按指引修好后 push 即可补发。
+        reloaded = _load_subscribe_state(cfg, semester)
         if reloaded is not None:
             state = reloaded
         print(f"⚠️ token 已换但尚未重新发布：{exc}")
@@ -990,7 +1024,9 @@ def _subscribe_status(
         if synced:
             print("本地留底：一致，无变更。")
         else:
-            print("本地留底：与上次发布不一致（内容或 token 已变），运行 subscribe push 重新发布。")
+            # 「留底缺失」也走这条：synced 要求 last_local.is_file()。措辞不能再
+            # 断言「内容或 token 已变」；缺失时 push 有 SEQUENCE 归零护栏（I4）。
+            print("本地留底：缺失或已变（内容/token），运行 subscribe push 重新发布。")
     else:
         print("尚未发布过。")
     age = subscribe.snapshot_age_days(cfg, semester)

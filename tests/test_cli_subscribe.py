@@ -10,17 +10,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import urllib.error
 from collections.abc import Sequence
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pytest
 from subscribe_support import SEMESTER, make_home, payload_row
 
-from xjtu_calendar import exporter, subscribe
+from xjtu_calendar import subscribe
 from xjtu_calendar.cli import main
 from xjtu_calendar.config import Settings
 
@@ -33,10 +32,6 @@ GIT_IDENTITY = {
     "GIT_COMMITTER_NAME": "t",
     "GIT_COMMITTER_EMAIL": "t@e",
 }
-
-#: 钉住 DTSTAMP：render_ics 经 ``now_local()`` 取时钟，不钉的话同一数据两次渲染
-#: 字节几乎必不同，「再 push → 无变化」分支将退化为同秒巧合（flaky）。
-FIXED_STAMP = datetime(2026, 10, 7, 12, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
@@ -62,12 +57,15 @@ def _git_bytes(rev: str, cwd: Path) -> bytes:
 
 @pytest.fixture
 def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
-    """home==tmp_path（XJTU_CALENDAR_HOME 指到这里，校历/作息/raw 三件套已布置），origin 为 file:// 裸仓库。"""
+    """home==tmp_path（XJTU_CALENDAR_HOME 指到这里，校历/作息/raw 三件套已布置），origin 为 file:// 裸仓库。
+
+    不再钉时钟：I3 之后 DTSTAMP 由快照 mtime 推导，同一快照两次构建字节一致，
+    「再 push → 无变化」分支是确定性行为而不是同秒巧合。
+    """
     for key, value in GIT_IDENTITY.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("XJTU_CALENDAR_HOME", str(tmp_path))
     monkeypatch.delenv("XJTU_SEMESTER", raising=False)
-    monkeypatch.setattr(exporter, "now_local", lambda: FIXED_STAMP)
     origin = tmp_path / "origin.git"
     _git("init", "-q", "--bare", str(origin))
     make_home(tmp_path)
@@ -359,3 +357,68 @@ def test_corrupt_state_file_surfaces_domain_error(
     # init 的重复登记检查走同一读路径，同样必须拦下（而不是假装没登记过）
     assert _init(origin) != 0
     assert "损坏" in capsys.readouterr().err
+
+
+def test_missing_git_blocks_publish_actions_not_status(
+    env: tuple[Path, Path],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I2（spec §7「git 不在 PATH」）：init/push/rotate 前置探测拦成业务错误。
+
+    只 monkeypatch ``shutil.which``（探测风格同 find_browser）；status 不触碰
+    git，必须照常可用——这是「探测只加在用 git 的路径」口径的锁定断言。
+    """
+    home, origin = env
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    for argv in (
+        ["subscribe", "init", "--repo", origin.resolve().as_uri(), "--semester", SEMESTER],
+        ["subscribe", "push", "--semester", SEMESTER],
+        ["subscribe", "rotate", "--semester", SEMESTER],
+    ):
+        assert main(argv) != 0
+        err = capsys.readouterr().err
+        assert "git" in err and "安装" in err and "Traceback" not in err
+
+    # init 被拦下后没有落盘任何状态
+    assert not (home / "subscribe" / f"subscribe-{SEMESTER}.json").exists()
+
+    # 已 init 的情况下 status 不受探测影响
+    monkeypatch.setattr(shutil, "which", lambda name: "git")
+    assert _init(origin) == 0
+    capsys.readouterr()
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert main(["subscribe", "status", "--semester", SEMESTER]) == 0
+    assert URL_BASE in capsys.readouterr().out
+
+
+def test_push_refuses_when_last_push_exists_but_archive_missing(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """I4：有成功推送记录但本地留底丢失 → 拒绝重建（否则全部事件 SEQUENCE 归零，
+    客户端历史被静默重置）。远端与状态必须分毫未动。"""
+    home, origin = env
+    cfg = Settings(home=home)
+    assert _init(origin) == 0
+    capsys.readouterr()
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+
+    tip_before = _git("rev-parse", "cal", cwd=origin)
+    last_local = home / "subscribe" / f"last-{SEMESTER}.ics"
+    last_local.unlink()
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) != 0
+    err = capsys.readouterr().err
+    assert "本地留底缺失" in err and "rotate" in err and "Traceback" not in err
+
+    assert _git("rev-parse", "cal", cwd=origin) == tip_before  # 远端仍是上一版
+    state = subscribe.load_state(cfg, SEMESTER)
+    assert state is not None and state.last_push is not None  # 状态未被动过
+
+    # 按指引找回留底（现实中从旧 URL 下载，这里用远端 blob 原样放回）后 push 恢复工作
+    blob = _git_bytes(f"cal:{state.token}.ics", origin)
+    last_local.write_bytes(blob)
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert "无变化" in capsys.readouterr().out

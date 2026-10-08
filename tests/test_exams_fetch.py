@@ -16,8 +16,8 @@ from pathlib import Path
 import pytest
 from exam_support import SEMESTER, captured_logs, exam_payload, exam_row
 
-from xjtu_calendar import fetcher
-from xjtu_calendar.cli import _fetch_exams, cmd_export, main
+from xjtu_calendar import cli, fetcher
+from xjtu_calendar.cli import _exam_fallback_note, _fetch_exams, cmd_export, main
 from xjtu_calendar.config import Settings
 from xjtu_calendar.errors import AuthenticationExpired
 from xjtu_calendar.exams import (
@@ -160,6 +160,43 @@ def test_degraded_without_snapshot_says_local_copy_is_missing(
     messages = [rec.getMessage() for rec in records]
     assert any("没有" in message for message in messages), (degraded, messages)
     assert not any("沿用" in message for message in messages), (degraded, messages)
+
+
+class _StubDateTime:
+    """``cli.datetime`` 的替身类：``fromtimestamp`` 固定抛指定异常，模拟坏 mtime。
+
+    刻意**不**去 monkeypatch 真正的 ``datetime.datetime``——那是 C 实现的类型，改它是
+    全局副作用；换掉 ``cli`` 模块里的那个名字就够了，作用域由 monkeypatch 自己收回。
+    """
+
+    def __init__(self, error: type[Exception]) -> None:
+        self._error = error
+
+    def fromtimestamp(self, *args: object, **kwargs: object) -> None:
+        raise self._error("快照 mtime 不可换算（本用例人造的坏值）")
+
+
+@pytest.mark.parametrize("error", [ValueError, OverflowError])
+def test_fallback_note_survives_unusable_mtime(
+    home: Settings, monkeypatch: pytest.MonkeyPatch, error: type[Exception]
+) -> None:
+    """坏 mtime 只准丢掉日期，不准把异常抛进 fetch 的降级日志。
+
+    `_exam_fallback_note`（本文件测的就是它）此前只兜 ``OSError``：Windows 上 `fromtimestamp`
+    遇到坏值恰好抛 ``OSError[Errno 22]``，所以本地看不出来；而 POSIX 抛的是
+    ``ValueError`` / ``OverflowError``（本机 Windows 上表现成 OSError，与平台相关，故
+    这里用替身类把两类都钉住）。export 侧的同族写法在 Task 11 修复轮已经扩成三类
+    （``cmd_export`` 里那句 ``contextlib.suppress(OSError, OverflowError, ValueError)``，
+    终审 F3），fetch 侧是这次补的最后一处。
+
+    破坏红：把 `except (OSError, OverflowError, ValueError)` 改回 `except OSError` →
+    本用例直接以 ``ValueError`` / ``OverflowError`` 失败，而不是拿到那句兜底文案。
+    """
+    _write_old_snapshot(home)  # 快照必须在：走的正是"有旧快照但日期算不出来"那一支
+    monkeypatch.setattr(cli, "datetime", _StubDateTime(error))
+    note = _exam_fallback_note(home, SEMESTER)
+    assert note == "本地已有考试快照，本次导出继续沿用它"
+    assert not any(char.isdigit() for char in note)  # 不含日期：宁可少说，不可说错
 
 
 def test_confirmed_empty_writes_empty_snapshot(home: Settings, monkeypatch) -> None:

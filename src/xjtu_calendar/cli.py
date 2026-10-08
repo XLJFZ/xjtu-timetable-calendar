@@ -421,7 +421,12 @@ def _exam_fallback_note(cfg: Settings, semester_code: str) -> str:
         return "本地没有考试快照，本次导出不含考试"
     try:
         day = datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
-    except OSError:  # 快照刚被移走：宁可不报日期，也不反过来谎称"没有快照"
+    except (OSError, OverflowError, ValueError):
+        # 快照刚被移走（OSError）：宁可不报日期，也不反过来谎称"没有快照"。
+        # 坏 mtime（文件系统抽风/时钟回拨）：`fromtimestamp` 在 Windows 上抛 OSError[Errno 22]，
+        # 在 POSIX 上抛 OverflowError/ValueError——与 export 侧同族写法（本文件
+        # cmd_export 的 `contextlib.suppress(OSError, OverflowError, ValueError)`，终审 F3）
+        # 一致，三类一起兜，否则未评审过的通用异常文案会顶掉这句降级说明。
         return "本地已有考试快照，本次导出继续沿用它"
     return f"不覆盖已有快照，沿用 {day} 的考试快照"
 

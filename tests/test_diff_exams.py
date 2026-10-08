@@ -295,3 +295,29 @@ def test_export_path_still_warns_on_composite_fallback_uid():
     assert any("UID 降级" in rec.getMessage() for rec in warnings), [
         rec.getMessage() for rec in records
     ]
+
+
+def test_export_path_logs_info_on_ksrwid_fallback_uid():
+    """C4 三档降级里此前没被钉住的那一档：缺 ``WID``、有 ``KSRWID`` 时导出口径记 ``INFO``。
+
+    ``_uid_token`` 是三档降级（``WID`` → ``KSRWID`` → 内容组合）：第三档已被
+    :func:`test_export_path_still_warns_on_composite_fallback_uid` 钉成 ``WARNING``，
+    diff 侧那一档由 :func:`test_diff_of_degraded_rows_logs_debug_not_warning` 钉成
+    ``DEBUG``，**唯独第二档此前没有任何用例**。这里补上，走的是导出口径
+    （:func:`make_exam_uid`，默认 ``announce=True``）。
+
+    级别与文案一起钉：把 ``exams._uid_token`` 那行的 ``logging.INFO`` 改成
+    ``logging.DEBUG``（或改成 ``WARNING``），本用例立即红。
+    「不许是 WARNING」也是有内容的断言：``KSRWID`` 按场唯一，这一档的 UID 仍然稳定，
+    吼成 WARNING 会让用户以为改期会造出新事件——那是第三档才成立的事实。
+    """
+    exam = _exams(exam_row(WID=""))[0]  # 缺 WID、有 KSRWID → 降到第二档
+    assert exam.row_id is None and exam.task_id == "KSRWID-1"
+    with captured_logs() as records:
+        uid = make_exam_uid(SEMESTER, exam)
+    assert uid.endswith("@xjtu-timetable-calendar")
+    degraded = [rec for rec in records if "UID 降级" in rec.getMessage()]
+    assert len(degraded) == 1, [rec.getMessage() for rec in records]
+    assert degraded[0].levelname == "INFO", degraded[0].levelname
+    assert degraded[0].getMessage() == "考试「示例课程甲」缺少 WID，UID 降级到 KSRWID"
+    assert not [rec for rec in records if rec.levelname in ("WARNING", "ERROR")]

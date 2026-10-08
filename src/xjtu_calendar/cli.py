@@ -930,9 +930,9 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
         rep = ParseReport()
         rows = parse_exam_rows(_read_json(path, label), campus_names=campus, report=rep)
         for reason in rep.skipped:
-            logger.warning("%s考试快照解析跳过（可能影响比对完整性）：%s", label, reason)
+            logger.warning("%s快照解析跳过（可能影响比对完整性）：%s", label, reason)
         for warning in rep.warnings:
-            logger.warning("%s考试快照：%s", label, warning)
+            logger.warning("%s快照：%s", label, warning)
         return rows
 
     def _diff_exam_snapshots() -> tuple[ExamDiff, str, str]:
@@ -962,12 +962,12 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
         # 两侧**共用同一份**校区对照（取自新的课表快照，§6.3）：各取各的话，两份课表快照里
         # XXXQDM_DISPLAY 的差别会变成一条根本不存在的「教室变更」。
         campus_names = campus_names_from_timetable(new_payload)
-        new_exams = _exam_rows(new_exams_path, "新", campus_names)
+        new_exams = _exam_rows(new_exams_path, "新考试", campus_names)
         # 没有 .prev = 本学期**第一次**拿到考试快照：旧侧按空表比对，于是每行都报「新增」
         # （§6.6:336-337）。计划稿写的"任一侧缺失就打说明、返回空 diff"是错的 —— 那会让
         # diff 打出「无变化」，而日历里实实在在多出了一整批考试事件。
         old_exams: list[ExamSchedule] = (
-            [] if first_snapshot else _exam_rows(prev_exams_path, "旧", campus_names)
+            [] if first_snapshot else _exam_rows(prev_exams_path, "旧考试", campus_names)
         )
         preface = (
             "无上一份考试快照（本学期首次抓到考试安排），以下考试变更全部按新增报告。"

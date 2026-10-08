@@ -277,3 +277,22 @@ def test_explicit_paths_without_semester_still_reports_no_exam_comparison(
     out = capsys.readouterr().out
     assert "未比对考试" in out
     assert "考试变更" not in out
+
+
+def test_corrupt_exam_snapshot_is_named_and_fails_loud(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """考试快照坏掉时要指名是**考试**快照，也不能装作"无变化"。
+
+    口径与课表快照一致（fail-closed：diff 是只读诊断命令，不是主功能导出）。
+    「fetch/export 绝不因考试失败而非零退出」约束的是那两个子命令 ——
+    导出侧的考试块整段包在 ``except Exception`` 里（Task 8），坏快照不影响 .ics 产出。
+    """
+    _write_timetable_snapshots(home, _row("示例课程甲", "D-1"))
+    _write_exam_snapshots(home, [exam_row()], [exam_row()])
+    Settings(home=home).raw_exams_path(SEMESTER).write_text("{坏掉的 JSON", encoding="utf-8")
+
+    assert main(["diff", "--semester", SEMESTER]) != 0
+    err = capsys.readouterr().err
+    assert "新考试快照不是合法 JSON" in err
+    assert "无变化" not in err + capsys.readouterr().out

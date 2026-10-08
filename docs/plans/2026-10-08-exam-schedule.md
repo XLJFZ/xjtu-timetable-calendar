@@ -48,7 +48,7 @@
 | Modify | `src/xjtu_calendar/exporter.py` | `build_ics_for_semester` 并入考试事件 + 全局 UID 断言 |
 | Modify | `src/xjtu_calendar/subscribe.py` | `snapshot_age_days(..., kind=)` 泛化 |
 | Modify | `src/xjtu_calendar/cli.py` | `--no-exams`（fetch/export/push/rotate）、diff 考试小节 |
-| Modify | `tests/subscribe_support.py` | `make_home` 支持真信封与考试快照 |
+| 未改（按落地修订） | `tests/subscribe_support.py` | 原计划「`make_home` 支持真信封与考试快照」**没有实施**：任何任务都没动过该文件。真信封形态由 `tests/exam_support.py` 提供（`exam_payload`/`timetable_envelope`），需要真信封的用例在**各测试内部直接覆盖** `make_home` 写出的课表 payload 文件——spec §9 对固件改造点的要求以此方式满足 |
 | Modify | `README.md` / `CHANGELOG.md` | 「考试安排」小节、旗标表、`[Unreleased]` |
 
 ---
@@ -1310,6 +1310,20 @@ fetch.add_argument(
 `cmd_fetch` 的 HTTP 分支，在课表 `save_raw` 之后：
 
 ```python
+def _exam_fallback_note(cfg, semester_code):
+    """降级提示的后半句（Task 11 评审 F1 更正后的 shipped 口径）：
+    有旧快照就报出**它是哪一天的**，没有就明说不含考试——**禁止**不查存在性
+    就写「沿用已有快照」。"""
+    path = cfg.raw_exams_path(semester_code)
+    if not path.is_file():
+        return "本地没有考试快照，本次导出不含考试"
+    try:
+        day = datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
+    except OSError:  # 快照刚被移走：宁可不报日期，也不谎称"没有快照"
+        return "本地已有考试快照，本次导出继续沿用它"
+    return f"不覆盖已有快照，沿用 {day} 的考试快照"
+
+
 def _fetch_exams(endpoints, cfg, semester_code, *, reason_if_skipped=None):
     """宁缺毋滥：任何失败都只记日志，**绝不覆盖**已有快照，绝不非零退出。"""
     if reason_if_skipped:
@@ -1323,14 +1337,15 @@ def _fetch_exams(endpoints, cfg, semester_code, *, reason_if_skipped=None):
     try:
         payload = fetch_via_http(endpoint, cfg=cfg, params={"XNXQDM": semester_code})
     except (AuthenticationExpired, TimetableFetchError) as exc:
-        logger.warning("考试安排获取失败，沿用已有快照：%s", exc)
+        logger.warning("考试安排获取失败（%s）；%s", exc, _exam_fallback_note(cfg, semester_code))
         return None
     outcome = classify_exam_payload(payload)
     if outcome.state is ExamState.UNKNOWN:
         logger.warning(
-            "考试安排响应无法判定（extParams.code=%r msg=%r）；不覆盖已有快照",
+            "考试安排响应无法判定（extParams.code=%r msg=%r）；%s",
             outcome.code,
             outcome.msg,
+            _exam_fallback_note(cfg, semester_code),
         )
         return None
     if outcome.state is ExamState.NO_EXAMS:
@@ -1339,6 +1354,12 @@ def _fetch_exams(endpoints, cfg, semester_code, *, reason_if_skipped=None):
     logger.info("考试安排已缓存到 %s", path)
     return path
 ```
+
+> **本块已按 shipped 口径更正**（原稿的两条 warning 文案「考试安排获取失败，沿用已有
+> 快照」「不覆盖已有快照」不带快照日期、也不区分"有没有旧快照"，Task 11 评审 F1 已修）。
+> 落地版另有两处与此草图不同、以 `cli.py` 为准：缺端点走 `require_endpoint` +
+> 捕获 `EndpointNotConfigured`（而非 `endpoints[...]` + `KeyError`），落盘前有
+> `totalSize` 翻页护栏（§6.4，行数不符只 warning、照常保存）。
 
 `--from-file` 与浏览器两条分支调用它时传 `reason_if_skipped="--from-file 导入没有会话，考试需在线获取"` / `"浏览器拦截只覆盖课表接口"`；HTTP 分支正常调用。**`required: false` 没有运行期效果**（`Endpoint.required` 无读取点），所以"缺端点不影响课表"靠的是上面这个 `try/KeyError`，不是那个字段。
 

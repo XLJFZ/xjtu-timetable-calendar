@@ -307,9 +307,15 @@ def snapshot_age_days(cfg: Settings, semester: str, *, kind: str = "timetable") 
     ``kind`` 与 :func:`xjtu_calendar.fetcher.save_raw` 同一口径（``"timetable"`` /
     ``"exams"``）。默认值刻意保持不变——`cli.py` 现有的 publish/status 两处调用点
     不传 kind，行为必须与改造前逐字一致（§7:382-386 选定陈旧口径时需要读考试侧快照，
-    这是 Task 11 传 ``kind="exams"`` 的入口）。
+    这是 Task 11 传 ``kind="exams"`` 的入口）。未知 kind 直接 ``ValueError``，与
+    :func:`xjtu_calendar.fetcher._raw_paths` 同口径：拼错要当场炸，不许静默按课表读。
     """
-    path = cfg.raw_exams_path(semester) if kind == "exams" else cfg.raw_timetable_path(semester)
+    if kind == "exams":
+        path = cfg.raw_exams_path(semester)
+    elif kind == "timetable":
+        path = cfg.raw_timetable_path(semester)
+    else:
+        raise ValueError(f"未知的快照类型：{kind}")
     if not path.is_file():
         return None
     import time

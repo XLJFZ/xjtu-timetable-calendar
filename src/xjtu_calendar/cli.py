@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import shutil
 import subprocess
@@ -57,6 +58,11 @@ if TYPE_CHECKING:
 __all__ = ["build_parser", "main"]
 
 logger = get_logger()
+
+#: 考试快照陈旧告警的滞后阈值（天，spec §7:382-386 的相对口径；数值由 plan 锁定为 7）。
+#: 教务的考试排期按学期跟着课表走，落后一周以内多半只是「本周课表又刷过一次」，
+#: 每次 export 都报警太聒噪；超过 7 天才值得提一句「考试可能已改期」。
+EXAM_STALE_LAG_DAYS = 7.0
 
 
 # --------------------------------------------------------------------------- #
@@ -501,23 +507,26 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     # §7:382-386 陈旧口径：考试快照 vs **同学期课表快照**（不是"距今多少天"）。
     # 文案严格按 spec 的「考试数据来自 X 日的课表同期快照」，再加补救动作与"本次仍
     # 继续"的 fail-closed 说明。日期取考试快照 mtime，与 Task 7 `_exam_fallback_note`
-    # 读同一份 mtime——两处刻意不合并：Task 7 只给"沿用哪一份"，本行只算"落后多少"，
-    # 合并会让一侧的未来变化牵着另一侧走；见 Task 11 报告的重复说明。
-    # 任何 mtime/stat 失败都视作"没有可提醒的"：宁缺毋滥，export 绝不因此非零退出。
-    from .exams import exam_snapshot_lag_days
+    # 读同一份 mtime——两处刻意不合并（见 Task 11 报告的重复说明）。
+    # --no-exams 时本次产物里根本没有考试事件，任何「考试可能已改期」的提示对本次
+    # 运行都是谎话（spec §7:390-392 把 --no-exams 当作有意的回滚出口）：整块跳过。
+    # 任何滞后计算/stat 失败（如并发 fetch 正在轮转快照的窗口）都视作"没有可提醒的"：
+    # 宁缺毋滥，export 绝不因此报错或非零退出。
+    if not args.no_exams:
+        from .exams import exam_snapshot_lag_days
 
-    lag = exam_snapshot_lag_days(cfg, semester)
-    if lag is not None and lag > 7:
-        exam_path = cfg.raw_exams_path(semester)
-        try:
-            exam_day = datetime.fromtimestamp(exam_path.stat().st_mtime).date().isoformat()
-        except OSError:  # 快照刚被移走：没什么可提醒的
-            exam_day = None
-        if exam_day is not None:
-            logger.warning(
-                "考试数据来自 %s 的课表同期快照，考试可能已改期，建议重新 fetch（本次仍按现有快照导出）",
-                exam_day,
-            )
+        with contextlib.suppress(OSError):
+            lag = exam_snapshot_lag_days(cfg, semester)
+            if lag is not None and lag > EXAM_STALE_LAG_DAYS:
+                exam_day = (
+                    datetime.fromtimestamp(cfg.raw_exams_path(semester).stat().st_mtime)
+                    .date()
+                    .isoformat()
+                )
+                logger.warning(
+                    "考试数据来自 %s 的课表同期快照，考试可能已改期，建议重新 fetch（本次仍按现有快照导出）",
+                    exam_day,
+                )
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import stat
@@ -16,10 +17,11 @@ import pytest
 from exam_support import SEMESTER, captured_logs, exam_payload, exam_row
 
 from xjtu_calendar import fetcher
-from xjtu_calendar.cli import _fetch_exams, main
+from xjtu_calendar.cli import _fetch_exams, cmd_export, main
 from xjtu_calendar.config import Settings
 from xjtu_calendar.errors import AuthenticationExpired
 from xjtu_calendar.exams import exam_snapshot_lag_days
+from xjtu_calendar.exporter import ExportResult
 from xjtu_calendar.logging_setup import redact
 from xjtu_calendar.subscribe import snapshot_age_days
 
@@ -356,3 +358,118 @@ def test_teacher_and_log_id_keys_are_redacted() -> None:
     assert redact({"SJBH": "007"})["SJBH"] == "***"
     assert redact({"XM": "李四"})["XM"] == "***"  # 既有能力，回归护栏
     assert redact({"KCM": "示例课程甲"})["KCM"] == "示例课程甲"  # 课程名不敏感
+
+
+# --------------------------------------------------------------------------- #
+# Task 11 fix round 1：cmd_export 陈旧告警的三条口径（N1/N2/N3）
+# --------------------------------------------------------------------------- #
+
+#: 假的 info 必须凑齐 cmd_export 打印用的键，否则它会 KeyError 而不是走到断言。
+_STUB_INFO = {
+    "semester_name": "示例学期",
+    "courses": 1,
+    "meetings": 1,
+    "events": 1,
+    "date_range": "2030-02-25 ~ 2030-06-21",
+}
+
+_STALENESS_MARK = "考试数据来自"  # spec §7:384 句式的固定前缀，所有断言共用
+
+
+def _stub_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """拦下 build_ics_for_semester：本组用例只验 cmd_export 的告警块，不重建导出管线。"""
+
+    def fake(_cfg: Settings, semester: str, **_kwargs: object) -> ExportResult:
+        return ExportResult(
+            ics="BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n",
+            info=dict(_STUB_INFO),
+            sequence_stats=None,
+        )
+
+    monkeypatch.setattr("xjtu_calendar.cli.build_ics_for_semester", fake)
+
+
+def _stage_snapshots(cfg: Settings, *, exam_days_ago: float, timetable_days_ago: float) -> None:
+    """写齐两份快照并把 mtime 拨到指定天数（lag = exam − timetable）。"""
+    exam_path = cfg.raw_exams_path(SEMESTER)
+    exam_path.write_text(json.dumps(exam_payload([exam_row()]), ensure_ascii=False), "utf-8")
+    timetable = cfg.raw_timetable_path(SEMESTER)
+    timetable.write_text('{"kbList": []}', encoding="utf-8")
+    _touch(exam_path, days_ago=exam_days_ago)
+    _touch(timetable, days_ago=timetable_days_ago)
+
+
+def _export_args(cfg: Settings, *, no_exams: bool) -> argparse.Namespace:
+    """cmd_export 读取的完整 Namespace（与 build_parser 的 export 子命令一一对应）。"""
+    return argparse.Namespace(
+        semester=SEMESTER,
+        input=None,
+        calendar_config=None,
+        schedule_config=None,
+        name=None,
+        from_date=None,
+        to_date=None,
+        allow_unsupported_adjustments=False,
+        sequence_from=None,
+        output=str(cfg.home / "out.ics"),
+        no_sequence=False,
+        no_exams=no_exams,
+    )
+
+
+def test_export_warns_when_exams_included_and_stale(home: Settings, monkeypatch) -> None:
+    """正向对照：同样环境下不排除考试时告警**必须**出现，否则下面三条「没有告警」都是空断言。"""
+    _stub_build(monkeypatch)
+    _stage_snapshots(home, exam_days_ago=10, timetable_days_ago=1)
+    with captured_logs() as records:
+        assert cmd_export(_export_args(home, no_exams=False), home) == 0
+    assert any(_STALENESS_MARK in rec.getMessage() for rec in records)
+
+
+def test_export_no_exams_never_warns_about_staleness(home: Settings, monkeypatch) -> None:
+    """N1：--no-exams 时产物里根本没有考试事件，「考试可能已改期…仍按现有快照导出」对本次运行是谎话。
+
+    打破红：删掉 cli.py cmd_export 里的 `if not args.no_exams:` 门控（改回无条件执行），
+    本用例就会收到告警而失败。
+    """
+    _stub_build(monkeypatch)
+    _stage_snapshots(home, exam_days_ago=10, timetable_days_ago=1)
+    with captured_logs() as records:
+        assert cmd_export(_export_args(home, no_exams=True), home) == 0
+    assert not any(_STALENESS_MARK in rec.getMessage() for rec in records)
+
+
+def test_export_staleness_check_oserror_degrades_to_silence(home: Settings, monkeypatch) -> None:
+    """N2：并发 fetch 轮转快照时 stat 窗口能抛 OSError；整块必须如约退化成「没什么可提醒的」。
+
+    打破红：去掉告警块的 contextlib.suppress(OSError)（或换成更窄的异常），
+    boom 的 OSError 会穿出 cmd_export，本用例直接 error。
+    """
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("快照正在被并发轮转")
+
+    _stub_build(monkeypatch)
+    _stage_snapshots(home, exam_days_ago=10, timetable_days_ago=1)
+    # 打补丁在 subscribe.snapshot_age_days（告警块唯一未设防的 stat 现场）：
+    # exam_snapshot_lag_days 是函数体内 import，调用时才取模块属性，补丁生效。
+    monkeypatch.setattr("xjtu_calendar.subscribe.snapshot_age_days", boom)
+    with captured_logs() as records:
+        assert cmd_export(_export_args(home, no_exams=False), home) == 0
+    assert not any(_STALENESS_MARK in rec.getMessage() for rec in records)
+
+
+def test_lag_just_under_threshold_stays_silent(home: Settings, monkeypatch) -> None:
+    """N3 边界：滞后差一点到阈值必须静默（超阈值分支由上面的正向对照钉住）。
+
+    打破红：把 EXAM_STALE_LAG_DAYS 改小（例如 6），滞后 6.9 天就会误报警、本用例失败；
+    实现前的 RED 则是 `from xjtu_calendar.cli import EXAM_STALE_LAG_DAYS` 直接 ImportError。
+    """
+    from xjtu_calendar.cli import EXAM_STALE_LAG_DAYS
+
+    assert EXAM_STALE_LAG_DAYS == 7.0  # 数字本身由 plan/spec 锁定，重命名常量的修复不许动它
+    _stub_build(monkeypatch)
+    _stage_snapshots(home, exam_days_ago=EXAM_STALE_LAG_DAYS - 0.1, timetable_days_ago=0.0)
+    with captured_logs() as records:
+        assert cmd_export(_export_args(home, no_exams=False), home) == 0
+    assert not any(_STALENESS_MARK in rec.getMessage() for rec in records)

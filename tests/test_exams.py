@@ -4,7 +4,9 @@ import pytest
 from exam_support import DEMO_DAY, exam_payload, exam_row
 
 from xjtu_calendar.exams import (
+    ExamState,
     campus_names_from_timetable,
+    classify_exam_payload,
     iter_exam_rows,
     parse_exam_rows,
     parse_exam_time_text,
@@ -164,3 +166,33 @@ def test_weekday_consistent_produces_no_warning():
     report = ParseReport()
     parse_exam_rows(exam_payload([exam_row()]), report=report)  # DEMO_DAY=星期一，固件自洽
     assert report.warnings == []
+
+
+def test_state_has_exams():
+    out = classify_exam_payload(exam_payload([exam_row()]))
+    assert out.state is ExamState.HAS_EXAMS
+    assert len(out.rows) == 1
+
+
+def test_state_no_exams_is_distinct_from_unknown():
+    """code==1 + 空 rows：真实存在但主接口尚未观测到，判据得留得住。"""
+    out = classify_exam_payload(exam_payload([], code=1, msg="操作成功"))
+    assert out.state is ExamState.NO_EXAMS
+    assert out.rows == ()  # rows 是 tuple，不是 list
+
+
+def test_state_unknown_when_query_failed():
+    """实测：本学期未排考 → code 0 / 查询失败。归入未知，**不许**覆盖快照。"""
+    out = classify_exam_payload(exam_payload([], code=0, msg="查询失败"))
+    assert out.state is ExamState.UNKNOWN
+    assert out.msg == "查询失败"
+
+
+def test_state_unknown_when_envelope_missing_or_string_code():
+    assert classify_exam_payload({}).state is ExamState.UNKNOWN
+    assert classify_exam_payload({"code": "0"}).state is ExamState.UNKNOWN
+    assert classify_exam_payload(exam_payload([exam_row()], code="1")).state is ExamState.UNKNOWN
+
+
+def test_state_unknown_when_module_missing():
+    assert classify_exam_payload({"code": "0", "datas": {}}).state is ExamState.UNKNOWN

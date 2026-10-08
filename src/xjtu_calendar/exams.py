@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import date
+from enum import Enum
 from typing import Any
 
 from .exporter import UID_DOMAIN  # noqa: F401  （T5 用；顶层导入，exporter 反向只在函数内 import）
@@ -82,6 +84,57 @@ def iter_exam_rows(payload: Any) -> list[dict[str, Any]]:
             # 也让返回类型 `list[dict[str, Any]]` 在 mypy strict 下成立。
             return [row for row in module["rows"] if isinstance(row, dict)]
     return []
+
+
+class ExamState(Enum):
+    """§7 三态。`UNKNOWN` 的判据是"能不能确定地写出结论"，不是"看起来像不像空"。"""
+
+    HAS_EXAMS = "has_exams"
+    NO_EXAMS = "no_exams"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class ExamOutcome:
+    state: ExamState
+    rows: tuple[Mapping[str, Any], ...] = ()
+    msg: str = ""
+    code: Any = None
+
+
+def _exam_module(payload: Any) -> Mapping[str, Any] | None:
+    """返回含 `rows` 与 `extParams` 的那个 module（模块名不硬编码）。"""
+    datas = payload.get("datas") if isinstance(payload, Mapping) else None
+    if not isinstance(datas, Mapping):
+        return None
+    for module in datas.values():
+        # 三个条件合成一个 `if`（而非计划稿的嵌套写法）：ruff 的 SIM102 不接受嵌套。
+        if (
+            isinstance(module, Mapping)
+            and isinstance(module.get("rows"), list)
+            and isinstance(module.get("extParams"), Mapping)
+        ):
+            return module
+    return None
+
+
+def classify_exam_payload(payload: Any) -> ExamOutcome:
+    """判据**只**看 `datas.<模块>.extParams`；外层 `code` 恒为字符串 ``"0"``，不作依据。
+
+    网络层失败（非 200 / 401 / 登录页 / 非 JSON）在 `fetch_via_http` 里就已经抛异常，
+    走不到这里 —— 所以本函数返回 `UNKNOWN` 只代表"响应到了但内容不可判定"。
+    """
+    module = _exam_module(payload)
+    if module is None:
+        return ExamOutcome(ExamState.UNKNOWN, msg="响应缺少 datas.<module>.extParams")
+    ext = module["extParams"]
+    code, msg = ext.get("code"), str(ext.get("msg") or "")
+    rows = tuple(row for row in module["rows"] if isinstance(row, Mapping))
+    if code == 1 and rows:
+        return ExamOutcome(ExamState.HAS_EXAMS, rows, msg, code)
+    if code == 1:
+        return ExamOutcome(ExamState.NO_EXAMS, (), msg, code)
+    return ExamOutcome(ExamState.UNKNOWN, (), msg, code)
 
 
 def campus_names_from_timetable(timetable_payload: Any) -> dict[str, str]:

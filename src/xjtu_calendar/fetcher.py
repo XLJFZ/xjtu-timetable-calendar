@@ -554,33 +554,43 @@ def fetch_via_browser(
     return captured
 
 
-def save_raw(payload: Any, cfg: Settings, semester_key: str) -> Path:
-    """把原始课表 JSON 缓存到本地，并把上一份轮转为 ``*.prev.json``。
+def _raw_paths(cfg: Settings, semester_key: str, kind: str) -> tuple[Path, Path]:
+    if kind == "exams":
+        return cfg.raw_exams_path(semester_key), cfg.raw_exams_prev_path(semester_key)
+    if kind != "timetable":
+        raise ValueError(f"未知的快照类型：{kind}")
+    return cfg.raw_timetable_path(semester_key), cfg.raw_timetable_prev_path(semester_key)
 
-    .. danger::
-        两个文件都含个人信息，**必须留在 .gitignore 排除目录内**，绝不可提交。
 
-    轮转语义（单代）：旧当前快照原子移动到 prev，成为 ``diff`` 的默认比较基线；
-    首次 fetch 没有旧快照，也就不会凭空造出一个空的 prev。
+def save_raw(payload: Any, cfg: Settings, semester_key: str, *, kind: str = "timetable") -> Path:
+    """把原始 JSON 缓存到本地，并把上一份轮转为 ``*.prev.json``。
+
+    ``kind`` 决定落在课表还是考试路径；单代轮转语义两者一致。
+    两个文件都含个人信息，**必须留在 .gitignore 排除目录内**，绝不可提交。
     """
     cfg.ensure_dirs()
-    path = cfg.raw_timetable_path(semester_key)
-    previous = cfg.raw_timetable_prev_path(semester_key)
+    path, previous = _raw_paths(cfg, semester_key, kind)
     if path.is_file():
         path.replace(previous)  # 同目录 os.replace，原子
-    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-    logger.debug("原始课表已缓存到 %s（含个人信息，请勿提交）", path)
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n", private=True)
+    label = "考试" if kind == "exams" else "课表"
+    logger.debug("原始%s已缓存到 %s（含个人信息，请勿提交）", label, path)
     if previous.is_file():
-        logger.debug("上一份快照已轮转到 %s（diff 的默认比较基线）", previous)
+        logger.debug("原始%s上一份快照已轮转到 %s", label, previous)
     return path
 
 
-def load_raw(cfg: Settings, semester_key: str) -> Any:
-    """读取本地缓存的原始课表 JSON。"""
-    path = cfg.raw_timetable_path(semester_key)
+def load_raw(cfg: Settings, semester_key: str, *, kind: str = "timetable") -> Any:
+    path, _ = _raw_paths(cfg, semester_key, kind)
     if not path.is_file():
+        # 计划原文的 message 不含字面量 "fetch"，但计划的测试用
+        # pytest.raises(match="fetch")——match 只检索 str(exc)（``XjtuCalendarError.__str__``
+        # 仅返回 message，hint 是独立属性）。故把「fetch 子命令」写进 message，
+        # hint= 仍保留，维持 CLI 的分行建议格式。
         raise TimetableFetchError(
-            f"本地没有 {semester_key} 的原始课表缓存：{path}",
-            hint="请先运行 fetch 子命令获取课表。",
+            f"本地没有 {semester_key} 的原始{'考试' if kind == 'exams' else '课表'}缓存"
+            "（由 fetch 子命令产生）："
+            f"{path}",
+            hint="请先运行 fetch 子命令获取数据。",
         )
     return json.loads(path.read_text(encoding="utf-8"))

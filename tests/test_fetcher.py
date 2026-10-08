@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import httpx
@@ -35,6 +36,7 @@ from xjtu_calendar.fetcher import (
     classify_body,
     fetch_via_http,
     load_endpoints,
+    load_raw,
     require_endpoint,
     save_raw,
 )
@@ -287,3 +289,31 @@ def test_save_raw_rotates_previous_snapshot(cfg: Settings) -> None:
     save_raw({"v": 3}, cfg, "2026-fall")
     assert json.loads(previous.read_text(encoding="utf-8")) == {"v": 2}
     assert json.loads(current.read_text(encoding="utf-8")) == {"v": 3}
+
+
+def test_save_raw_kind_rotates_only_its_own_stream(tmp_path):
+    cfg = Settings(home=tmp_path)
+    cfg.ensure_dirs()
+    save_raw({"a": 1}, cfg, "2026-2027-1")
+    save_raw({"exams": "v1"}, cfg, "2026-2027-1", kind="exams")
+    save_raw({"exams": "v2"}, cfg, "2026-2027-1", kind="exams")
+    assert cfg.raw_timetable_prev_path("2026-2027-1").exists() is False  # 课表只写过一次
+    assert cfg.raw_exams_prev_path("2026-2027-1").read_text(encoding="utf-8").find("v1") >= 0
+    assert load_raw(cfg, "2026-2027-1", kind="exams") == {"exams": "v2"}
+
+
+def test_exam_snapshot_is_owner_only(tmp_path):
+    """§8：现状 save_raw 没传 private=True，考试快照含学号姓名，必须修。"""
+    cfg = Settings(home=tmp_path)
+    cfg.ensure_dirs()
+    path = save_raw({"exams": 1}, cfg, "2026-2027-1", kind="exams")
+    mode = path.stat().st_mode & 0o077
+    if os.name != "posix":
+        pytest.skip("Windows 不执行 POSIX 权限位")
+    assert mode == 0
+
+
+def test_load_raw_missing_exams_snapshot_hint(tmp_path):
+    cfg = Settings(home=tmp_path)
+    with pytest.raises(TimetableFetchError, match="fetch"):
+        load_raw(cfg, "2026-2027-1", kind="exams")

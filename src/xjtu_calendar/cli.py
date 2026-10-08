@@ -133,6 +133,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="不使用基线：所有事件按新增处理（SEQUENCE: 0）",
     )
+    export.add_argument(
+        "--no-exams",
+        action="store_true",
+        help="不并入考试安排（默认并入；本地快照不删）",
+    )
 
     # --- notice ---
     notice = sub.add_parser(
@@ -194,8 +199,18 @@ def build_parser() -> argparse.ArgumentParser:
     push_p = sact.add_parser("push", help="构建 .ics 并强推到发布分支")
     push_p.add_argument("--semester")
     push_p.add_argument("--input", help="直接指定课表 JSON（默认用 fetch 缓存）")
+    push_p.add_argument(
+        "--no-exams",
+        action="store_true",
+        help="不并入考试安排（默认并入；本地快照不删）",
+    )
     rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
     rot_p.add_argument("--semester")
+    rot_p.add_argument(
+        "--no-exams",
+        action="store_true",
+        help="不并入考试安排（默认并入；本地快照不删）",
+    )
     st_p = sact.add_parser("status", help="查看订阅状态、URL 与新鲜度")
     st_p.add_argument("--semester")
     st_p.add_argument("--verify", action="store_true", help="匿名 GET 自检 URL 可达性")
@@ -480,6 +495,7 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
         sequence_from=args.sequence_from,
         baseline_probe=args.output,
         no_sequence=args.no_sequence,
+        include_exams=not args.no_exams,
     )
 
     output = Path(args.output)
@@ -1022,7 +1038,7 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
     if args.action == "push":
         return _subscribe_push(args, cfg, state, semester)
     if args.action == "rotate":
-        return _subscribe_rotate(cfg, state, semester)
+        return _subscribe_rotate(cfg, state, semester, include_exams=not args.no_exams)
     return _subscribe_status(args, cfg, state, semester)
 
 
@@ -1085,6 +1101,7 @@ def _subscribe_push(
         semester,
         input_path=getattr(args, "input", None),
         baseline_probe=str(last_local) if last_local.is_file() else None,
+        include_exams=not args.no_exams,
     )
     res = subscribe.publish(cfg, state, result_ics.ics)
     if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
@@ -1097,7 +1114,14 @@ def _subscribe_push(
     return 0
 
 
-def _subscribe_rotate(cfg: Settings, state: subscribe.SubscriptionState, semester: str) -> int:
+def _subscribe_rotate(
+    cfg: Settings, state: subscribe.SubscriptionState, semester: str, *, include_exams: bool = True
+) -> int:
+    """换 token 并在有本地留底时重新发布。
+
+    ``include_exams``：与 push 同口径透传给构建管线（spec §6.7）。rotate 若不接
+    ``--no-exams``，用户明确关掉的考试会被悄悄塞回订阅 URL——正是本参数要防的缺陷。
+    """
     from . import subscribe
 
     _validate_publish_branch(state.branch)
@@ -1117,7 +1141,9 @@ def _subscribe_rotate(cfg: Settings, state: subscribe.SubscriptionState, semeste
             print("（本地尚无发布留底，运行 subscribe push 完成首次发布。）")
         return 0
     try:
-        result_ics = build_ics_for_semester(cfg, semester, baseline_probe=str(last_local))
+        result_ics = build_ics_for_semester(
+            cfg, semester, baseline_probe=str(last_local), include_exams=include_exams
+        )
         subscribe.publish(cfg, state, result_ics.ics)
     except XjtuCalendarError as exc:
         # token 已落盘换新、发布却失败：不能报成功。远端还挂在旧文件名上

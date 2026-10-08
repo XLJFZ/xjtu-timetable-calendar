@@ -26,16 +26,15 @@ golden 的确切来历（可复核）
 重新生成（依赖升级等正当理由导致产物确实该变时）
 ----------------------------------------------
 1. ``cd`` 到主检出（``main`` @ ``0bd9414681``），确认 ``git status`` 干净；
-2. 在那儿跑 ``PYTHONPATH=src <venv python> <生成脚本> <输出路径> <临时home>``：脚本从
-   ``tests/fixtures/legacy_course_inputs.json`` 布置 home、``os.utime`` 钉 mtime、调用
-   ``build_ics_for_semester(cfg, semester)``（旧签名，没有考试相关参数），把
-   ``result.ics`` 以 ``newline=""`` 写出——本文件的用例与该脚本读**同一份**输入文件，
-   所以不存在「改了输入忘了改产物」的漂移。
+2. 照着 :func:`lay_out_home` 写一个一次性脚本（读 :data:`INPUTS` 布置 home、
+   ``os.utime`` 钉 mtime、调用 ``build_ics_for_semester(cfg, semester)``——旧签名，
+   没有考试相关参数、把 ``result.ics`` 以 ``newline=""`` 写出），在那儿用
+   ``PYTHONPATH=src <venv python> <脚本>`` 跑。**脚本与产物都不提交**：脚本绑定
+   本机的主检出位置，产物由本用例比对即可。
+   本轮实际用过的那份脚本会先打印 ``xjtu_calendar.__file__`` 与 ``git rev-parse HEAD``
+   再动手——基线的来历必须留在输出里，不然「跑的是旧代码」只是口头承诺。
 3. 逐行检查新产物不含真实个人信息（``LOCATION`` / ``DESCRIPTION`` / ``X-WR-CALNAME``
    是真实数据会落进去的三个位置），再连同用例一起提交。
-
-   脚本本身不提交：它绑定本机的主检出位置，是一次性工具（本轮用过的那份留在
-   ``_notes/``，已 gitignore）。
 
 ``icalendar`` / ``tzdata`` 升级可能让这条用例红
 ----------------------------------------------

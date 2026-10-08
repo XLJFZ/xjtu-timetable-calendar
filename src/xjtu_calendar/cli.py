@@ -853,14 +853,27 @@ def cmd_schedule(args: argparse.Namespace, cfg: Settings) -> int:
 
 
 def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
-    """比对新旧课表快照。
+    """比对新旧课表快照与考试快照。
 
     默认比较「上一次 fetch」与「这一次 fetch」——``fetch`` 会在覆盖前把旧快照
     原子轮转成 ``*.prev.json``，所以正常用过两次 fetch 后本命令零参数可用。
     只 fetch 过一次时不猜、不假装成功，明确说明基线缺失以及如何补救。
+
+    考试侧（设计文档 §6.6）走同一对轮转出来的快照（``raw/exams-*.json``），
+    比对结果作为并列的「考试变更」小节输出；``--old/--new`` 只对课表生效。
     """
     from .diff import describe_periods, describe_slot, diff_meetings
-    from .parser import TimetableParser
+    from .exams import (
+        EXAM_KIND_ADDED,
+        EXAM_KIND_CANCELLED,
+        ExamDiff,
+        campus_names_from_timetable,
+        describe_exam_change,
+        diff_exams,
+        parse_exam_rows,
+    )
+    from .models import ExamSchedule
+    from .parser import ParseReport, TimetableParser
 
     semester = args.semester or cfg.semester_key
 
@@ -882,6 +895,12 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
     else:
         new_path = old_path  # 不会走到：old 分支已要求 semester 或 --old
 
+    def _read_json(path: Path, label: str) -> object:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise XjtuCalendarError(f"{label}快照不是合法 JSON：{path}（{exc}）") from exc
+
     def _load(path: Path, label: str) -> object:
         if not path.is_file():
             raise XjtuCalendarError(
@@ -889,15 +908,14 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
                 hint="快照来自 fetch（每次 fetch 会把上一份轮转为 *.prev.json 作为比较基线）。"
                 "刚 fetch 过一次还没有基线属正常；也可以先用 --old 指定一份之前保存的 raw JSON。",
             )
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise XjtuCalendarError(f"{label}快照不是合法 JSON：{path}（{exc}）") from exc
+        return _read_json(path, label)
 
     old_parser = TimetableParser()
     new_parser = TimetableParser()
-    _, old_meetings = old_parser.parse(_load(old_path, "旧"))
-    _, new_meetings = new_parser.parse(_load(new_path, "新"))
+    old_payload = _load(old_path, "旧")
+    new_payload = _load(new_path, "新")
+    _, old_meetings = old_parser.parse(old_payload)
+    _, new_meetings = new_parser.parse(new_payload)
 
     print(f"旧快照: {old_path}（{old_parser.report.summary()}）")
     print(f"新快照: {new_path}（{new_parser.report.summary()}）")
@@ -906,8 +924,68 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
             logger.warning("解析跳过（可能影响比对完整性）：%s", reason)
     print()
 
+    def _exam_rows(path: Path | None, label: str, campus: Mapping[str, str]) -> list[ExamSchedule]:
+        if path is None:
+            return []
+        rep = ParseReport()
+        rows = parse_exam_rows(_read_json(path, label), campus_names=campus, report=rep)
+        for reason in rep.skipped:
+            logger.warning("%s考试快照解析跳过（可能影响比对完整性）：%s", label, reason)
+        for warning in rep.warnings:
+            logger.warning("%s考试快照：%s", label, warning)
+        return rows
+
+    def _diff_exam_snapshots() -> tuple[ExamDiff, str, str]:
+        """比对考试快照，返回 ``(变更, 「本次没比对考试」的说明, 考试小节抬头)``。
+
+        取数口径（§6.6:333-336）：考试侧**只有**默认路径这一种来源 —— 快照按学期存放
+        （``raw/exams-<学期>.json`` 与其 ``.prev``），``--old/--new`` 只对课表生效。
+        两种"没法比对"都要明说，不能拿一句「无变化」糊过去：没给学期、
+        或本地根本没有考试快照（从没抓过考试／状态未知时按宁缺毋滥没有落盘）。
+        """
+        if not semester:
+            return (
+                ExamDiff(),
+                "本次未比对考试：--old/--new 只指定课表快照，考试快照按学期存放（需要 --semester）。",
+                "",
+            )
+        new_exams_path = cfg.raw_exams_path(semester)
+        if not new_exams_path.is_file():
+            return (
+                ExamDiff(),
+                f"本次未比对考试：本地没有 {semester} 的考试快照"
+                "（由 fetch 写入；本学期尚未排考时本来就没有）。",
+                "",
+            )
+        prev_exams_path = cfg.raw_exams_prev_path(semester)
+        first_snapshot = not prev_exams_path.is_file()
+        # 两侧**共用同一份**校区对照（取自新的课表快照，§6.3）：各取各的话，两份课表快照里
+        # XXXQDM_DISPLAY 的差别会变成一条根本不存在的「教室变更」。
+        campus_names = campus_names_from_timetable(new_payload)
+        new_exams = _exam_rows(new_exams_path, "新", campus_names)
+        # 没有 .prev = 本学期**第一次**拿到考试快照：旧侧按空表比对，于是每行都报「新增」
+        # （§6.6:336-337）。计划稿写的"任一侧缺失就打说明、返回空 diff"是错的 —— 那会让
+        # diff 打出「无变化」，而日历里实实在在多出了一整批考试事件。
+        old_exams: list[ExamSchedule] = (
+            [] if first_snapshot else _exam_rows(prev_exams_path, "旧", campus_names)
+        )
+        preface = (
+            "无上一份考试快照（本学期首次抓到考试安排），以下考试变更全部按新增报告。"
+            if first_snapshot
+            else ""
+        )
+        return diff_exams(old_exams, new_exams), "", preface
+
     result = diff_meetings(old_meetings, new_meetings)
-    if result.is_empty:
+    # 考试小节必须在 `result.is_empty` 短路**之前**取好（§6.6:327-331）：只改考试
+    # （座位重排、换考场正是学期中最常见的事件）时课程侧为空，旧写法在打印任何小节
+    # 之前就 return，考试变更一个字都不会出现。
+    exam_diff, exam_skip_note, exam_preface = _diff_exam_snapshots()
+    if exam_skip_note:
+        print(exam_skip_note)
+        print()
+
+    if result.is_empty and exam_diff.is_empty:
         print("无变化：两份快照的课程、时段、周次、教室与教师完全一致。")
         return 0
 
@@ -940,6 +1018,27 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
                 f"{change.old} → {change.new}"
             )
         print()
+
+    if exam_diff.changes:
+        if exam_preface:
+            print(exam_preface)
+            print()
+        print(f"考试变更（{len(exam_diff.changes)} 项）:")
+        # 记号与课程小节一致：+ 新增、- 取消、~ 改了某个字段。
+        # 循环变量不能复用上面的 `change`：那个是 `SlotChange`，mypy strict 会把两个
+        # 形状的字段名混在一起报错（课程与考试的变更记录**本来就不该共用一个名字**）。
+        exam_markers = {EXAM_KIND_ADDED: "+", EXAM_KIND_CANCELLED: "-"}
+        for exam_change in exam_diff.changes:
+            marker = exam_markers.get(exam_change.kind, "~")
+            print(f"  {marker} {describe_exam_change(exam_change)}")
+        print()
+        if any(exam_change.kind == EXAM_KIND_CANCELLED for exam_change in exam_diff.changes):
+            # §7.1：v1 不发布 STATUS:CANCELLED / METHOD:CANCEL，报出取消≠客户端删掉它。
+            print(
+                "注意：被取消的考试不会从已订阅的日历里自动消失（本工具不发布取消事件），"
+                "必要时请在日历中手动删除。"
+            )
+            print()
 
     print("提示：确认无误后重新 export 即可拿到更新后的 .ics（UID 稳定，原地更新）。")
     return 0

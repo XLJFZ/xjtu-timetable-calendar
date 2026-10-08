@@ -1,4 +1,4 @@
-"""考试安排（`studentWdksapApp`）的解析与导出。设计文档：docs/design/2026-10-08-exam-schedule.md。"""
+"""考试安排（`studentWdksapApp`）的解析、导出与变更比对。设计文档：docs/design/2026-10-08-exam-schedule.md。"""
 
 from __future__ import annotations
 
@@ -229,6 +229,11 @@ def _check_weekday_consistency(rep: ParseReport, name: str, day: str, time_text:
 
 
 def _uid_token(exam: ExamSchedule) -> str:
+    """考试的身份令牌：``WID`` → ``KSRWID`` → 内容组合。
+
+    它同时是 UID 的原料**和** :func:`_exam_key` 的配对键（两处必须同源，见该函数的说明）：
+    改这里等于同时改「客户端认不认得出是同一条事件」与「diff 把两行算不算同一场考试」。
+    """
     if exam.row_id:
         return f"WID={exam.row_id}"
     if exam.task_id:
@@ -262,6 +267,192 @@ def _exam_type_suffix(exam_name: str | None) -> str:
         return "考试"
     tail = exam_name.rsplit("学期", 1)[-1].strip()
     return tail or "考试"
+
+
+# --------------------------------------------------------------------------- #
+# 变更比对（设计文档 §6.6）：`diff` 子命令的「考试变更」小节
+# --------------------------------------------------------------------------- #
+#: 五类变更，同时也是输出顺序（新增 → 取消 → 时间 → 教室 → 座位）。
+EXAM_KIND_ADDED = "新增"
+EXAM_KIND_CANCELLED = "取消"
+EXAM_KIND_TIME = "时间变更"
+EXAM_KIND_ROOM = "教室变更"
+EXAM_KIND_SEAT = "座位变更"
+EXAM_CHANGE_KINDS: tuple[str, ...] = (
+    EXAM_KIND_ADDED,
+    EXAM_KIND_CANCELLED,
+    EXAM_KIND_TIME,
+    EXAM_KIND_ROOM,
+    EXAM_KIND_SEAT,
+)
+
+
+@dataclass(frozen=True)
+class ExamChange:
+    """一场考试的一次变更。
+
+    **不复用** :class:`xjtu_calendar.diff.SlotChange`（§6.6:338-343）：那个形状强制
+    ``weekday: int`` 与 ``periods: tuple[int, ...]``，打印侧还硬编码「星期X」「第N节」。
+    考试既没有周次也没有节次 —— 塞 ``weekday=0`` 会让
+    ``'一二三四五六日'[change.weekday - 1]`` **静默印成「日」**，塞越界值直接
+    ``IndexError`` 把 ``diff`` 崩掉。这里只放考试真实拥有的事实，五类各自可断言。
+
+    Attributes
+    ----------
+    kind:
+        :data:`EXAM_CHANGE_KINDS` 之一。
+    course_name / exam_name:
+        变更归属的考试；``exam_name`` 是 ``KSMC`` 原文（可能为 ``None``）。
+    date_str:
+        变更后（新增／取消时即那一场本身）的考试日期，用于排序与"是哪一场"的定位。
+    old / new:
+        - 新增：``old`` 为空串，``new`` 是那场考试的摘要（日期 起止，教室，座位）；
+        - 取消：``old`` 同上，``new`` 为空串；
+        - 时间变更：两侧都是 ``"YYYY-MM-DD HH:MM-HH:MM"``（改期与改时刻同一类，
+          日期都在文本里，用户看得见挪到了哪天）；
+        - 教室变更：两侧都是"校区 教室"或「地点未知」；
+        - 座位变更：两侧都是座位号或「无座位号」。
+    """
+
+    kind: str
+    course_name: str
+    exam_name: str | None
+    date_str: str
+    old: str
+    new: str
+
+
+@dataclass(frozen=True)
+class ExamDiff:
+    """``diff_exams`` 的结果：按 :data:`EXAM_CHANGE_KINDS` 顺序稳定排好的变更。"""
+
+    changes: tuple[ExamChange, ...] = ()
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.changes
+
+
+def _exam_when(exam: ExamSchedule) -> str:
+    return f"{exam.date_str} {exam.start_time}-{exam.end_time}"
+
+
+def _exam_place(exam: ExamSchedule) -> str:
+    """教室展示文本：与 :func:`build_exam_events` 的 ``LOCATION`` 同一拼法（校区 + 教室）。"""
+    return " ".join(part for part in (exam.campus, exam.location) if part) or "地点未知"
+
+
+def _exam_seat(exam: ExamSchedule) -> str:
+    # 空串与缺失都归「无座位号」：打出来什么都没有的话，用户会以为 diff 漏了内容。
+    return exam.seat or "无座位号"
+
+
+def _exam_detail(exam: ExamSchedule) -> str:
+    """新增／取消行的一句话摘要。"""
+    seat = f"，座位 {exam.seat}" if exam.seat else ""
+    return f"{_exam_when(exam)}，{_exam_place(exam)}{seat}"
+
+
+def _exam_key(exam: ExamSchedule) -> str:
+    """配对键**就是** UID 的身份令牌（评审 R-G7）。
+
+    这里刻意不调用"看起来一样"的第二份配方，而是直接复用 :func:`_uid_token`
+    （``WID`` → ``KSRWID`` → ``课程号|KSDM|日期|开始|结束`` 组合）：两条配方一旦分叉
+    （例如键里不写 ``KSDM`` 与结束时刻），缺 ``WID`` 的行会被报成「时间变更」，
+    而它在导出时带着的是**新 UID** —— v1 没有 ``STATUS:CANCELLED`` / ``METHOD:CANCEL``
+    通路（§7.1），旧事件会永久留在每个订阅者的日历里。同源之后这类行只会报成
+    取消 + 新增：diff 不承诺它做不到的原地更新。
+    """
+    return _uid_token(exam)
+
+
+def _exam_group(exams_in: Sequence[ExamSchedule]) -> dict[str, list[ExamSchedule]]:
+    """按 :func:`_exam_key` 分组；同键多行（服务端给了重复 ``WID``，病态但必须可预期）保序留全。"""
+    groups: dict[str, list[ExamSchedule]] = {}
+    for exam in exams_in:
+        groups.setdefault(_exam_key(exam), []).append(exam)
+    for rows in groups.values():
+        rows.sort(key=lambda exam: (exam.date_str, exam.start_time, exam.course_name))
+    return groups
+
+
+def _exam_field_changes(before: ExamSchedule, after: ExamSchedule) -> list[ExamChange]:
+    pairs = (
+        (EXAM_KIND_TIME, _exam_when(before), _exam_when(after)),
+        (EXAM_KIND_ROOM, _exam_place(before), _exam_place(after)),
+        (EXAM_KIND_SEAT, _exam_seat(before), _exam_seat(after)),
+    )
+    return [
+        ExamChange(
+            kind=label,
+            course_name=after.course_name,
+            exam_name=after.exam_name,
+            date_str=after.date_str,
+            old=before_text,
+            new=after_text,
+        )
+        for label, before_text, after_text in pairs
+        if before_text != after_text
+    ]
+
+
+def _exam_side_change(kind: str, exam: ExamSchedule) -> ExamChange:
+    detail = _exam_detail(exam)
+    return ExamChange(
+        kind=kind,
+        course_name=exam.course_name,
+        exam_name=exam.exam_name,
+        date_str=exam.date_str,
+        old=detail if kind == EXAM_KIND_CANCELLED else "",
+        new="" if kind == EXAM_KIND_CANCELLED else detail,
+    )
+
+
+def _exam_sort_key(change: ExamChange) -> tuple[int, str, str]:
+    return (EXAM_CHANGE_KINDS.index(change.kind), change.date_str, change.course_name)
+
+
+def diff_exams(old_exams: Sequence[ExamSchedule], new_exams: Sequence[ExamSchedule]) -> ExamDiff:
+    """比对新旧两份考试快照（先用 :func:`parse_exam_rows` 解析成 :class:`ExamSchedule`）。
+
+    按 :func:`_exam_key` 配对：只在新侧 → 新增，只在旧侧 → 取消，两侧都有 → 逐项比较
+    时间／教室／座位。
+
+    **首次拿到考试快照**（旧侧为空）时不需要特殊分支：按同一套算法自然得到「全部新增」。
+    这不是省事 —— §6.6:336-337 明确禁止"没有基线就静默跳过"，否则学生第一次拿到考试时
+    ``diff`` 打出「无变化」，日历里却多出一整批考试事件。
+    """
+    old_groups = _exam_group(old_exams)
+    new_groups = _exam_group(new_exams)
+    changes: list[ExamChange] = []
+    for key in sorted(set(old_groups) | set(new_groups)):
+        before = old_groups.get(key, [])
+        after = new_groups.get(key, [])
+        for old_exam, new_exam in zip(before, after, strict=False):
+            changes.extend(_exam_field_changes(old_exam, new_exam))
+        # 同键多行时逐位配对；多出来的部分绝不静默丢弃（导出侧的 UID 断言也丢后来者，
+        # 但 diff 的职责是把"少了/多了哪一场"说出来，而不是跟着装看不见）。
+        changes.extend(_exam_side_change(EXAM_KIND_ADDED, exam) for exam in after[len(before) :])
+        changes.extend(
+            _exam_side_change(EXAM_KIND_CANCELLED, exam) for exam in before[len(after) :]
+        )
+    changes.sort(key=_exam_sort_key)
+    return ExamDiff(tuple(changes))
+
+
+def describe_exam_change(change: ExamChange) -> str:
+    """一行人类可读的考试变更（``diff`` 的「考试变更」小节用；风格同 ``diff.describe_slot``）。
+
+    行首的 ``+`` / ``-`` / ``~`` 记号由 CLI 决定，与课程小节保持一致 —— 展示归 CLI，
+    本模块只产出正文。
+    """
+    label = f"{change.course_name}（{_exam_type_suffix(change.exam_name)}）"
+    if change.kind in (EXAM_KIND_ADDED, EXAM_KIND_CANCELLED):
+        return f"{change.kind}：{label} {change.new or change.old}"
+    # 时间变更的两侧都带日期，不必重复；其余类别要把日期写进行里，否则同一门课的
+    # 期中考试与期末考试的「座位变更」在输出里分不出是哪一场。
+    when = "" if change.date_str in f"{change.old} {change.new}" else f"（{change.date_str}）"
+    return f"{change.kind}：{label}{when}：{change.old} → {change.new}"
 
 
 def build_exam_events(exams: Sequence[ExamSchedule], semester_key: str) -> list[CalendarEvent]:

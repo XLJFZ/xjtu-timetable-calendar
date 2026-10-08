@@ -313,7 +313,8 @@ diff             [--semester S]                     # 自动包含考试小节
 ## 9. 测试策略
 
 - `tests/test_exams_parsing.py`：**§4.1 那四种 `KSSJMS` 形态各一条**（半角、全角+个位小时、
-  em dash、`考试时间为：9.30-12.00` 点分式）、缺 `KSRQ`、解析不出、星期与日期不一致、
+  em dash、`考试时间为：9.30-12.00` 点分式）、缺 `KSRQ`、解析不出、星期与日期不一致
+  （**构造用例**，§6.4 说明实测未见）、
   `WID` 缺失的 UID 降级、同日两场不撞 UID、起止相等。
 - `tests/test_exams_fetch.py`：三态判定（用现成的 `transport(status, body)` 假 transport 与
   `LOGIN_HTML` 注入 401 / 登录页 / `code!=1` / `code==1`+空 rows），断言"状态未知不覆盖快照"。

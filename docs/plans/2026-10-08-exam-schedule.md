@@ -2224,7 +2224,9 @@ git commit -m "docs(exam): document exam schedule integration"
 
 - [x] 四条门禁全绿；`git log --oneline` 每任务一笔提交。
 - [x] 未新增运行时依赖；`pyproject.toml` 除 `package-data` 外未动。
-- [x] 课程事件的 UID / SEQUENCE / 字节输出与接入前**完全一致**（用同一快照 diff 两份 .ics 验证）。
+- [x] 课程事件的 UID / SEQUENCE / 字节输出与接入前**完全一致**（用同一快照 diff 两份 .ics 验证；
+  事后已自动化为 golden 回归用例 `tests/test_legacy_course_export_golden.py`，
+  基线由 `0bd9414681` 的代码对全合成输入导出）。
 - [x] 考试事件全部是 `DATE-TIME`，`grep -c "VALUE=DATE" <产物.ics>` 为 0。
 - [x] 断开网络/会话过期状态下跑 `fetch`：课表成功、考试记 warning、旧快照未被覆盖、退出码 0。
 - [x] `--no-exams` 在 fetch/export/push/rotate 四条路径上都有效，且不删本地快照。

@@ -511,11 +511,13 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     # --no-exams 时本次产物里根本没有考试事件，任何「考试可能已改期」的提示对本次
     # 运行都是谎话（spec §7:390-392 把 --no-exams 当作有意的回滚出口）：整块跳过。
     # 任何滞后计算/stat 失败（如并发 fetch 正在轮转快照的窗口）都视作"没有可提醒的"：
-    # 宁缺毋滥，export 绝不因此报错或非零退出。
+    # 宁缺毋滥，export 绝不因此报错或非零退出。坏 mtime（文件系统抽风/时钟回拨）还会让
+    # `datetime.fromtimestamp` 抛 OverflowError/ValueError——本机 Windows 上表现成
+    # OSError[Errno 22]、POSIX 上才是这两类，三类一起 suppress 才封得住（终审 F3，§7:387）。
     if not args.no_exams:
         from .exams import exam_snapshot_lag_days
 
-        with contextlib.suppress(OSError):
+        with contextlib.suppress(OSError, OverflowError, ValueError):
             lag = exam_snapshot_lag_days(cfg, semester)
             if lag is not None and lag > EXAM_STALE_LAG_DAYS:
                 exam_day = (

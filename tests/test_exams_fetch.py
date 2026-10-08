@@ -20,7 +20,12 @@ from xjtu_calendar import fetcher
 from xjtu_calendar.cli import _fetch_exams, cmd_export, main
 from xjtu_calendar.config import Settings
 from xjtu_calendar.errors import AuthenticationExpired
-from xjtu_calendar.exams import exam_snapshot_lag_days
+from xjtu_calendar.exams import (
+    ExamState,
+    classify_exam_payload,
+    exam_snapshot_lag_days,
+    parse_exam_rows,
+)
 from xjtu_calendar.exporter import ExportResult
 from xjtu_calendar.logging_setup import redact
 from xjtu_calendar.subscribe import snapshot_age_days
@@ -185,6 +190,87 @@ def test_pagination_guard_warns_but_still_saves(home: Settings, monkeypatch) -> 
     with captured_logs() as records:
         assert _fetch_exams(_endpoints(), home, SEMESTER) is not None
     assert any("totalSize" in rec.getMessage() and "42" in rec.getMessage() for rec in records)
+
+
+def test_unparseable_total_size_leaves_the_guard_silent(home: Settings, monkeypatch) -> None:
+    """§6.4 护栏的空白组合（终审 F6）：`totalSize` 根本转不了 int → **静默关闭**。
+
+    既不许误报（把"无法核对"当成 0 与 1 行不符去告警；`_exam_total_size` 的 docstring
+    明写"无法核对时返回 None 并**不**报警"），也不许因此不落盘 —— 课表是主功能，
+    考试侧的噪音同样得按 §7 的宁缺毋滥处理。正例已有 `42` 与 `"42"` 两条（上面那条），
+    "很多"这一类今天没人管过。
+    """
+    payload = exam_payload([exam_row()])
+    payload["datas"]["wdksap"]["totalSize"] = "很多"
+    _patch(monkeypatch, lambda *a, **k: payload)
+    with captured_logs() as records:
+        path = _fetch_exams(_endpoints(), home, SEMESTER)
+    assert path is not None and path.is_file()  # 照常落盘
+    assert not any("totalSize" in rec.getMessage() for rec in records)  # 且一个字都不报
+
+
+def test_confirmed_empty_still_triggers_the_pagination_guard(home: Settings, monkeypatch) -> None:
+    """§7:375 明令覆盖的组合态：`code==1` + `rows=[]` + `totalSize=5` 同时成立。
+
+    两件事**都**得发生：空快照照常落盘（顶掉旧的），并且留下翻页告警 ——
+    "接口说没有考试"与"接口说有 5 条却只给了 0 行"是互相矛盾的信号，
+    后者不该被前者的 info 淹没。把护栏挪进 `if outcome.rows:`、
+    或让 NO_EXAMS 分支提前 return 都会让这里红。
+    """
+    _write_old_snapshot(home)
+    payload = exam_payload([], code=1, msg="操作成功")
+    payload["datas"]["wdksap"]["totalSize"] = 5
+    _patch(monkeypatch, lambda *a, **k: payload)
+    with captured_logs() as records:
+        path = _fetch_exams(_endpoints(), home, SEMESTER)
+
+    assert path is not None
+    assert json.loads(path.read_text(encoding="utf-8"))["datas"]["wdksap"]["rows"] == []
+    messages = [rec.getMessage() for rec in records]
+    assert any("行数（0）与 totalSize（5）" in message for message in messages), messages
+
+
+def _two_modules(*, b_total_size: int) -> dict[str, object]:
+    """``datas`` 里放**两个**模块：A 只有 ``rows``（且排在前面），B 才带 ``extParams``。
+
+    实测响应只有一个模块（§4.1），所以这是前瞻形态；正因如此它今天没有用例覆盖，
+    两套判据的差异只写在注释里（终审 F2）。
+    """
+    payload = exam_payload(
+        [exam_row(WID="B-1", KSRWID="KSRWID-B-1"), exam_row(WID="B-2", KSRWID="KSRWID-B-2")],
+        code=1,
+        module="B",
+    )
+    payload["datas"]["B"]["totalSize"] = b_total_size
+    payload["datas"] = {
+        "A": {"totalSize": 1, "rows": [exam_row(WID="A-1", KCM="示例课程乙")]},
+        **payload["datas"],
+    }
+    return payload
+
+
+def test_multi_module_response_gives_all_three_readers_the_same_module(
+    home: Settings, monkeypatch
+) -> None:
+    """Task 4 的裁定「以 classify 选中的模块为准」必须由代码执行，不是靠注释（终审 F2）。
+
+    A（rows-only）排在前面、B 才是带 ``extParams`` 的那个。三个读取者 ——
+    `classify_exam_payload`、翻页护栏（`cli._exam_total_size`）、`parse_exam_rows` ——
+    必须都看 B：否则 fetch 侧按 B 的 2 行／5 总数告警并落盘，导出侧却把 A 那一行
+    当成本学期的考试，两处对「有哪些考试」各说各话（`diff` 还会把它报成取消＋新增）。
+    """
+    payload = _two_modules(b_total_size=5)
+
+    outcome = classify_exam_payload(payload)
+    assert outcome.state is ExamState.HAS_EXAMS
+    assert [row["WID"] for row in outcome.rows] == ["B-1", "B-2"]
+    assert [exam.row_id for exam in parse_exam_rows(payload)] == ["B-1", "B-2"]
+
+    _patch(monkeypatch, lambda *a, **k: payload)
+    with captured_logs() as records:
+        assert _fetch_exams(_endpoints(), home, SEMESTER) is not None
+    # 护栏两侧的数字都出自 B：A 的 totalSize 与行数都是 1，串了模块这条就红。
+    assert any("行数（2）与 totalSize（5）" in rec.getMessage() for rec in records)
 
 
 def test_cmd_fetch_still_returns_zero_when_exams_explode(home: Settings, monkeypatch) -> None:
@@ -360,6 +446,21 @@ def test_teacher_and_log_id_keys_are_redacted() -> None:
     assert redact({"KCM": "示例课程甲"})["KCM"] == "示例课程甲"  # 课程名不敏感
 
 
+def test_redact_reaches_the_nested_exam_rows() -> None:
+    """生产日志喂进去的是**整个信封**，打码必须一路走到 `datas.<模块>.rows[]` 里（终审 F5）。
+
+    `fetcher.py:442` 记的是 `redact(payload)`，形态就是 `datas.wdksap.rows[].ZJJSXM`；
+    上面那条只喂扁平 dict，把 `redact` 改成"只处理最外层 key"它照样全绿。
+    这里同时留一条反向断言（`KCM` 照旧可见），防止"图省事"改成无条件全量打码 ——
+    那会让 DEBUG 日志再也看不出响应结构，等于把 inspect 的价值删掉。
+    """
+    cleaned = redact(exam_payload([exam_row(ZJJSXM="教师甲", SJBH="007")]))
+    row = cleaned["datas"]["wdksap"]["rows"][0]
+    assert row["ZJJSXM"] == "***"
+    assert row["SJBH"] == "***"
+    assert row["KCM"] == "示例课程甲"
+
+
 # --------------------------------------------------------------------------- #
 # Task 11 fix round 1：cmd_export 陈旧告警的三条口径（N1/N2/N3）
 # --------------------------------------------------------------------------- #
@@ -457,6 +558,39 @@ def test_export_staleness_check_oserror_degrades_to_silence(home: Settings, monk
     with captured_logs() as records:
         assert cmd_export(_export_args(home, no_exams=False), home) == 0
     assert not any(_STALENESS_MARK in rec.getMessage() for rec in records)
+
+
+@pytest.mark.parametrize("bad_class", [OverflowError, ValueError], ids=["overflow", "value"])
+def test_export_staleness_check_survives_a_broken_mtime(
+    home: Settings, monkeypatch: pytest.MonkeyPatch, bad_class: type[Exception]
+) -> None:
+    """终审 F3：告警块只 `suppress(OSError)`，坏 mtime 还能抛 OverflowError／ValueError。
+
+    `datetime.fromtimestamp(path.stat().st_mtime)` 是全分支**唯一**一处"因为考试的事
+    让 export 非零退出"的路径（§7:387）。为什么注入而不是真造一个坏 mtime：
+    这两类到底是哪一类是**平台**说了算 —— 本机（Windows）上
+    `fromtimestamp(253402300800)`（公元 10000 年）抛的是 `OSError[Errno 22]`，
+    POSIX 上才是 `ValueError`／`OverflowError`，用真实 mtime 写的用例在这台机器上
+    会被"已经 suppress 的 OSError"蒙过去。所以按仓里 N2 用例的同款形状
+    （monkeypatch 打进告警块的调用点）直接把这两类喂进去，三条平台都跑得到。
+    打破红：把 `contextlib.suppress` 元组里的 `OverflowError, ValueError` 删掉。
+    """
+
+    class _BrokenTimestamp:
+        """只替 `datetime.fromtimestamp` 这一处；`cmd_export` 里没别的 datetime 用法。"""
+
+        @staticmethod
+        def fromtimestamp(_ts: float) -> object:
+            raise bad_class("mtime 坏掉了")
+
+    _stub_build(monkeypatch)
+    # lag = 10 − 1 = 9 > 阈值：必须真的走进取日期那一步，否则整块被跳过 = 空断言。
+    _stage_snapshots(home, exam_days_ago=10, timetable_days_ago=1)
+    monkeypatch.setattr("xjtu_calendar.cli.datetime", _BrokenTimestamp)
+    with captured_logs() as records:
+        assert cmd_export(_export_args(home, no_exams=False), home) == 0
+    assert not any(_STALENESS_MARK in rec.getMessage() for rec in records)
+    assert (home.home / "out.ics").is_file()  # 导出照常写完
 
 
 def test_lag_just_under_threshold_stays_silent(home: Settings, monkeypatch) -> None:

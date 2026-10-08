@@ -24,6 +24,7 @@ from exam_support import (
 from icalendar import Calendar
 from subscribe_support import make_home, payload_row
 
+from xjtu_calendar.cli import main
 from xjtu_calendar.exporter import build_ics_for_semester
 from xjtu_calendar.fetcher import save_raw
 
@@ -189,6 +190,29 @@ def test_corrupt_exam_snapshot_never_breaks_the_export(tmp_path, raw_text):
     # 降级 = 产物与「压根不并入考试」逐字节一致（DTSTAMP 取课表快照 mtime，两次相同）
     assert result.ics == courses.ics
     assert any("考试" in rec.getMessage() for rec in records)  # 跳过必须可见
+
+
+def test_non_utf8_exam_snapshot_degrades_and_export_exits_zero(tmp_path, monkeypatch):
+    """Task 8 说宽 `except Exception` 真正可达的是"文件读不出来"这一类（终审 F4）。
+
+    上面那条用例只覆盖了 `JSONDecodeError`（坏文本仍是合法 UTF-8）。而
+    `load_raw` 是 `json.loads(path.read_text(encoding="utf-8"))` ——
+    非 UTF-8 字节（编辑器另存、下载截断、Windows 默认 GBK）先在 `read_text`
+    里抛 `UnicodeDecodeError`，**连 JSON 解析都到不了**。这类失败今天没有用例。
+    断言口径按 §7:387：产物**逐字等于**"没有考试"的课表产物，且 CLI 退出码 0。
+    """
+    cfg = make_home(tmp_path, semester=SEMESTER)
+    courses = build_ics_for_semester(cfg, SEMESTER, include_exams=False)
+    cfg.raw_exams_path(SEMESTER).write_bytes(b"\xff\xfe\x00not-utf-8-at-all")
+
+    with captured_logs() as records:
+        result = build_ics_for_semester(cfg, SEMESTER)
+    assert result.info["exam_events"] == 0
+    assert result.ics == courses.ics
+    assert any("考试" in rec.getMessage() for rec in records)  # 降级必须可见
+
+    monkeypatch.setenv("XJTU_CALENDAR_HOME", str(cfg.home))
+    assert main(["export", "--semester", SEMESTER, "-o", str(tmp_path / "out.ics")]) == 0
 
 
 def test_sequence_stats_see_exam_events(tmp_path):

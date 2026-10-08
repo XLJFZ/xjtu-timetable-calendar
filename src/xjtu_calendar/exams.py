@@ -80,7 +80,12 @@ def _text(record: Mapping[str, Any], key: str) -> str:
 
 
 def iter_exam_rows(payload: Any) -> list[dict[str, Any]]:
-    """按结构找出考试行；**不硬编码模块名**，也不看 rows 是否为空（空 rows 交给三态判定）。"""
+    """按结构找出考试行；**不硬编码模块名**，也不看 rows 是否为空（空 rows 交给三态判定）。
+
+    判据故意比 :func:`_exam_module` 宽（只看 `rows`，不看 `extParams`），因为课表快照的
+    `xskcb` 模块实测就没有 `extParams`；考试侧的解析请走 :func:`_rows_for_parse`，
+    别把这里收紧。
+    """
     datas = payload.get("datas") if isinstance(payload, Mapping) else None
     if not isinstance(datas, Mapping):
         return []
@@ -153,6 +158,26 @@ def campus_names_from_timetable(timetable_payload: Any) -> dict[str, str]:
     return out
 
 
+def _rows_for_parse(payload: Any) -> list[dict[str, Any]]:
+    """``parse_exam_rows`` 的行来源：与 classify **同源**（终审 F2 的统一）。
+
+    判据顺序刻意是"先严后宽"：
+
+    1. :func:`_exam_module`（``rows`` + ``extParams``）—— 与 :func:`classify_exam_payload`、
+       `cli._exam_total_size` 同一个 module，Task 4 的裁定「以 classify 选中的模块为准」
+       由此落到代码上；多模块响应里不会出现「fetch 侧按 B 告警并落盘、导出侧解析 A 的行」；
+    2. 退回 :func:`iter_exam_rows`（rows-only）—— 旧快照／`extParams` 缺失时行为与收紧前
+       逐字一致，绝不因为判据变严而把一份能用的快照解析成零行。
+
+    课表侧的 :func:`campus_names_from_timetable` **不走这里**：实测 `xskcb` 模块没有
+    `extParams`，判据收紧会让校区对照表整体失效。
+    """
+    module = _exam_module(payload)
+    if module is not None:
+        return [row for row in module["rows"] if isinstance(row, dict)]
+    return iter_exam_rows(payload)
+
+
 def parse_exam_rows(
     payload: Any,
     *,
@@ -162,7 +187,7 @@ def parse_exam_rows(
     """把考试行转成 :class:`ExamSchedule`。不可用的行跳过并计入 ``report``，绝不造 00:00 假事件。"""
     rep = report or ParseReport()
     out: list[ExamSchedule] = []
-    for row in iter_exam_rows(payload):
+    for row in _rows_for_parse(payload):
         rep.total_candidates += 1
         name = _text(row, "course_name")
         raw_date = _text(row, "date")

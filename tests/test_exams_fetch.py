@@ -10,7 +10,7 @@ import json
 import os
 import stat
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -128,15 +128,22 @@ def degraded(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) ->
     return str(request.param)
 
 
-def _snapshot_day(cfg: Settings) -> str:
-    """告警应当报出的日期 = 快照 mtime 那天（与实现的取法一致）。"""
-    return datetime.fromtimestamp(cfg.raw_exams_path(SEMESTER).stat().st_mtime).date().isoformat()
-
-
 def test_degraded_warns_with_existing_snapshot_date(home: Settings, degraded: str) -> None:
-    """§7:376「有旧快照则沿用并**提示其日期**」：告警里必须出现那一天，而不是空口"沿用"。"""
+    """§7:376「有旧快照则沿用并**提示其日期**」：告警报的必须是快照那一天，不是运行当天。
+
+    旧写法（`_snapshot_day`）直接从快照 mtime 反推期望值，而 mtime 刚写完 ≈ 今天，于是
+    「快照那天」与「今天」在这条用例里恒等——实现若错报 `datetime.now()` 也照样绿。改成
+    先用 `os.utime` 把 mtime 钉到一个**明显不是今天**的固定日（40 天前，写法同 Task 11
+    那批用例），期望值独立算出，再断言日志里出现的就是那一天。不改实现。
+    """
     _write_old_snapshot(home)
-    expected = _snapshot_day(home)
+    snapshot_day = date.today() - timedelta(days=40)
+    assert (
+        snapshot_day != date.today()
+    )  # 前置：快照那天必须与今天可分，否则用例退化成"报今天也算对"
+    stamp = datetime(snapshot_day.year, snapshot_day.month, snapshot_day.day, 12).timestamp()
+    os.utime(home.raw_exams_path(SEMESTER), (stamp, stamp))
+    expected = snapshot_day.isoformat()
     with captured_logs() as records:
         assert _fetch_exams(_endpoints(), home, SEMESTER) is None
     messages = [rec.getMessage() for rec in records]

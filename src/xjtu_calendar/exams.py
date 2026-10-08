@@ -254,18 +254,28 @@ def _check_weekday_consistency(rep: ParseReport, name: str, day: str, time_text:
         )
 
 
-def _uid_token(exam: ExamSchedule) -> str:
+def _uid_token(exam: ExamSchedule, *, announce: bool = True) -> str:
     """考试的身份令牌：``WID`` → ``KSRWID`` → 内容组合。
 
     它同时是 UID 的原料**和** :func:`_exam_key` 的配对键（两处必须同源，见该函数的说明）：
     改这里等于同时改「客户端认不认得出是同一条事件」与「diff 把两行算不算同一场考试」。
+
+    ``announce`` 决定降级信号的级别：导出路径（:func:`make_exam_uid`）用默认 ``True``，
+    缺 ``WID`` 记 ``INFO``、再缺 ``KSRWID`` 记 ``WARNING``，让用户必须知道 UID 不稳；
+    diff 路径（:func:`_exam_key`）传 ``False``，把同一句话降到 ``DEBUG``——降级行在 diff
+    里每行两侧都会命中，而它的可见信号本就是「取消 + 新增」那两行，无须再逐行吼一次。
     """
     if exam.row_id:
         return f"WID={exam.row_id}"
     if exam.task_id:
-        logger.info("考试「%s」缺少 WID，UID 降级到 KSRWID", exam.course_name)
+        logger.log(
+            logging.INFO if announce else logging.DEBUG,
+            "考试「%s」缺少 WID，UID 降级到 KSRWID",
+            exam.course_name,
+        )
         return f"KSRWID={exam.task_id}"
-    logger.warning(
+    logger.log(
+        logging.WARNING if announce else logging.DEBUG,
         "考试「%s」缺少 WID 与 KSRWID，UID 降级到内容组合（改期会被视为新事件）",
         exam.course_name,
     )
@@ -388,8 +398,13 @@ def _exam_key(exam: ExamSchedule) -> str:
     而它在导出时带着的是**新 UID** —— v1 没有 ``STATUS:CANCELLED`` / ``METHOD:CANCEL``
     通路（§7.1），旧事件会永久留在每个订阅者的日历里。同源之后这类行只会报成
     取消 + 新增：diff 不承诺它做不到的原地更新。
+
+    调用时刻意传 ``announce=False``：这里用 ``_uid_token`` 只是为了**取配对键**，不是要
+    走导出口径的告警。降级行在 diff 里每行两侧各命中一次，若沿用 INFO/WARNING 就会把
+    同一句话吼两遍；它的可见信号本就是「取消 + 新增」那两行，降级线索降到 ``DEBUG`` 即可
+    （见 :func:`_uid_token`）。
     """
-    return _uid_token(exam)
+    return _uid_token(exam, announce=False)
 
 
 def _exam_group(exams_in: Sequence[ExamSchedule]) -> dict[str, list[ExamSchedule]]:
@@ -514,7 +529,9 @@ def build_exam_events(exams: Sequence[ExamSchedule], semester_key: str) -> list[
         events.append(
             CalendarEvent(
                 uid=make_exam_uid(semester_key, exam),
-                summary=f"{exam.course_name}（{_exam_type_suffix(exam.exam_name)}）",
+                # 与课程侧 ``meeting.course_name.strip()`` 一致：真实数据偶有尾随空格，
+                # 不该被带进日历标题（`_text` 已在解析层 strip，这里兜住直接构造的行）。
+                summary=f"{exam.course_name.strip()}（{_exam_type_suffix(exam.exam_name)}）",
                 start=start,
                 end=end,
                 location=location,

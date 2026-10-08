@@ -256,6 +256,32 @@ def test_exam_event_summary_location_description_and_fields():
     assert "3.0" in event.description
 
 
+def test_exam_summary_strips_trailing_space_from_course_name():
+    """C3：考试 ``SUMMARY`` 与课程侧 ``meeting.course_name.strip()`` 一致地剥空白。
+
+    直接构造带尾随空格的 :class:`ExamSchedule`，**不走解析层**：``_text`` 已对 ``KCM``
+    做过 ``strip``，经它这条路打不出差别——只有绕开解析，才能证伪「标题里残留空格」。
+    """
+    exam = ExamSchedule(
+        course_id="ARCH000000",
+        course_name="示例课程甲   ",  # 尾随空格：真实数据偶见
+        exam_name="2029-2030学年 第二学期 结课考试",
+        date_str=DEMO_DAY,
+        start_time="15:00",
+        end_time="17:30",
+        location="A-1001",
+        campus=None,
+        seat=None,
+        credits=None,
+        teacher=None,
+        row_id="WID-DEMO-1",
+        task_id=None,
+        exam_code="KSDM-1",
+    )
+    event = build_exam_events([exam], "2026-2027-1")[0]
+    assert event.summary == "示例课程甲（结课考试）"  # 尾随空格不得进入日历标题
+
+
 def test_unparsable_exam_never_becomes_a_zero_oclock_event():
     assert build_exam_events(_exams(exam_row(KSSJMS="待定")), "2026-2027-1") == []
 

@@ -28,6 +28,7 @@ __all__ = [
     "CalendarEvent",
     "Course",
     "CourseMeeting",
+    "ExamSchedule",
     "SchedulePeriod",
     "ScheduleProfile",
     "Semester",
@@ -300,7 +301,7 @@ class ExamSchedule:
     """一场考试。字段来自 `studentWdksapApp` 的 `wdksap` 行，形态见设计文档 §4。
 
     时间一律持有为 ``"HH:MM"`` 字符串：拼装统一走 :func:`xjtu_calendar.schedules.combine`，
-    它强制 ``Asia/Shanghai`` 且拒绝 naive datetime。``grade`` 一类可改字段
+    它强制 ``Asia/Shanghai`` 且拒绝 naive datetime。年级/学号/教师姓名这类可改的展示性字段
     **绝不进 UID**（同 :class:`CourseMeeting` 的约定）。
     """
 

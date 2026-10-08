@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 
 import pytest
-from exam_support import DEMO_DAY, exam_payload, exam_row
+from exam_support import DEMO_DAY, captured_logs, exam_payload, exam_row
 
 from xjtu_calendar.exams import (
     ExamChange,
@@ -260,3 +260,38 @@ def test_describe_exam_change_renders_a_single_readable_line():
     assert "12" in text and "30" in text and "→" in text
     # 值里不含日期的类别要把日期补在行里，否则同一天多场考试分不清是哪一场
     assert DEMO_DAY in text
+
+
+# --------------------------------------------------------------------------- #
+# C4：降级行走 diff 与走导出，日志级别必须分开
+# --------------------------------------------------------------------------- #
+
+
+def test_diff_of_degraded_rows_logs_debug_not_warning():
+    """``_exam_key`` 传 ``announce=False``：降级行在 diff 两侧各命中一次，只留 DEBUG。
+
+    打破红：把 ``exams._exam_key`` 里的 ``announce=False`` 删掉 → diff 改走导出口径的
+    ``WARNING``，``assert not warnings`` 立即失败。第二条 ``DEBUG`` 断言证明降级没有
+    被完全静音——brief 要求的可诊断性仍在。
+    """
+    degraded = exam_row(WID="", KSRWID="")  # WID 与 KSRWID 皆缺 → 内容组合降级
+    with captured_logs() as records:
+        changes = diff_exams(_exams(degraded), _exams(degraded)).changes
+    assert changes == ()  # 两侧同一行：纯配对，diff 结果不因日志级别而改变
+    warnings = [rec for rec in records if rec.levelname == "WARNING"]
+    assert not warnings, [rec.getMessage() for rec in records]
+    assert any(rec.levelname == "DEBUG" and "UID 降级" in rec.getMessage() for rec in records)
+
+
+def test_export_path_still_warns_on_composite_fallback_uid():
+    """C4 的另一半：导出侧 ``make_exam_uid`` 仍按 ``WARNING`` 吼——用户必须知道 UID 不稳。
+
+    与上一条用**同一条**降级数据，差别只在走哪条路径（导出 vs diff）。
+    """
+    exam = _exams(exam_row(WID="", KSRWID=""))[0]
+    with captured_logs() as records:
+        make_exam_uid(SEMESTER, exam)
+    warnings = [rec for rec in records if rec.levelname == "WARNING"]
+    assert any("UID 降级" in rec.getMessage() for rec in warnings), [
+        rec.getMessage() for rec in records
+    ]

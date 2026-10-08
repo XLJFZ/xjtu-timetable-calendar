@@ -100,6 +100,8 @@ def test_snapshot_age_days(tmp_path: Path) -> None:
     age = subscribe.snapshot_age_days(cfg, SEMESTER)
     assert age is not None and age < 1  # 夹具刚写的文件
     assert subscribe.snapshot_age_days(cfg, "no-such") is None
+    # kind 默认值不变：既有调用点（cli.py publish/status）不传 kind，行为逐字保持。
+    assert subscribe.snapshot_age_days(cfg, SEMESTER, kind="exams") is None  # 无考试快照
 
 
 def test_has_unpublished_changes(tmp_path: Path) -> None:

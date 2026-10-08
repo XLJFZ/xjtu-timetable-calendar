@@ -73,6 +73,9 @@ _SENSITIVE_KEYS = frozenset(
         "skjs",  # 任课教师（真实 xskcb 响应首选键）
         "teacher",  # 英文兼容键
         "teachername",  # 英文兼容键
+        # ---- 考试安排响应里新增的个人字段（§8：名单按键扩展，机制不变） ----
+        "sjbh",  # 试卷编号/考试侧座位号（部分响应以该键出现）
+        "zjjsxm",  # 主考教师姓名
     }
 )
 

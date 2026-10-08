@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +19,9 @@ from xjtu_calendar import fetcher
 from xjtu_calendar.cli import _fetch_exams, main
 from xjtu_calendar.config import Settings
 from xjtu_calendar.errors import AuthenticationExpired
+from xjtu_calendar.exams import exam_snapshot_lag_days
+from xjtu_calendar.logging_setup import redact
+from xjtu_calendar.subscribe import snapshot_age_days
 
 
 @pytest.fixture
@@ -275,3 +279,80 @@ def _timetable_then_boom(endpoint, *, cfg=None, params=None, transport=None):
     if endpoint.name == "exam_schedule":
         raise RuntimeError("考试接口炸了")
     return {"kbList": [{"KCM": "示例课程甲", "KCH": "D-1"}]}
+
+
+# --------------------------------------------------------------------------- #
+# Task 11：陈旧口径（考试快照 vs 课表快照）与打码名单
+# --------------------------------------------------------------------------- #
+
+
+def _touch(path: Path, *, days_ago: float) -> None:
+    """把 mtime 拨到 N 天前；跨平台都用 os.utime，不靠 sleep。"""
+    stamp = time.time() - days_ago * 86400
+    os.utime(path, (stamp, stamp))
+
+
+def test_snapshot_age_days_defaults_to_timetable_kind(tmp_path: Path) -> None:
+    """既有调用点（cli.py 的两处 publish/status 调用）不传 kind，行为必须与改造前逐字一致。"""
+    cfg = Settings(home=tmp_path)
+    cfg.ensure_dirs()
+    assert snapshot_age_days(cfg, SEMESTER) is None  # 还没 fetch 过
+
+    cfg.raw_timetable_path(SEMESTER).write_text('{"kbList": []}', encoding="utf-8")
+    assert snapshot_age_days(cfg, SEMESTER) < 1
+    assert snapshot_age_days(cfg, SEMESTER, kind="exams") is None  # 考试侧仍为空
+
+
+def test_exam_kind_reads_the_exam_snapshot(tmp_path: Path) -> None:
+    cfg = Settings(home=tmp_path)
+    cfg.ensure_dirs()
+    exam_path = cfg.raw_exams_path(SEMESTER)
+    exam_path.write_text(json.dumps(exam_payload([exam_row()]), ensure_ascii=False), "utf-8")
+    _touch(exam_path, days_ago=3)
+
+    assert 2.9 < snapshot_age_days(cfg, SEMESTER, kind="exams") < 3.1
+    assert snapshot_age_days(cfg, SEMESTER, kind="timetable") is None
+
+
+def test_lag_is_exam_snapshot_behind_timetable_snapshot(tmp_path: Path) -> None:
+    """§7 选定口径：考试快照落后于**课表快照**多少天，不是「距今几天」。"""
+    cfg = Settings(home=tmp_path)
+    cfg.ensure_dirs()
+    timetable = cfg.raw_timetable_path(SEMESTER)
+    exam_path = cfg.raw_exams_path(SEMESTER)
+    exam_path.write_text(json.dumps(exam_payload([exam_row()]), ensure_ascii=False), "utf-8")
+    timetable.write_text('{"kbList": []}', encoding="utf-8")
+    _touch(exam_path, days_ago=10)
+    _touch(timetable, days_ago=1)
+
+    assert 8.9 < exam_snapshot_lag_days(cfg, SEMESTER) < 9.1
+
+
+def test_lag_is_none_when_either_snapshot_is_missing(tmp_path: Path) -> None:
+    cfg = Settings(home=tmp_path)
+    cfg.ensure_dirs()
+    assert exam_snapshot_lag_days(cfg, SEMESTER) is None
+    cfg.raw_exams_path(SEMESTER).write_text("{}{}", encoding="utf-8")  # 只有考试，没有课表
+    assert exam_snapshot_lag_days(cfg, SEMESTER) is None
+
+
+def test_exam_ahead_of_timetable_is_not_stale(tmp_path: Path) -> None:
+    """考试比课表新（先 fetch 考试再动课表）不该报警：滞后为负按 0 处理。"""
+    cfg = Settings(home=tmp_path)
+    cfg.ensure_dirs()
+    timetable = cfg.raw_timetable_path(SEMESTER)
+    exam_path = cfg.raw_exams_path(SEMESTER)
+    exam_path.write_text(json.dumps(exam_payload([exam_row()]), ensure_ascii=False), "utf-8")
+    timetable.write_text('{"kbList": []}', encoding="utf-8")
+    _touch(exam_path, days_ago=1)
+    _touch(timetable, days_ago=5)
+
+    assert exam_snapshot_lag_days(cfg, SEMESTER) == 0.0
+
+
+def test_teacher_and_log_id_keys_are_redacted() -> None:
+    """redact 是**按键**打码，不是按值：喂 dict 而不是喂 json 字符串。"""
+    assert redact({"ZJJSXM": "张三"})["ZJJSXM"] == "***"
+    assert redact({"SJBH": "007"})["SJBH"] == "***"
+    assert redact({"XM": "李四"})["XM"] == "***"  # 既有能力，回归护栏
+    assert redact({"KCM": "示例课程甲"})["KCM"] == "示例课程甲"  # 课程名不敏感

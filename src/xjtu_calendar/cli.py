@@ -498,6 +498,27 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
         include_exams=not args.no_exams,
     )
 
+    # §7:382-386 陈旧口径：考试快照 vs **同学期课表快照**（不是"距今多少天"）。
+    # 文案严格按 spec 的「考试数据来自 X 日的课表同期快照」，再加补救动作与"本次仍
+    # 继续"的 fail-closed 说明。日期取考试快照 mtime，与 Task 7 `_exam_fallback_note`
+    # 读同一份 mtime——两处刻意不合并：Task 7 只给"沿用哪一份"，本行只算"落后多少"，
+    # 合并会让一侧的未来变化牵着另一侧走；见 Task 11 报告的重复说明。
+    # 任何 mtime/stat 失败都视作"没有可提醒的"：宁缺毋滥，export 绝不因此非零退出。
+    from .exams import exam_snapshot_lag_days
+
+    lag = exam_snapshot_lag_days(cfg, semester)
+    if lag is not None and lag > 7:
+        exam_path = cfg.raw_exams_path(semester)
+        try:
+            exam_day = datetime.fromtimestamp(exam_path.stat().st_mtime).date().isoformat()
+        except OSError:  # 快照刚被移走：没什么可提醒的
+            exam_day = None
+        if exam_day is not None:
+            logger.warning(
+                "考试数据来自 %s 的课表同期快照，考试可能已改期，建议重新 fetch（本次仍按现有快照导出）",
+                exam_day,
+            )
+
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     # newline=""：render_ics 已按 RFC 5545 产出 CRLF 行尾，

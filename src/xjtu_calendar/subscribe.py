@@ -301,9 +301,15 @@ def rotate_token(cfg: Settings, state: SubscriptionState) -> SubscriptionState:
     return state
 
 
-def snapshot_age_days(cfg: Settings, semester: str) -> float | None:
-    """raw 课表快照距今的天数；快照不存在返回 ``None``。"""
-    path = cfg.raw_timetable_path(semester)
+def snapshot_age_days(cfg: Settings, semester: str, *, kind: str = "timetable") -> float | None:
+    """raw 快照距今的天数；快照不存在返回 ``None``。
+
+    ``kind`` 与 :func:`xjtu_calendar.fetcher.save_raw` 同一口径（``"timetable"`` /
+    ``"exams"``）。默认值刻意保持不变——`cli.py` 现有的 publish/status 两处调用点
+    不传 kind，行为必须与改造前逐字一致（§7:382-386 选定陈旧口径时需要读考试侧快照，
+    这是 Task 11 传 ``kind="exams"`` 的入口）。
+    """
+    path = cfg.raw_exams_path(semester) if kind == "exams" else cfg.raw_timetable_path(semester)
     if not path.is_file():
         return None
     import time

@@ -279,20 +279,66 @@ def test_explicit_paths_without_semester_still_reports_no_exam_comparison(
     assert "考试变更" not in out
 
 
-def test_corrupt_exam_snapshot_is_named_and_fails_loud(
+def _write_exam_snapshot(home: Path, payload_text: str, *, prev: bool = False) -> None:
+    """把考试快照的**原始文本**直接落盘（用来布置坏 JSON）。"""
+    _raw_dir(home)
+    cfg = Settings(home=home)
+    path = cfg.raw_exams_prev_path(SEMESTER) if prev else cfg.raw_exams_path(SEMESTER)
+    path.write_text(payload_text, encoding="utf-8")
+
+
+def test_corrupt_exam_snapshot_does_not_kill_the_course_report(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """考试快照坏掉时要指名是**考试**快照，也不能装作"无变化"。
+    """评审 F1（Important）：坏考试快照是**增量侧**，读它失败只能跳过考试比对。
 
-    口径与课表快照一致（fail-closed：diff 是只读诊断命令，不是主功能导出）。
-    「fetch/export 绝不因考试失败而非零退出」约束的是那两个子命令 ——
-    导出侧的考试块整段包在 ``except Exception`` 里（Task 8），坏快照不影响 .ics 产出。
+    课程侧这里就有变化（换教室）。旧写法在打印任何课程小节之前，于
+    ``_diff_exam_snapshots()``（先于短路调用）里抛 ``XjtuCalendarError`` → 非零退出、
+    课程变更一个字都不出，与同函数上面「缺快照 → 打一行说明、继续比课程」自相矛盾。
+    改后：考试读/解析失败走既有的 ``exam_skip_note`` 通道，课程照常报告、exit 0。
     """
-    _write_timetable_snapshots(home, _row("示例课程甲", "D-1"))
-    _write_exam_snapshots(home, [exam_row()], [exam_row()])
-    Settings(home=home).raw_exams_path(SEMESTER).write_text("{坏掉的 JSON", encoding="utf-8")
+    # 课程两份快照**不同**（换教室）——断言因此能归因到"课程照常报告"。
+    cfg = Settings(home=home)
+    _raw_dir(home)
+    cfg.raw_timetable_prev_path(SEMESTER).write_text(
+        json.dumps({"kbList": [_row("示例课程甲", "D-1", room="A-2002")]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    cfg.raw_timetable_path(SEMESTER).write_text(
+        json.dumps({"kbList": [_row("示例课程甲", "D-1", room="A-1001")]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    # 新考试快照坏掉，旧考试快照正常。
+    _write_exam_snapshot(home, "{坏掉的 JSON")
+    _write_exam_snapshot(
+        home, json.dumps(exam_payload([exam_row()]), ensure_ascii=False), prev=True
+    )
 
-    assert main(["diff", "--semester", SEMESTER]) != 0
-    err = capsys.readouterr().err
-    assert "新考试快照不是合法 JSON" in err
-    assert "无变化" not in err + capsys.readouterr().out
+    assert main(["diff", "--semester", SEMESTER]) == 0
+    captured = capsys.readouterr()  # 只读一次：读两次的话第一下就把两条流排干了
+    out = captured.out
+    # 课程照常报告（换教室这条变更必须出现在输出里）。
+    assert "教室" in out and "A-1001" in out and "A-2002" in out
+    # 考试被跳过，且说明里点名是**考试**快照坏掉。
+    assert "本次未比对考试" in out
+    assert "考试快照" in out
+    assert "无变化" not in out  # 课程有变更，绝不能被当成"无变化"
+
+
+def test_corrupt_previous_exam_snapshot_is_also_skipped(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """评审 F1 的另一半：坏的是 ``.prev`` 那一侧同样不许杀掉课程报告（原来只测了新侧）。"""
+    _write_timetable_snapshots(home, _row("示例课程甲", "D-1"))  # 课程全同
+    cfg = Settings(home=home)
+    _raw_dir(home)
+    cfg.raw_exams_path(SEMESTER).write_text(
+        json.dumps(exam_payload([exam_row(ZWH="30")]), ensure_ascii=False), encoding="utf-8"
+    )
+    _write_exam_snapshot(home, "{坏掉的 .prev", prev=True)
+
+    assert main(["diff", "--semester", SEMESTER]) == 0
+    captured = capsys.readouterr()
+    assert "本次未比对考试" in captured.out
+    assert "考试快照" in captured.out
+    assert "考试变更" not in captured.out  # 跳过 = 没比对，不假装产出了变更

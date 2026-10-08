@@ -372,7 +372,18 @@ def _exam_group(exams_in: Sequence[ExamSchedule]) -> dict[str, list[ExamSchedule
     for exam in exams_in:
         groups.setdefault(_exam_key(exam), []).append(exam)
     for rows in groups.values():
-        rows.sort(key=lambda exam: (exam.date_str, exam.start_time, exam.course_name))
+        # 排序键必须**包含被比较的字段**（座位／教室），否则同键多行只是换了行序时，
+        # 逐位配对会把 ``[12, 30]`` 与 ``[30, 12]`` 配成两条幻影「座位变更」；纳入比较项
+        # 后两侧都规整成同一顺序，纯置换自我抵消（评审 F4）。
+        rows.sort(
+            key=lambda exam: (
+                exam.date_str,
+                exam.start_time,
+                exam.course_name,
+                _exam_seat(exam),
+                _exam_place(exam),
+            )
+        )
     return groups
 
 

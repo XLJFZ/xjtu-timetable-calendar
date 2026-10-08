@@ -223,6 +223,31 @@ def test_rows_sharing_a_key_are_not_silently_dropped():
     assert [change.kind for change in cancelled] == ["取消", "取消"]
 
 
+def test_seat_only_permutation_of_a_shared_key_fabricates_no_change():
+    """同键两行只是**行序颠倒**（纯座位对调）：排序键含被比较字段 → 自我抵消。
+
+    排序键若只到 ``(date_str, start_time, course_name)``，两侧的 ``[12, 30]`` 与
+    ``[30, 12]`` 会被逐位配成两条「座位变更」——那是两条现实中没发生的变更（服务端只是
+    换了行序），把 ``_exam_seat`` 加进排序键后两侧都规整成 ``[12, 30]``，配对即相等。
+    """
+    old = _exams(exam_row(WID="WID-PERM", ZWH="12"), exam_row(WID="WID-PERM", ZWH="30"))
+    new = _exams(exam_row(WID="WID-PERM", ZWH="30"), exam_row(WID="WID-PERM", ZWH="12"))
+    assert diff_exams(old, new).is_empty
+
+
+def test_room_only_permutation_of_a_shared_key_fabricates_no_change():
+    """同上，换的是**教室**：``_exam_place`` 也必须在排序键里，否则纯对调会造出幻影变更。"""
+    old = _exams(
+        exam_row(WID="WID-ROOM", JASMC="A-1001"),
+        exam_row(WID="WID-ROOM", JASMC="B-2002"),
+    )
+    new = _exams(
+        exam_row(WID="WID-ROOM", JASMC="B-2002"),
+        exam_row(WID="WID-ROOM", JASMC="A-1001"),
+    )
+    assert diff_exams(old, new).is_empty
+
+
 def test_describe_exam_change_renders_a_single_readable_line():
     added = diff_exams([], _exams(exam_row(ZWH="12"))).changes[0]
     text = describe_exam_change(added)

@@ -924,9 +924,7 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
             logger.warning("解析跳过（可能影响比对完整性）：%s", reason)
     print()
 
-    def _exam_rows(path: Path | None, label: str, campus: Mapping[str, str]) -> list[ExamSchedule]:
-        if path is None:
-            return []
+    def _exam_rows(path: Path, label: str, campus: Mapping[str, str]) -> list[ExamSchedule]:
         rep = ParseReport()
         rows = parse_exam_rows(_read_json(path, label), campus_names=campus, report=rep)
         for reason in rep.skipped:
@@ -940,8 +938,9 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
 
         取数口径（§6.6:333-336）：考试侧**只有**默认路径这一种来源 —— 快照按学期存放
         （``raw/exams-<学期>.json`` 与其 ``.prev``），``--old/--new`` 只对课表生效。
-        两种"没法比对"都要明说，不能拿一句「无变化」糊过去：没给学期、
-        或本地根本没有考试快照（从没抓过考试／状态未知时按宁缺毋滥没有落盘）。
+        三种"没法比对"都要明说，不能拿一句「无变化」糊过去：没给学期、
+        本地根本没有考试快照（从没抓过考试／状态未知时按宁缺毋滥没有落盘）、
+        或考试快照读不出／不是合法 JSON（评审 F1：坏快照只跳过考试，不杀课程报告）。
         """
         if not semester:
             return (
@@ -962,13 +961,20 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
         # 两侧**共用同一份**校区对照（取自新的课表快照，§6.3）：各取各的话，两份课表快照里
         # XXXQDM_DISPLAY 的差别会变成一条根本不存在的「教室变更」。
         campus_names = campus_names_from_timetable(new_payload)
-        new_exams = _exam_rows(new_exams_path, "新考试", campus_names)
-        # 没有 .prev = 本学期**第一次**拿到考试快照：旧侧按空表比对，于是每行都报「新增」
-        # （§6.6:336-337）。计划稿写的"任一侧缺失就打说明、返回空 diff"是错的 —— 那会让
-        # diff 打出「无变化」，而日历里实实在在多出了一整批考试事件。
-        old_exams: list[ExamSchedule] = (
-            [] if first_snapshot else _exam_rows(prev_exams_path, "旧考试", campus_names)
-        )
+        try:
+            new_exams = _exam_rows(new_exams_path, "新考试", campus_names)
+            # 没有 .prev = 本学期**第一次**拿到考试快照：旧侧按空表比对，于是每行都报「新增」
+            # （§6.6:336-337）。计划稿写的"任一侧缺失就打说明、返回空 diff"是错的 —— 那会让
+            # diff 打出「无变化」，而日历里实实在在多出了一整批考试事件。
+            old_exams: list[ExamSchedule] = (
+                [] if first_snapshot else _exam_rows(prev_exams_path, "旧考试", campus_names)
+            )
+        except (XjtuCalendarError, OSError, UnicodeDecodeError) as exc:
+            # 评审 F1（Important）：考试是**增量侧**，坏快照（读不出／非合法 JSON）只能跳过考试
+            # 比对，绝不能像课程快照那样抛错杀掉整份报告 —— 上面一屏还是「缺快照 → 打一行说明、
+            # 继续比课程」的口径，这里必须一致：走 exam_skip_note 通道、点名是考试快照坏掉，
+            # 课程照常往下比、exit 0。
+            return ExamDiff(), f"本次未比对考试：考试快照读取失败（{exc}）", ""
         preface = (
             "无上一份考试快照（本学期首次抓到考试安排），以下考试变更全部按新增报告。"
             if first_snapshot

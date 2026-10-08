@@ -106,20 +106,20 @@ def raw_exams_prev_path(self, semester_key: str) -> Path: # raw/exams-<学期>.p
 ### 6.3 `models.ExamSchedule`（frozen dataclass）
 
 ```python
-course_id: str | None      # KCH
-course_name: str           # KCM
-exam_name: str | None      # KSMC
-date: date                 # 来自 KSRQ
-start_time: time           # 来自 KSSJMS
-end_time: time             # 来自 KSSJMS
-location: str | None       # JASMC
-campus: str | None         # 见下：考试行只有 XXXQDM 代码，没有 *_DISPLAY
-seat: str | None           # ZWH
-credits: float | None      # XF
-teacher: str | None        # ZJJSXM
-row_id: str | None         # WID（UID 首选依据）
-task_id: str | None        # KSRWID（WID 缺失时的退路）
-exam_code: str | None      # KSDM
+course_id: str | None  # KCH
+course_name: str  # KCM
+exam_name: str | None  # KSMC
+date: date  # 来自 KSRQ
+start_time: time  # 来自 KSSJMS
+end_time: time  # 来自 KSSJMS
+location: str | None  # JASMC
+campus: str | None  # 见下：考试行只有 XXXQDM 代码，没有 *_DISPLAY
+seat: str | None  # ZWH
+credits: float | None  # XF
+teacher: str | None  # ZJJSXM
+row_id: str | None  # WID（UID 首选依据）
+task_id: str | None  # KSRWID（WID 缺失时的退路）
+exam_code: str | None  # KSDM
 ```
 
 **校区名不靠猜**：实测考试行只有 `XXXQDM='5'`，没有课表里那个 `XXXQDM_DISPLAY='创新港校区'`。

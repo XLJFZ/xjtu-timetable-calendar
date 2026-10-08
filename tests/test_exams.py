@@ -3,8 +3,14 @@ from dataclasses import FrozenInstanceError, replace
 import pytest
 from exam_support import DEMO_DAY, exam_payload, exam_row
 
-from xjtu_calendar.exams import parse_exam_time_text
+from xjtu_calendar.exams import (
+    campus_names_from_timetable,
+    iter_exam_rows,
+    parse_exam_rows,
+    parse_exam_time_text,
+)
 from xjtu_calendar.models import ExamSchedule
+from xjtu_calendar.parser import ParseReport
 
 
 def test_exam_row_has_the_observed_dirty_shapes():
@@ -89,3 +95,72 @@ def test_date_prefix_is_stripped_before_matching():
     """日期里的 `.` / `-` 不能被当成时刻分隔符（`2030.06.17` 会被误读成 `30.06`）。"""
     assert parse_exam_time_text("2030.06.17 09:00-11:00(星期一)") == ("09:00", "11:00")
     assert parse_exam_time_text("2030-06-17 09:00-11:00") == ("09:00", "11:00")
+
+
+def test_iter_exam_rows_finds_module_without_hardcoding_name():
+    payload = exam_payload([exam_row()], module="someOtherModule")
+    payload["datas"] = {"whatever": payload["datas"].pop("someOtherModule")}
+    assert len(iter_exam_rows(payload)) == 1
+
+
+def test_iter_exam_rows_keeps_empty_list_but_rejects_shape():
+    assert iter_exam_rows(exam_payload([])) == []  # 空 rows 是合法结构，交给三态判定
+    assert iter_exam_rows({"code": "0"}) == []
+
+
+def test_parse_exam_rows_maps_fields_and_skips_unparsable():
+    rows = [
+        exam_row(),
+        exam_row(WID="WID-DEMO-2", KSSJMS="待定"),  # 解析不出 → 跳过
+        exam_row(WID="WID-DEMO-3", KCM=""),  # 缺课程名 → 跳过
+    ]
+    report = ParseReport()
+    exams = parse_exam_rows(exam_payload(rows), report=report)
+    assert [e.row_id for e in exams] == ["WID-DEMO-1"]
+    assert len(report.skipped) == 2
+
+
+def test_campus_names_from_timetable_builds_code_to_display_map():
+    timetable = {
+        "datas": {
+            "xskcb": {
+                "rows": [
+                    {"XXXQDM": "5", "XXXQDM_DISPLAY": "创新港校区"},
+                    {"XXXQDM": "1", "XXXQDM_DISPLAY": "兴庆校区"},
+                    {"XXXQDM": "5", "XXXQDM_DISPLAY": "创新港校区"},
+                ]
+            }
+        }
+    }
+    assert campus_names_from_timetable(timetable) == {"5": "创新港校区", "1": "兴庆校区"}
+
+
+def test_parse_exam_rows_uses_campus_map_and_falls_back_silently():
+    exam = parse_exam_rows(exam_payload([exam_row(XXXQDM="5")]), campus_names={"5": "创新港校区"})[
+        0
+    ]
+    assert exam.campus == "创新港校区"
+    unknown = parse_exam_rows(exam_payload([exam_row(XXXQDM="9")]), campus_names={})[0]
+    assert unknown.campus is None  # 对照不到就留空，绝不硬编码代码表
+
+
+def test_weekday_in_time_text_conflicts_with_date_warns_but_keeps_row():
+    """§6.4 的**防御性**检查：22 行实测样本里两处星期全一致，没见过反例。
+
+    仍然要检查，因为 `KSRQ` 与 `KSSJMS(星期X)` 是两个独立字段，谁先腐化不可知，
+    而客户端显示的是 `KSRQ` 推出来的那个 —— 所以**以 KSRQ 为准**，只记 warning，
+    不丢行（丢了才是真的把考试信息弄没了）。
+    """
+    report = ParseReport()
+    # 2030-06-17 是星期一，文本却写(星期二)
+    rows = [exam_row(KSSJMS="2030-06-17 15:00-17:30(星期二)")]
+    exams = parse_exam_rows(exam_payload(rows), report=report)
+    assert len(exams) == 1  # 保留
+    assert exams[0].date_str == "2030-06-17"  # 以 KSRQ 为准
+    assert any("星期" in w for w in report.warnings)
+
+
+def test_weekday_consistent_produces_no_warning():
+    report = ParseReport()
+    parse_exam_rows(exam_payload([exam_row()]), report=report)  # DEMO_DAY=星期一，固件自洽
+    assert report.warnings == []

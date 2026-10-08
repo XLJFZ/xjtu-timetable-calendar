@@ -22,6 +22,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 from .academic_calendar import AcademicCalendar
 from .config import Settings
@@ -29,13 +30,14 @@ from .errors import (
     CalendarExportError,
     ScheduleNotConfigured,
     SemesterNotConfigured,
+    TimetableFetchError,
     UnsupportedAdjustmentError,
     XjtuCalendarError,
 )
 from .logging_setup import get_logger
 from .models import CalendarEvent, CourseMeeting, UnsupportedAdjustment
 from .naming import DEFAULT_CALENDAR_NAME, calendar_title
-from .parser import TimetableParser
+from .parser import ParseReport, TimetableParser
 from .periods import format_periods
 from .schedules import ScheduleTable
 from .sequence import EventBaseline, parse_baseline, resolve_sequence, sequence_stats
@@ -521,7 +523,12 @@ def summarize(
 
 @dataclass
 class ExportResult:
-    """build_ics_for_semester 的返回：渲染文本 + 汇总数据（CLI 打印用）。"""
+    """build_ics_for_semester 的返回：渲染文本 + 汇总数据（CLI 打印用）。
+
+    ``info`` 中与考试相关的键只有一个：``exam_events``，即**进了产物**的考试事件数
+    （已过日期过滤与全局 UID 断言）。``events`` 与 ``date_range`` 的口径始终只算
+    课程事件，见设计文档 §6.5 第 1 条。
+    """
 
     ics: str
     info: dict[str, object]
@@ -544,6 +551,17 @@ def _stamp_from_snapshot(path: Path) -> datetime:
         return now_local()
 
 
+def _in_range(event: CalendarEvent, lower: date | None, upper: date | None) -> bool:
+    """事件的日期是否落在 ``[lower, upper]`` 闭区间内（与旧内联条件等价）。
+
+    抽成模块级谓词的唯一理由：课程事件与考试事件现在**共用同一组边界**
+    （§6.5 第 4 条：``--from-date``/``--to-date`` 连考试一起裁），
+    两处各写一遍边界判断迟早会漂移。
+    """
+    day = event.start.date()
+    return (lower is None or day >= lower) and (upper is None or day <= upper)
+
+
 def build_ics_for_semester(
     cfg: Settings,
     semester: str,
@@ -559,6 +577,8 @@ def build_ics_for_semester(
     baseline_probe: str | None = None,
     no_sequence: bool = False,
     dtstamp: datetime | None = None,
+    include_exams: bool = True,
+    exams_payload: dict[str, Any] | None = None,
 ) -> ExportResult:
     """按学期构建 RFC 5545 文本。export 与 subscribe push 共用的唯一管线。
 
@@ -573,6 +593,14 @@ def build_ics_for_semester(
     ``dtstamp`` 为 ``None`` 时默认取**数据源快照的 mtime**（见
     :func:`_stamp_from_snapshot`），保证同快照重建字节一致——subscribe
     的「内容无变化→跳过」判定全靠这一点。
+
+    ``include_exams``：是否把同学期的考试安排并进**同一份** .ics（D1/D2，默认开）。
+    关掉只影响导出，**不删**本地考试快照。考试侧任何失败都只降级（少一批事件 +
+    留下一条日志），既不改变课程事件的口径，也绝不让导出非零退出（§7）。
+
+    ``exams_payload``：直接给定考试响应、跳过读快照文件——§6.5 点名的注入接缝，
+    当前主要供测试与后续任务使用；``include_exams=False`` 时一并忽略。
+    注意 ``input_path`` **只喂课表 payload**，考试数据永远不从它读（§6.5 第 3 条）。
     """
     from .fetcher import load_raw
 
@@ -641,9 +669,52 @@ def build_ics_for_semester(
             "并把真实字段名补进 parser.py 的 FIELD_CANDIDATES。",
         )
 
-    # --- 展开 ---
+    # --- 展开（课程）---
     events = build_events(meetings, academic, schedules)
     logger.info("已展开：%d 次实际上课", len(events))
+
+    # --- 考试事件（并进**日期过滤之前**；§6.5 第 1 条）---
+    # 失败一律降级（§7:387「绝不因为考试失败而让 export 非零退出」）：
+    # 课程是主功能，考试是增量，增量出问题时产物必须等于「没有增量」。
+    exam_events: list[CalendarEvent] = []
+    if include_exams:
+        # 只能在函数体内 import：exams.py 顶层 `from .exporter import UID_DOMAIN`，
+        # 反向的模块级 import 会成环（计划的 Global Constraint；`load_raw` 同此写法）。
+        from .exams import build_exam_events, campus_names_from_timetable, parse_exam_rows
+
+        try:
+            try:
+                exams_source: dict[str, Any] | None = (
+                    exams_payload
+                    if exams_payload is not None
+                    else load_raw(cfg, semester, kind="exams")
+                )
+            except TimetableFetchError:
+                # 从没抓过考试不是错误（D2「静默跳过，只在日志说明」——
+                # 是「不报警」，不是「一个字都不说」）。
+                exams_source = None
+                logger.info("本地没有 %s 的考试快照，本次日历不含考试事件", semester)
+            if exams_source is not None:
+                report = ParseReport()
+                parsed = parse_exam_rows(
+                    exams_source,
+                    campus_names=campus_names_from_timetable(payload),
+                    report=report,
+                )
+                for line in report.skipped:
+                    logger.warning("考试安排跳过一条：%s", line)
+                for line in report.warnings:  # 星期与日期不一致这类"保留但可疑"的提示
+                    logger.warning("考试安排提醒：%s", line)
+                exam_events = build_exam_events(parsed, semester)
+                if not exam_events:
+                    # §7「确认无考试」/ 整批都解析不出来：说明一句，不算问题。
+                    logger.info("本学期暂无考试安排（考试快照为空或全部无法解析）")
+        except Exception as exc:  # 快照半截损坏、结构走样等一切意外
+            # 计划稿只包 `load_raw`，与它自己「失败一律静默降级」的注释不符：
+            # `load_raw` 里的 `json.loads` 抛 JSONDecodeError（ValueError 子类），
+            # 不是 TimetableFetchError，照样能炸穿导出。整段兜住才对得上 §7:387。
+            logger.warning("考试快照无法处理，本次日历不含考试事件：%s", exc)
+            exam_events = []
 
     # --- 可选日期过滤 ---
     # 先把边界解析出来：它同时决定「事件过滤」与「unsupported 调课的范围判定」，
@@ -651,15 +722,29 @@ def build_ics_for_semester(
     lower = date.fromisoformat(from_date) if from_date else None
     upper = date.fromisoformat(to_date) if to_date else None
     if lower is not None or upper is not None:
-        events = [
-            e
-            for e in events
-            if (lower is None or e.start.date() >= lower)
-            and (upper is None or e.start.date() <= upper)
-        ]
+        # v1 决定（§6.5 第 4 条）：考试与课程用**同一组**边界一起裁，不特殊放行。
+        events = [e for e in events if _in_range(e, lower, upper)]
+        exam_events = [e for e in exam_events if _in_range(e, lower, upper)]
         logger.info("按日期过滤后剩余 %d 次上课", len(events))
 
-    if not events:
+    # --- 全局 UID 唯一性断言（§6.5 第 2 条）---
+    # `build_events` 里的 `seen_uids` 只在课程侧生效（:213），管不到从外面并进来的
+    # 考试事件；而 `render_ics` 是直接 `add_component`，重复 UID 会原样写进 .ics，
+    # 违反 RFC 5545 且客户端行为不可预期。处置：丢弃后来者 + warning，**不中止导出**。
+    kept_exam: list[CalendarEvent] = []
+    if exam_events:
+        seen = {event.uid for event in events}
+        for event in exam_events:
+            if event.uid in seen:
+                logger.warning("考试事件 UID 与已有事件冲突，已丢弃：%s", event.summary)
+                continue
+            seen.add(event.uid)
+            kept_exam.append(event)
+
+    render_events = [*events, *kept_exam]
+    if not render_events:
+        # 判空看的是**合并后**的集合：日期窗口只框住考试时课程为零，但产物并不空，
+        # 这时候甩一句「没有生成任何事件」就是假警告。
         logger.warning("没有生成任何事件（可能全部落在停课日期或被日期过滤排除）")
 
     # --- 无法表达的调课：fail-closed（显式允许后转为显著警告） ---
@@ -706,14 +791,20 @@ def build_ics_for_semester(
         # 标题从课表数据推导；年级缺失/并列时 calendar_title 自己会退回基础名。
         calendar_name = calendar_title(semester, (m.grade_year for m in meetings))
         logger.info("日历标题：%s", calendar_name)
-    ics = render_ics(events, calendar_name=calendar_name, dtstamp=stamp, baseline=baseline)
+    ics = render_ics(render_events, calendar_name=calendar_name, dtstamp=stamp, baseline=baseline)
 
     # --- 汇总 ---
+    # 口径分工（§6.5 第 1 条）：`Events:` 与 `Date range` **只吃课程事件**，
+    # 否则考试周会把「课表覆盖范围」莫名拉长到 6 月；考试数量单独走 exam_events。
     info = summarize(meetings, events)
     # semester_name 供 CLI 打印「Semester:」块；写文件由调用方负责。
     info["semester_name"] = academic.semester.name
+    # 计数口径 = 真正进了产物的考试（既过了日期过滤，也过了上面的全局 UID 断言）。
+    info["exam_events"] = len(kept_exam)
     stats: dict[str, int] | None = None
     if baseline is not None:
-        stats = sequence_stats(events, baseline)
+        # 反过来 `sequence_stats` **必须**吃合并后的全集，否则考试的
+        # SEQUENCE/added 统计永远失真（新增的那条考试会被算成 0）。
+        stats = sequence_stats(render_events, baseline)
 
     return ExportResult(ics=ics, info=info, sequence_stats=stats)

@@ -1,7 +1,7 @@
 # xjtu-timetable-calendar
 
 将西安交通大学 eHall「我的课表」中**当前登录账号本人有权访问的个人课表**，解析并导出为
-标准 iCalendar（`.ics`）文件，可直接导入 Apple 日历、iPhone 日历、Google 日历、
+标准 iCalendar（`.ics`）文件，可直接导入 Apple 日历、Google 日历、
 Microsoft Outlook 等应用。
 
 > **本项目为非官方工具**，与西安交通大学无隶属关系。

@@ -11,6 +11,7 @@ from datetime import date
 from enum import Enum
 from typing import Any
 
+from .config import Settings
 from .exporter import UID_DOMAIN  # 顶层导入；exporter 反向只在函数内 import（避免循环）
 from .models import CalendarEvent, ExamSchedule
 from .parser import ParseReport
@@ -497,3 +498,24 @@ def build_exam_events(exams: Sequence[ExamSchedule], semester_key: str) -> list[
             )
         )
     return events
+
+
+def exam_snapshot_lag_days(cfg: Settings, semester: str) -> float | None:
+    """考试快照落后于课表快照的天数（设计文档 §7:382-386 选定的陈旧口径）。
+
+    用**相对**差而不是「距今几天」：课表与考试在同一次 fetch 里落盘，两者一起变老
+    是正常的；只有考试没跟着更新时才说明缓存过期。考试比课表新（先抓到考试、之后
+    才动课表）返回 ``0.0``，任一快照缺失返回 ``None``（此时没什么可提醒的）。
+
+    mtime→天数 的算式唯一归属点是 :func:`xjtu_calendar.subscribe.snapshot_age_days`
+    （本函数只作差，不再自己读 mtime），Task 7 的 `_exam_fallback_note` 走的是快照
+    **日期**（另一条口径），两处不合并——见 Task 11 报告里的重复说明。
+    """
+    from .subscribe import snapshot_age_days
+
+    # 函数体内 import：subscribe→exporter→exams，顶层再引会成环。
+    exam_age = snapshot_age_days(cfg, semester, kind="exams")
+    timetable_age = snapshot_age_days(cfg, semester, kind="timetable")
+    if exam_age is None or timetable_age is None:
+        return None
+    return max(0.0, exam_age - timetable_age)

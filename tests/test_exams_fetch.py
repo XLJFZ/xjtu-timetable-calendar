@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -98,6 +99,51 @@ def test_expired_session_is_unknown_not_empty(home: Settings, monkeypatch) -> No
     assert home.raw_exams_path(SEMESTER).read_text(encoding="utf-8") == before
 
 
+@pytest.fixture(params=("unknown", "expired"))
+def degraded(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """把 `fetch_via_http` 打成两种「拿不到考试但绝不许动本地快照」的形态之一。
+
+    §7:376 要求这两条降级分支都报出旧数据的日期，所以每条都要过一遍 F1 的两个用例。
+    返回形态名，供断言失败时连同消息一起打出来。
+    """
+    if request.param == "unknown":
+        _patch(monkeypatch, lambda *a, **k: exam_payload([], code=0, msg="查询失败"))
+    else:
+
+        def boom(*a, **k):
+            raise AuthenticationExpired("会话已过期")
+
+        _patch(monkeypatch, boom)
+    return str(request.param)
+
+
+def _snapshot_day(cfg: Settings) -> str:
+    """告警应当报出的日期 = 快照 mtime 那天（与实现的取法一致）。"""
+    return datetime.fromtimestamp(cfg.raw_exams_path(SEMESTER).stat().st_mtime).date().isoformat()
+
+
+def test_degraded_warns_with_existing_snapshot_date(home: Settings, degraded: str) -> None:
+    """§7:376「有旧快照则沿用并**提示其日期**」：告警里必须出现那一天，而不是空口"沿用"。"""
+    _write_old_snapshot(home)
+    expected = _snapshot_day(home)
+    with captured_logs() as records:
+        assert _fetch_exams(_endpoints(), home, SEMESTER) is None
+    messages = [rec.getMessage() for rec in records]
+    assert any(expected in message for message in messages), (degraded, messages)
+
+
+def test_degraded_without_snapshot_says_local_copy_is_missing(
+    home: Settings, degraded: str
+) -> None:
+    """没有本地快照时那句"沿用已有快照"是**谎话**：必须改成明说不含考试。"""
+    assert not home.raw_exams_path(SEMESTER).exists()
+    with captured_logs() as records:
+        assert _fetch_exams(_endpoints(), home, SEMESTER) is None
+    messages = [rec.getMessage() for rec in records]
+    assert any("没有" in message for message in messages), (degraded, messages)
+    assert not any("沿用" in message for message in messages), (degraded, messages)
+
+
 def test_confirmed_empty_writes_empty_snapshot(home: Settings, monkeypatch) -> None:
     """只有 code==1 + 空 rows（确认无考试）才允许把旧快照顶掉。"""
     _write_old_snapshot(home)
@@ -127,6 +173,12 @@ def test_pagination_guard_warns_but_still_saves(home: Settings, monkeypatch) -> 
         path = _fetch_exams(_endpoints(), home, SEMESTER)
     assert path is not None and path.is_file()  # 只告警，不阻断落盘
     assert any("totalSize" in rec.getMessage() for rec in records)
+
+    # 同族接口的数字经常是字符串形态（这份额外层 `code` 就是 "0"）：护栏不能因此静默关闭。
+    payload["datas"]["wdksap"]["totalSize"] = "42"
+    with captured_logs() as records:
+        assert _fetch_exams(_endpoints(), home, SEMESTER) is not None
+    assert any("totalSize" in rec.getMessage() and "42" in rec.getMessage() for rec in records)
 
 
 def test_cmd_fetch_still_returns_zero_when_exams_explode(home: Settings, monkeypatch) -> None:
@@ -176,6 +228,40 @@ def test_cmd_fetch_no_exams_flag_never_requests_exams(home: Settings, monkeypatc
     assert main(["fetch", "--semester", SEMESTER, "--source", "http", "--no-exams"]) == 0
     assert requested == ["timetable"]  # 关掉后连考试请求都不发
     assert not home.raw_exams_path(SEMESTER).exists()
+
+
+def test_cmd_fetch_http_branch_fetches_exams_after_timetable(
+    home: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """正向接线（评审 F3）：课表抓完之后**真的**去抓考试，并把考试快照落了盘。
+
+    上面两条 `main()` 用例断言的全是否定式（退出码 0／没落盘／没发请求），
+    把 `cmd_fetch` 里的整个考试块删掉它们依然全绿——本任务最关键的那根线在测试里
+    是不可见的。这条钉住请求顺序与落盘，是头号回归护栏。
+    """
+    import xjtu_calendar.auth as auth
+
+    session = home.home / "session"
+    session.mkdir(parents=True, exist_ok=True)
+    (session / "storage_state.json").write_text(
+        json.dumps({"cookies": [{"name": "SESSIONID", "value": "x"}]}), encoding="utf-8"
+    )
+    monkeypatch.setattr(auth, "has_session", lambda _cfg: True)
+    monkeypatch.setattr(
+        fetcher, "load_endpoints", lambda *a, **k: _endpoints(timetable=_timetable_endpoint())
+    )
+    requested: list[str] = []
+
+    def fake(endpoint, *, cfg=None, params=None, transport=None):
+        requested.append(endpoint.name)
+        if endpoint.name == "exam_schedule":
+            return exam_payload([exam_row()])
+        return {"kbList": [{"KCM": "示例课程甲", "KCH": "D-1"}]}
+
+    _patch(monkeypatch, fake)
+    assert main(["fetch", "--semester", SEMESTER, "--source", "http"]) == 0
+    assert requested == ["timetable", "exam_schedule"]
+    assert home.raw_exams_path(SEMESTER).exists()
 
 
 def _timetable_endpoint() -> fetcher.Endpoint:

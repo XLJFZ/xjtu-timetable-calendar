@@ -29,6 +29,7 @@ import subprocess
 import sys
 import urllib.error
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -367,23 +368,41 @@ def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
 def _exam_total_size(payload: Any) -> int | None:
     """从三态判定**选中的同一 module** 读 `totalSize`（翻页护栏用，设计文档 §6.4）。
 
-    选取标准与 `exams._exam_module` 一致（`rows` 是 list 且 `extParams` 是 mapping），
-    因此这里读到的 totalSize 与 `classify_exam_payload` 所用的 rows 出自同一份 module，
-    不会把两个 module 的行数与总数混着比（裁决 4）。缺失或类型不对返回 ``None``
-    （无法核对时**不**报警，避免噪音）。
+    模块选取直接调 `exams._exam_module`（判据唯一的归属地），不在这里抄一份同样的条件：
+    抄本会让"行数与总数出自同一个 module"这条保证只靠注释维持——将来谁改选模块的口径
+    （加模块名偏好、改 `extParams` 条件），护栏就会跨模块比较，正好废掉它存在的意义。
+
+    无法核对时返回 ``None`` 并**不**报警（避免噪音）。数字以字符串形态给出（这个 API 族
+    的外层 `code` 就是字符串 ``"0"``，同族字段同样可能带引号）时兜一层 `int(str(...))`，
+    否则非数字／缺键才会真的返回 ``None``。
     """
-    datas = payload.get("datas") if isinstance(payload, Mapping) else None
-    if not isinstance(datas, Mapping):
+    from .exams import _exam_module
+
+    module = _exam_module(payload)
+    if module is None:
         return None
-    for module in datas.values():
-        if (
-            isinstance(module, Mapping)
-            and isinstance(module.get("rows"), list)
-            and isinstance(module.get("extParams"), Mapping)
-        ):
-            raw = module.get("totalSize")
-            return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
-    return None
+    try:
+        return int(str(module.get("totalSize")))
+    except (TypeError, ValueError):
+        return None
+
+
+def _exam_fallback_note(cfg: Settings, semester_code: str) -> str:
+    """考试降级提示里"本地这份数据现在算什么"的后半句（设计文档 §7:376）。
+
+    有旧快照就报出**它是哪天的**（取 `raw_exams_path` 的 mtime），让用户知道自己正在沿用
+    哪一份数据；"距今多少天"的算式属于 Task 11 的 `snapshot_age_days(..., kind="exams")`，
+    这里只给日期。没有旧快照就明说不含考试——**绝不**写"沿用已有快照"，那是让用户相信
+    自己正在依赖一个根本不存在的东西。
+    """
+    path = cfg.raw_exams_path(semester_code)
+    if not path.is_file():
+        return "本地没有考试快照，本次导出不含考试"
+    try:
+        day = datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
+    except OSError:  # 快照刚被移走：宁可不报日期，也不反过来谎称"没有快照"
+        return "本地已有考试快照，本次导出继续沿用它"
+    return f"不覆盖已有快照，沿用 {day} 的考试快照"
 
 
 def _fetch_exams(
@@ -414,14 +433,15 @@ def _fetch_exams(
     try:
         payload = fetch_via_http(endpoint, cfg=cfg, params={"XNXQDM": semester_code})
     except (AuthenticationExpired, TimetableFetchError) as exc:
-        logger.warning("考试安排获取失败，沿用已有快照：%s", exc)
+        logger.warning("考试安排获取失败（%s）；%s", exc, _exam_fallback_note(cfg, semester_code))
         return None
     outcome = classify_exam_payload(payload)
     if outcome.state is ExamState.UNKNOWN:
         logger.warning(
-            "考试安排响应无法判定（extParams.code=%r msg=%r）；不覆盖已有快照",
+            "考试安排响应无法判定（extParams.code=%r msg=%r）；%s",
             outcome.code,
             outcome.msg,
+            _exam_fallback_note(cfg, semester_code),
         )
         return None
     if outcome.state is ExamState.NO_EXAMS:

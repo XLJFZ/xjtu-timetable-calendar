@@ -1,0 +1,104 @@
+{
+  "_note": "G1 golden 回归用例（tests/test_legacy_course_export_golden.py）的合成输入。手工构造，配合 tests/fixtures/legacy_course_export.ics 使用。",
+  "_disclaimer": "此文件不含任何真实数据：课程名、教师、教室、课程编号、入学年级与全部日期均为虚构占位值（示例课程甲/乙/丙、教师甲/乙/丙、A-1001…、ARCH000000…、2030-*）。校历日期尤其注意：2030-09-02 只是「恰好是星期一」的合成值，不是任何官方校历。",
+  "_why_committed": "用例断言的是「课程侧 .ics 字节与接入考试安排之前一致」。基线只能由接入前的代码产出，而接入前的代码只存在于历史里——所以把输入与产物一起提交，让每条未来的提交都能重跑这个比对。",
+  "_how_to_read": "semester_key / snapshot_mtime / semester_config / schedule_config / timetable_payload 五个键就是布置一个离线 home 所需的全部。生成 golden 的脚本与用例读同一份文件，杜绝两边口径漂移。",
+  "_mtime": "snapshot_mtime 是课表快照文件的 mtime（UTC epoch 秒，等于 2030-08-15T12:00:00Z）。DTSTAMP 与所有新事件的 LAST-MODIFIED 都由它推导（exporter._stamp_from_snapshot），不钉住它就没有可复现的 golden。",
+
+  "semester_key": "2030-2031-1",
+  "snapshot_mtime": 1913025600,
+
+  "semester_config": {
+    "semester": {
+      "key": "2030-2031-1",
+      "name": "2030-2031 学年秋季学期（合成示例）",
+      "first_week_monday": "2030-09-02",
+      "total_weeks": 8,
+      "start_date": "2030-09-02",
+      "end_date": "2030-10-27"
+    },
+    "excluded_dates": [],
+    "overrides": {}
+  },
+
+  "schedule_config": {
+    "profiles": {
+      "demo-summer-autumn": {
+        "name": "示例夏秋季作息（合成钟点）",
+        "periods": {
+          "1": ["08:00", "08:50"],
+          "2": ["09:00", "09:50"],
+          "3": ["10:10", "11:00"],
+          "4": ["11:10", "12:00"],
+          "5": ["14:30", "15:20"]
+        }
+      },
+      "demo-winter-spring": {
+        "name": "示例冬春季作息（合成钟点）",
+        "periods": {
+          "1": ["08:00", "08:50"],
+          "2": ["09:00", "09:50"],
+          "3": ["10:10", "11:00"],
+          "4": ["11:10", "12:00"],
+          "5": ["14:00", "14:50"]
+        }
+      }
+    },
+    "periods": [
+      { "start": "2030-05-01", "end": "2030-09-30", "profile": "demo-summer-autumn" },
+      { "start": "2030-10-01", "end": "2031-04-30", "profile": "demo-winter-spring" }
+    ]
+  },
+
+  "timetable_payload": {
+    "datas": {
+      "xskcb": {
+        "totalSize": 3,
+        "rows": [
+          {
+            "KCM": "示例课程甲",
+            "KCH": "ARCH000000",
+            "SKJS": "教师甲",
+            "SKXQ": "1",
+            "KSJC": "1",
+            "JSJC": "2",
+            "ZCMC": "1-6周",
+            "JASMC": "A-1001",
+            "XXXQDM": "5",
+            "XXXQDM_DISPLAY": "示例校区甲",
+            "XF": "3.5",
+            "NJDM": "2030"
+          },
+          {
+            "KCM": "示例课程乙",
+            "KCH": "ARCH000001",
+            "SKJS": "教师乙",
+            "SKXQ": "3",
+            "KSJC": "5",
+            "JSJC": "5",
+            "ZCMC": "1-5周",
+            "JASMC": "B-2002,主楼",
+            "XXXQDM": "5",
+            "XXXQDM_DISPLAY": "示例校区甲",
+            "XF": "2.0",
+            "NJDM": "2030"
+          },
+          {
+            "KCM": "示例课程丙",
+            "KCH": "ARCH000002",
+            "SKJS": "教师丙",
+            "SKXQ": "5",
+            "KSJC": "3",
+            "JSJC": "4",
+            "ZCMC": "1,3,5周",
+            "JASMC": "C-3003",
+            "XXXQDM": "5",
+            "XXXQDM_DISPLAY": "示例校区甲",
+            "XF": "1.0",
+            "NJDM": "2030"
+          }
+        ]
+      }
+    }
+  }
+}

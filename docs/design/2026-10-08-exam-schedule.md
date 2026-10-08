@@ -194,9 +194,9 @@ export 侧根本取不到考试快照。另外现状 `save_raw`（`fetcher.py:57
 course_id: str | None  # KCH
 course_name: str  # KCM
 exam_name: str | None  # KSMC
-date: date  # 来自 KSRQ
-start_time: time  # 来自 KSSJMS
-end_time: time  # 来自 KSSJMS
+date_str: str  # ISO "YYYY-MM-DD"，来自 KSRQ（时间部分恒 00:00:00，已丢弃）
+start_time: str  # "HH:MM"，来自 KSSJMS
+end_time: str  # "HH:MM"，来自 KSSJMS
 location: str | None  # JASMC
 campus: str | None  # 见下：考试行只有 XXXQDM 代码，没有 *_DISPLAY
 seat: str | None  # ZWH
@@ -206,6 +206,11 @@ row_id: str | None  # WID（UID 首选依据）
 task_id: str | None  # KSRWID（WID 缺失时的退路）
 exam_code: str | None  # KSDM
 ```
+
+**日期与时刻一律持有为字符串**（`date_str` + 零补齐 `"HH:MM"`）：本小节下文的
+`combine` 拼装与 `_validate_hhmm` 校验吃的都是字符串，`dataclass` 里不放
+`date`/`time` 对象（初版草图写 `date: date` / `start_time: time`，与 shipped
+`models.ExamSchedule` 不符，已按实现更正）。
 
 **校区名不靠猜**：实测考试行只有 `XXXQDM='5'`，没有课表里那个 `XXXQDM_DISPLAY='创新港校区'`。
 解析方式是取**同学期课表快照**里出现过的 `XXXQDM → XXXQDM_DISPLAY` 对照（同一数据源、
@@ -219,7 +224,8 @@ exam_code: str | None  # KSDM
 ```python
 def parse_exam_rows(payload) -> list[ExamSchedule]
 # 自带候选表与取行逻辑；字段缺失/时间解析失败 → 跳过 + report.skip
-def parse_exam_time_text(text: str) -> tuple[time, time] | None
+def parse_exam_time_text(text: str) -> tuple[str, str] | None
+# 返回零补齐的 ("HH:MM", "HH:MM") 字符串对（交 schedules.combine 落地）；
 # 解析不出 → None（调用方跳过该条，绝不造 00:00 假事件）
 def classify_exam_payload(payload) -> ExamState
 # 三态判定的**唯一归属点**：把 §7 那张表变成一个纯函数，cli 只负责"要不要落盘"
@@ -227,7 +233,10 @@ def build_exam_events(exams, semester_key) -> list[CalendarEvent]
 def make_exam_uid(semester_key: str, exam: ExamSchedule) -> str
 # sha256("<学期>|WID=<wid>")[:32]@xjtu-timetable-calendar
 # WID 缺失 → KSRWID → 再缺失 → "KCH|KSDM|KSRQ|KSSJMS" 组合，并在日志标注降级
-def diff_exams(old_rows, new_rows) -> list[ExamChange]
+def diff_exams(old_exams, new_exams) -> ExamDiff
+# 返回聚合对象 ExamDiff（.changes 为排好序的 list[ExamChange]、.is_empty）；
+# **不是**裸 list，也不带 added/removed 两个列表（初版草图写 `-> list[ExamChange]`，
+# 与 shipped 实现不符，已更正）
 ```
 
 `classify_exam_payload(payload) -> ExamState`（`ExamState` 是 `HAS_EXAMS` / `NO_EXAMS` /

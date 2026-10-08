@@ -28,18 +28,21 @@ import shutil
 import subprocess
 import sys
 import urllib.error
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from . import __version__
 from .academic_calendar import AcademicCalendar
 from .config import Settings
 from .errors import (
+    AuthenticationExpired,
     AuthenticationRequired,
     EndpointNotConfigured,
     GitNotAvailable,
     SemesterNotConfigured,
     SubscribeNotConfigured,
+    TimetableFetchError,
     XjtuCalendarError,
 )
 from .exporter import build_ics_for_semester
@@ -48,6 +51,7 @@ from .logging_setup import get_logger, setup_logging
 if TYPE_CHECKING:
     # cmd_subscribe 各分支内部惰性 `from . import subscribe`；这里只为类型标注。
     from . import subscribe
+    from .fetcher import Endpoint
 
 __all__ = ["build_parser", "main"]
 
@@ -93,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="抓取方式：http 复用会话请求接口；browser 用浏览器拦截前端请求；auto 优先 http",
     )
     fetch.add_argument("--from-file", help="跳过网络，直接从本地 JSON 文件读取（用于离线调试）")
+    fetch.add_argument(
+        "--no-exams",
+        action="store_true",
+        help="不抓考试安排（默认抓；抓失败不影响课表导出）",
+    )
 
     # --- export ---
     export = sub.add_parser("export", help="解析课表并生成 .ics")
@@ -274,6 +283,14 @@ def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
         logger.info("已从本地文件读取课表：%s", source)
         path = save_raw(payload, cfg, semester)
         logger.info("已缓存到 %s", path)
+        _fetch_exams(
+            {},
+            cfg,
+            semester,
+            reason_if_skipped=(
+                "已指定 --no-exams" if args.no_exams else "--from-file 导入没有会话，考试需在线获取"
+            ),
+        )
         return 0
 
     # --- 网络路径 ---
@@ -328,9 +345,99 @@ def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
         raise SemesterNotConfigured("无法确定学期", hint="用 --semester 指定（格式如 2026-2027-1）")
     path = save_raw(payload, cfg, semester)
     logger.info("已获取课表原始数据，缓存到 %s", path)
+
+    # 考试安排（行为矩阵见设计文档 §6.2）：只有 HTTP 分支抓；--no-exams 与浏览器分支只记日志。
+    # 内层 `_fetch_exams` 管可预期的业务失败（认证/抓取/三态判定），这里外层再兜一层
+    # "不可预期的一律降级"——考试是增量，绝不能把它的异常带崩课表主功能的退出码（§7 末条）。
+    if args.no_exams:
+        _fetch_exams(endpoints, cfg, semester, reason_if_skipped="已指定 --no-exams")
+    elif use_http:
+        try:
+            _fetch_exams(endpoints, cfg, semester)
+        except Exception as exc:
+            logger.warning("考试安排出现未预期错误，已跳过（课表不受影响）：%s", exc)
+    else:
+        _fetch_exams(endpoints, cfg, semester, reason_if_skipped="浏览器拦截只覆盖课表接口")
+
     print()
     print("提示：该缓存文件含个人信息，已在 .gitignore 中排除，请勿提交或分享。")
     return 0
+
+
+def _exam_total_size(payload: Any) -> int | None:
+    """从三态判定**选中的同一 module** 读 `totalSize`（翻页护栏用，设计文档 §6.4）。
+
+    选取标准与 `exams._exam_module` 一致（`rows` 是 list 且 `extParams` 是 mapping），
+    因此这里读到的 totalSize 与 `classify_exam_payload` 所用的 rows 出自同一份 module，
+    不会把两个 module 的行数与总数混着比（裁决 4）。缺失或类型不对返回 ``None``
+    （无法核对时**不**报警，避免噪音）。
+    """
+    datas = payload.get("datas") if isinstance(payload, Mapping) else None
+    if not isinstance(datas, Mapping):
+        return None
+    for module in datas.values():
+        if (
+            isinstance(module, Mapping)
+            and isinstance(module.get("rows"), list)
+            and isinstance(module.get("extParams"), Mapping)
+        ):
+            raw = module.get("totalSize")
+            return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+    return None
+
+
+def _fetch_exams(
+    endpoints: Mapping[str, Endpoint],
+    cfg: Settings,
+    semester_code: str,
+    *,
+    reason_if_skipped: str | None = None,
+) -> Path | None:
+    """宁缺毋滥：任何失败都只记日志，**绝不覆盖**已有快照，绝不非零退出。
+
+    三态判定唯一归属点是 `exams.classify_exam_payload`（裁决 1）：只有 HAS_EXAMS /
+    NO_EXAMS 才 `save_raw(kind="exams")`；UNKNOWN（无法判定的响应／会话过期／抓取失败）
+    一律不动本地快照。缺端点走 `require_endpoint` + `EndpointNotConfigured`（裁决 2），
+    与课表同口径——`load_endpoints` 会过滤占位符路径，"缺失"有两种来源，这里一并兜住。
+    """
+    from .exams import ExamState, classify_exam_payload
+    from .fetcher import fetch_via_http, require_endpoint, save_raw
+
+    if reason_if_skipped:
+        logger.info("%s，本次不抓考试安排", reason_if_skipped)
+        return None
+    try:
+        endpoint = require_endpoint(endpoints, "exam_schedule")
+    except EndpointNotConfigured:
+        logger.warning("未配置 exam_schedule 端点，跳过考试安排（课表不受影响）")
+        return None
+    try:
+        payload = fetch_via_http(endpoint, cfg=cfg, params={"XNXQDM": semester_code})
+    except (AuthenticationExpired, TimetableFetchError) as exc:
+        logger.warning("考试安排获取失败，沿用已有快照：%s", exc)
+        return None
+    outcome = classify_exam_payload(payload)
+    if outcome.state is ExamState.UNKNOWN:
+        logger.warning(
+            "考试安排响应无法判定（extParams.code=%r msg=%r）；不覆盖已有快照",
+            outcome.code,
+            outcome.msg,
+        )
+        return None
+    if outcome.state is ExamState.NO_EXAMS:
+        logger.info("本学期暂无考试安排（接口确认：空）")
+    total_size = _exam_total_size(payload)
+    if total_size is not None and total_size != len(outcome.rows):
+        # §6.4 翻页护栏：只告警，绝不据此拒绝落盘（裁决 3）——今天一页够用，
+        # 但将来某学期超过一页时，这条 warning 阻止考试被静默丢弃而无任何痕迹。
+        logger.warning(
+            "考试响应行数（%d）与 totalSize（%d）不一致，可能超过一页；本次仍照常缓存",
+            len(outcome.rows),
+            total_size,
+        )
+    path = save_raw(payload, cfg, semester_code, kind="exams")
+    logger.info("考试安排已缓存到 %s", path)
+    return path
 
 
 def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:

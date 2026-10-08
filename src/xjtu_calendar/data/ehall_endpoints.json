@@ -11,7 +11,8 @@
     "（fetch_via_http 已内置）。",
     "",
     "⚠️ 绝对不要在本文件中写入 Cookie、token、学号或任何凭据。",
-    "   本文件随仓库分发，必须保持可公开。"
+    "   本文件随仓库分发，必须保持可公开。",
+    "exam_schedule 路径来自 2026-10-08 真实观测（studentWdksapApp）。"
   ],
 
   "endpoints": [
@@ -28,6 +29,13 @@
       "path": "/jwapp/sys/wdkb/modules/xskcb/xskcb.do",
       "description": "学生课程表。form 参数 XNXQDM=<学期代码>；响应 datas.xskcb.rows[]，周次为 SKZC 01 位掩码",
       "required": true
+    },
+    {
+      "name": "exam_schedule",
+      "method": "POST",
+      "path": "/jwapp/sys/studentWdksapApp/modules/wdksap/wdksap.do",
+      "description": "我的考试安排。form 参数 XNXQDM=<学期代码>；响应 datas.wdksap.rows[]（KCM/KCH/KSMC/KSRQ/KSSJMS/JASMC/ZWH/XXXQDM/WID/KSDM/KSRWID），成功标志在 extParams.code==1",
+      "required": false
     }
   ]
 }

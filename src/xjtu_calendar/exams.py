@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 from typing import Any
 
-from .exporter import UID_DOMAIN  # noqa: F401  （T5 用；顶层导入，exporter 反向只在函数内 import）
-from .models import ExamSchedule
+from .exporter import UID_DOMAIN  # 顶层导入；exporter 反向只在函数内 import（避免循环）
+from .models import CalendarEvent, ExamSchedule
 from .parser import ParseReport
+from .schedules import combine
+
+logger = logging.getLogger(__name__)
 
 #: 日期前缀：`-` / `.` / `/` 三种连接符都见过或可能见到，必须先剥掉，
 #: 否则 `2030.06.17` 里的 `30.06` 会被下面那条时刻正则吃掉。
@@ -221,3 +226,72 @@ def _check_weekday_consistency(rep: ParseReport, name: str, day: str, time_text:
             f"考试「{name}」的时间文本写的是星期{match.group(1)}，"
             f"但考试日期 {day} 是星期{actual.isoweekday()}；按日期为准"
         )
+
+
+def _uid_token(exam: ExamSchedule) -> str:
+    if exam.row_id:
+        return f"WID={exam.row_id}"
+    if exam.task_id:
+        logger.info("考试「%s」缺少 WID，UID 降级到 KSRWID", exam.course_name)
+        return f"KSRWID={exam.task_id}"
+    logger.warning(
+        "考试「%s」缺少 WID 与 KSRWID，UID 降级到内容组合（改期会被视为新事件）",
+        exam.course_name,
+    )
+    # 必须含 KSSJMS：实测同一门课同一天有两场（上午 + 晚场），只到日期粒度会撞车
+    return "|".join(
+        [exam.course_id or "", exam.exam_code or "", exam.date_str, exam.start_time, exam.end_time]
+    )
+
+
+def make_exam_uid(semester_key: str, exam: ExamSchedule) -> str:
+    """``sha256("<学期>|<考试身份>")[:32]@xjtu-timetable-calendar``。
+
+    与课程 UID 同一命名空间但不同配方：**刻意不含时间与教室**（换考场应当原地更新），
+    也**绝不含年级/学号**。
+    """
+    payload = f"{semester_key.strip()}|{_uid_token(exam)}"
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+    return f"{digest}@{UID_DOMAIN}"
+
+
+def _exam_type_suffix(exam_name: str | None) -> str:
+    """从 ``KSMC`` 取类型词。实测见过 期中/结课/期末考试；**不做枚举白名单**，
+    将来出现「补考」「缓考」时原样带出（设计文档 §11）。"""
+    if not exam_name:
+        return "考试"
+    tail = exam_name.rsplit("学期", 1)[-1].strip()
+    return tail or "考试"
+
+
+def build_exam_events(exams: Sequence[ExamSchedule], semester_key: str) -> list[CalendarEvent]:
+    """考试 → 单场、绝对时刻、无 RRULE / 无 VALARM 的 VEVENT。"""
+    events: list[CalendarEvent] = []
+    for exam in exams:
+        try:
+            day = date.fromisoformat(exam.date_str)
+            start = combine(day, exam.start_time)
+            end = combine(day, exam.end_time)
+        except ValueError as exc:
+            logger.warning("考试「%s」日期无法解析（%s），已跳过", exam.course_name, exc)
+            continue
+        location = " ".join(part for part in (exam.campus, exam.location) if part) or None
+        description_lines = [
+            exam.exam_name,
+            f"课程号：{exam.course_id}" if exam.course_id else None,
+            f"座位号：{exam.seat}" if exam.seat else None,
+            f"学分：{exam.credits}" if exam.credits is not None else None,
+            f"主考教师：{exam.teacher}" if exam.teacher else None,
+        ]
+        events.append(
+            CalendarEvent(
+                uid=make_exam_uid(semester_key, exam),
+                summary=f"{exam.course_name}（{_exam_type_suffix(exam.exam_name)}）",
+                start=start,
+                end=end,
+                location=location,
+                description="\n".join(line for line in description_lines if line),
+                meeting=None,
+            )
+        )
+    return events

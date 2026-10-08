@@ -1,16 +1,20 @@
 from dataclasses import FrozenInstanceError, replace
+from datetime import timedelta
 
 import pytest
-from exam_support import DEMO_DAY, exam_payload, exam_row
+from exam_support import DEMO_DAY, captured_logs, exam_payload, exam_row
 
 from xjtu_calendar.exams import (
     ExamState,
+    build_exam_events,
     campus_names_from_timetable,
     classify_exam_payload,
     iter_exam_rows,
+    make_exam_uid,
     parse_exam_rows,
     parse_exam_time_text,
 )
+from xjtu_calendar.exporter import render_ics
 from xjtu_calendar.models import ExamSchedule
 from xjtu_calendar.parser import ParseReport
 
@@ -196,3 +200,82 @@ def test_state_unknown_when_envelope_missing_or_string_code():
 
 def test_state_unknown_when_module_missing():
     assert classify_exam_payload({"code": "0", "datas": {}}).state is ExamState.UNKNOWN
+
+
+def _exams(*rows):
+    return parse_exam_rows(exam_payload(list(rows)), report=ParseReport())
+
+
+def test_uid_prefers_wid_and_survives_time_or_room_change():
+    a = _exams(exam_row())[0]
+    moved = _exams(exam_row(KSSJMS=f"{DEMO_DAY} 09:00-11:00(星期一)", JASMC="B-2002"))[0]
+    assert make_exam_uid("2026-2027-1", a) == make_exam_uid("2026-2027-1", moved)
+    assert make_exam_uid("2026-2027-1", a) != make_exam_uid("2025-2026-2", a)
+
+
+def test_uid_falls_back_to_task_id_then_composite():
+    by_task = _exams(exam_row(WID="", KSRWID="KSRWID-9"))[0]
+    assert make_exam_uid("2026-2027-1", by_task).endswith("@xjtu-timetable-calendar")
+
+    # 实测过的形态：同一门课同一天两场（上午 + 晚场）
+    same_day_two_sessions = [
+        exam_row(
+            WID="", KSRWID="", KSRQ="2030-01-05 00:00:00", KSSJMS="2030-01-05 09:00-11:30(星期六)"
+        ),
+        exam_row(
+            WID="", KSRWID="", KSRQ="2030-01-05 00:00:00", KSSJMS="2030-01-05 19:00-21:30(星期六)"
+        ),
+    ]
+    uids = {make_exam_uid("2026-2027-1", e) for e in _exams(*same_day_two_sessions)}
+    assert len(uids) == 2  # 降级键含起止时刻，同日两场不撞车
+
+
+def test_exam_events_are_datetime_never_value_date():
+    """红线：VALUE=DATE 会被 sequence.parse_baseline 静默丢弃 → SEQUENCE 永远归零。"""
+    event = build_exam_events(_exams(exam_row()), "2026-2027-1")[0]
+    assert event.start.utcoffset() == timedelta(hours=8)
+    assert event.start.tzinfo is not None
+    assert event.meeting is None  # 考试不冒充课程会议
+
+
+def test_rendered_ics_uses_datetime_for_exams():
+    text = render_ics(build_exam_events(_exams(exam_row()), "2026-2027-1"))
+    assert "DTSTART;TZID=Asia/Shanghai:" in text
+    assert "DTSTART;VALUE=DATE:" not in text
+    assert "BEGIN:VALARM" not in text  # D3：不写提醒
+    assert "RRULE:" not in text  # 单场事件，绝不周期化
+
+
+def test_exam_event_summary_location_description_and_fields():
+    exam = _exams(exam_row(ZJJSXM="教师甲", ZWH="NN", XF="3.0"))[0]
+    event = build_exam_events([exam], "2026-2027-1")[0]
+    assert event.summary == "示例课程甲（结课考试）"
+    assert event.location == "A-1001"  # 没给校区对照表 -> 只有 JASMC，不硬编码校区
+    assert "座位号：NN" in event.description
+    assert "教师甲" in event.description
+    assert "3.0" in event.description
+
+
+def test_unparsable_exam_never_becomes_a_zero_oclock_event():
+    assert build_exam_events(_exams(exam_row(KSSJMS="待定")), "2026-2027-1") == []
+
+
+def test_exam_event_survives_baseline_roundtrip():
+    """parse_baseline 会静默丢弃非 datetime 事件；被丢弃 = 每次重发布 SEQUENCE 恒为 0。"""
+    from xjtu_calendar.sequence import parse_baseline
+
+    text = render_ics(build_exam_events(_exams(exam_row()), "2026-2027-1"))
+    baselines = parse_baseline(text)
+    exam_uid = make_exam_uid("2026-2027-1", _exams(exam_row())[0])
+    assert exam_uid in baselines  # 进不了基线的事件，客户端永远不会收到更新
+
+
+def test_broken_date_reaching_build_is_dropped_with_warning():
+    """`KSRQ="2030-13-45 ..."` 超过 10 字符、熬过 Task 3 的长度检查直达 `date_str`；
+    build_exam_events 必须**丢弃并 warning**，既不许静默跳过，也不许让
+    `date.fromisoformat` 的 ValueError 炸穿到导出层。"""
+    exam = _exams(exam_row(KSRQ="2030-13-45 00:00:00", KSSJMS="2030-13-45 09:00-11:30"))[0]
+    assert exam.date_str == "2030-13-45"  # 前提确认：解析层确实放行了
+    with captured_logs() as records:
+        assert build_exam_events([exam], "2026-2027-1") == []
+    assert any("无法解析" in r.getMessage() and r.levelname == "WARNING" for r in records)

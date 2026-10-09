@@ -425,6 +425,8 @@ diff             [--semester S]                     # 自动包含考试小节
 v1 决定：**不实现取消通路**，只在 §10 的 README 小节写一句"关掉考试后客户端可能需要手动删除
 旧考试事件"。真要做取消（`STATUS:CANCELLED` 保留一段发布期）留到 v2，作为独立设计。
 
+该限制由 `docs/design/2026-10-09-exam-cancellation.md` 消掉。
+
 ## 8. 安全与隐私
 
 - `raw/exams-*.json` 与 `.prev.json` 含学号、姓名、教师姓名 → 只落在

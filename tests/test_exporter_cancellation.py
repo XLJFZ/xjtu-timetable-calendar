@@ -185,7 +185,12 @@ def test_uid_absent_from_baseline_is_dropped_and_warned(tmp_path: Path) -> None:
         )
 
     assert "STATUS:CANCELLED" not in result.ics
-    assert any("无法安全下发撤销" in rec.getMessage() for rec in records)
+    msgs = [rec.getMessage() for rec in records if "无法安全下发撤销" in rec.getMessage()]
+    assert msgs
+    # Important 3（Task 12 修复轮）：这条日志在 rotate 的**只读探针**与 publish 失败两条
+    # 路径上说的"已移出台账"是假话——那一轮台账根本没有被剪。句子只能描述本次渲染的决定
+    # （候选不在留底 ⇒ SEQUENCE:0 ⇒ 客户端忽略 ⇒ 本次不发），不许断言台账记账。
+    assert not any("移出台账" in msg for msg in msgs)
     assert result.exam_ledger_text is not None
     assert entries[0].uid not in result.exam_ledger_text
 

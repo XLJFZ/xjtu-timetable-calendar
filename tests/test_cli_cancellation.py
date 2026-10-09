@@ -354,6 +354,9 @@ def test_rotate_warns_before_changing_token(tmp_path, monkeypatch, capsys):
     # `test_rotate_warning_tracks_the_retained_artifact`（留底不认 UID 的那一侧）。
     # 本条守的是另一半：数字不许凭空出现、时序、以及台账写的是台账文本。
     assert "本次有 1 条" in out
+    # 控制器裁决（Task 12 修复轮）：rotate 发布成功后与 push 同口径打撤销摘要，
+    # 「前置警告的条数 == 实发条数 == 摘要行报的条数」三个数字必须一致。
+    assert "撤销：1 条" in out
     assert len(shipped) == 1
     assert shipped[0].count("STATUS:CANCELLED") == 1
     # rotate 写的台账：是**台账文本**而不是产物文本（D10/D22：台账永远没有 SEQUENCE），
@@ -389,17 +392,23 @@ def test_rotate_warning_tracks_the_retained_artifact(tmp_path, monkeypatch, caps
 
 
 def test_rotate_stays_silent_for_a_never_published_subscription(tmp_path, monkeypatch, capsys):
-    """Minor 3：只跑过 `export`（建了台账）、从没发布成功的用户不该被警告。
+    """Minor 3：只跑过 `export`（建了台账）、从没发布成功的用户不该被**换 token 前的警告**。
 
     警告讲的是"旧订阅地址从此收不到撤销"，而这条地址上从没挂过任何事件。真实渲染照旧
     把撤销发出去（留底在场、基线认这个 UID），所以"没警告"不是因为"没得撤销"。
+
+    Task 12 修复轮（控制器裁决）：rotate 发布成功后要与 push 同口径打撤销摘要——本场景
+    实发 1 条，摘要行**必须**出现；这条用例守的是 D12 前置警告（只识别有该警告的句子），
+    而不是"rotate 永远不提撤销"。
     """
     cfg = _ready_for_rotate(tmp_path, monkeypatch, published=False)
     shipped: list[str] = []
     _stub_publish(monkeypatch, shipped=shipped)
 
     assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
-    assert "撤销" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "永远收不到撤销" not in out  # D12 前置警告被 last_push 闸门挡住
+    assert "撤销：1 条" in out  # 发布成功后的摘要与 push 同口径（实发 1 条）
     assert len(shipped) == 1 and "STATUS:CANCELLED" in shipped[0]
     # 撤销已下发、条目照旧在台账里排队 ⇒ "没警告"是闸门生效，不是"这条链路没跑"。
     ledger = cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8")

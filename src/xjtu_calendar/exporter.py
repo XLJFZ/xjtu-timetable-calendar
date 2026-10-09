@@ -905,11 +905,13 @@ def build_ics_for_semester(
                 now=cancel_expiry_at or now_local(),
             )
             # D20：留底/基线里没有该 UID ⇒ 客户端握着更高序号会忽略 `SEQUENCE:0` 的撤销，
-            # 发了等于没发、还永久毁掉台账记录；宁可不撤销。只报 UID，不带个人数据。
+            # 发了等于没发；宁可不撤销。只报 UID，不带个人数据。日志只描述**本次渲染**
+            # 的决定：rotate 的只读探针与 publish 失败两条路径上台账并未被剪，
+            # 不许在文案里替调用方断言台账记账（Task 12 修复轮 Important 3）。
             for item in unresolvable:
                 logger.warning(
                     "考试 %s 无法安全下发撤销（发布留底里没有这个 UID，序号只能从 0 起，"
-                    "客户端会忽略更低的序号），本次放弃并已移出台账",
+                    "客户端会忽略更低的序号），本次不随产物下发这条撤销",
                     item.uid,
                 )
             cancellation_events = build_cancellation_events(deliverable)

@@ -54,6 +54,7 @@ from .logging_setup import get_logger, setup_logging
 if TYPE_CHECKING:
     # cmd_subscribe 各分支内部惰性 `from . import subscribe`；这里只为类型标注。
     from . import subscribe
+    from .exporter import ExportResult
     from .fetcher import Endpoint
 
 __all__ = ["build_parser", "main"]
@@ -629,6 +630,22 @@ def _write_exam_ledger(cfg: Settings, semester: str, text: str) -> None:
     logger.debug("考试台账已更新：%s", path)
 
 
+def _print_publish_cancellation_summary(result_ics: ExportResult) -> None:
+    """发布成功后的撤销摘要（spec §6.8）：`N == 0` 时整行不打印。
+
+    push 与 rotate 两条发布路径**共用**这一份文案（控制器裁决：报数口径要一致，
+    不许各自发明措辞）。数量读 `info["exam_cancellations"]`——本次随产物真正
+    下发的撤销条数（被 D20 判为不可发的不在其中）；只在 publish 成功之后调用
+    （D11：没发出去就不许报"已撤销"）。
+    """
+    cancelled = int(str(result_ics.info.get("exam_cancellations", 0)))
+    if cancelled:
+        print(
+            f"撤销：{cancelled} 条（已发布的考试事件在本次产物中标记为取消，"
+            "支持删除的客户端会移除它们；一次性导入的客户端仍需手动删除）"
+        )
+
+
 def _payload_size(payload: object) -> int:
     if isinstance(payload, list):
         return len(payload)
@@ -1115,13 +1132,25 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
             marker = exam_markers.get(exam_change.kind, "~")
             print(f"  {marker} {describe_exam_change(exam_change)}")
         print()
-        if any(exam_change.kind == EXAM_KIND_CANCELLED for exam_change in exam_diff.changes):
+        cancelling = [
+            exam_change
+            for exam_change in exam_diff.changes
+            if exam_change.kind == EXAM_KIND_CANCELLED
+        ]
+        if cancelling:
+            # spec D13 后半句：摘要行预告下次发布将撤销的条数——只数取消类变更，
+            # 措辞用「将」：diff 是发布前的预览，此刻什么都没发生（§6.8）。
+            print(f"本次将撤销：{len(cancelling)} 条（已发布考试事件将在下次产物中标记为取消）")
+            print()
             # spec D13（docs/design/2026-10-09-exam-cancellation.md）：取消会以
-            # STATUS:CANCELLED 真的下发；但一次性导入型客户端不会回源，那半句照旧要说。
+            # STATUS:CANCELLED 真的下发；但一次性导入型客户端不回源，那半句照旧要说。
+            # 术语与 README「已知边界」一致："不再回源"是一次性导入客户端的特征（它们
+            # 恰恰不会自动移除）；会自动移除的是会定期回源拉取的订阅客户端——实机表现
+            # 未验证（spec §11/D5），所以只说"通常会"，不把话说满。
             print(
                 "注意：本次 diff 报出的取消会在下次 export/subscribe push 时以 "
-                "STATUS:CANCELLED 下发；不再回源的订阅客户端会自动移除，"
-                "而一次性导入的客户端（部分国产 ROM 系统日历）仍需手动删除。"
+                "STATUS:CANCELLED 下发；会定期回源拉取的订阅客户端通常会随之移除，"
+                "而一次性导入后不再回源的客户端（部分国产 ROM 系统日历）仍需手动删除。"
             )
             print()
 
@@ -1284,12 +1313,7 @@ def _subscribe_push(
     if result_ics.exam_ledger_text is not None:
         _write_exam_ledger(cfg, semester, result_ics.exam_ledger_text)
     print(f"已发布：{res.url}")
-    cancelled = int(str(result_ics.info.get("exam_cancellations", 0)))
-    if cancelled:
-        print(
-            f"撤销：{cancelled} 条（已发布的考试事件在本次产物中标记为取消，"
-            "支持删除的客户端会移除它们；一次性导入的客户端仍需手动删除）"
-        )
+    _print_publish_cancellation_summary(result_ics)
     return 0
 
 
@@ -1384,6 +1408,9 @@ def _subscribe_rotate(
     if result_ics.exam_ledger_text is not None:
         _write_exam_ledger(cfg, semester, result_ics.exam_ledger_text)
     print("已用新文件名重新发布。")
+    # 与 push 同口径的撤销摘要（控制器裁决：两条发布路径报数一致）；同样只在
+    # publish 成功之后打印（D11），`N == 0` 时整行不打印。
+    _print_publish_cancellation_summary(result_ics)
     return 0
 
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date
 
-from exam_support import STAMP
+from exam_support import STAMP, captured_logs
 
-from xjtu_calendar.exams import LedgerEntry, render_exam_ledger
+from xjtu_calendar.exams import LedgerEntry, load_exam_ledger, render_exam_ledger
 from xjtu_calendar.exporter import render_ics
 from xjtu_calendar.models import CalendarEvent
 from xjtu_calendar.schedules import combine
@@ -101,3 +101,45 @@ def test_render_exam_ledger_orders_by_start_then_uid():
     entries = [entry("b", date(2030, 6, 20)), entry("a", date(2030, 6, 17))]
     text = render_exam_ledger([], entries, dtstamp=STAMP)
     assert text.index("UID:a") < text.index("UID:b")
+
+
+def test_ledger_round_trip_keeps_uids_and_aware_times():
+    entries = [entry("a", date(2030, 6, 17)), entry("b", date(2030, 6, 20))]
+    back = load_exam_ledger(render_exam_ledger([], entries, dtstamp=STAMP))
+    assert sorted(back) == ["a", "b"]
+    assert back["a"].start.tzinfo is not None, "读回 naive 会让 D9 的比较 TypeError"
+    assert back["a"].start == entries[0].start
+    assert back["a"].location == "兴庆 A-1001"
+
+
+def test_load_exam_ledger_drops_naive_entries():
+    """手工造一条 `DTSTART;VALUE=DATE` 式的无 tz 行：必须丢弃并 warning，不许抛。"""
+    text = (
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:x\r\nBEGIN:VEVENT\r\n"
+        "UID:naive\r\nDTSTART:20300617T150000\r\nDTEND:20300617T173000\r\n"
+        "SUMMARY:无 tz\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+    )
+    with captured_logs() as records:
+        got = load_exam_ledger(text)
+    assert got == {}
+    assert any("naive" in rec.getMessage() or "时区" in rec.getMessage() for rec in records)
+
+
+def test_load_exam_ledger_survives_garbage_text():
+    """spec D15：台账坏文本 ⇒ 当作没有台账，一条 warning，绝不炸穿导出。"""
+    with captured_logs() as records:
+        assert load_exam_ledger("BEGIN:VCALENDAR\r\n\xff\xfe 不是 ICS") == {}
+    assert any("台账" in rec.getMessage() for rec in records)
+
+
+def test_load_exam_ledger_keeps_first_of_duplicate_uids():
+    one = render_exam_ledger([], [entry("a", date(2030, 6, 17))], dtstamp=STAMP)
+    two = one.replace("示例课程a", "后来的形态")
+    merged = one.replace("\r\nEND:VCALENDAR\r\n", "") + two.replace(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n", ""
+    )
+    got = load_exam_ledger(merged)
+    assert len(got) == 1
+    # 计划稿这里写的是 `== "示例课程a"`，但固件 `entry()` 的 summary 带「（结课考试）」后缀；
+    # 按本用例声明的不变量「保留第一条」断言完整的第一条 summary。
+    assert got["a"].summary == "示例课程a（结课考试）"

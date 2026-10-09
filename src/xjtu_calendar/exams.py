@@ -577,6 +577,60 @@ def render_exam_ledger(
     return raw.decode("utf-8")
 
 
+def _optional_text(value: object) -> str | None:
+    """icalendar 属性值 → 可选文本（空值一律 ``None``，与渲染端的条件化对齐）。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def load_exam_ledger(text: str) -> dict[str, LedgerEntry]:
+    """台账文本 → ``{UID: LedgerEntry}``。
+
+    **不抛异常**（spec D15）：不可解析 ⇒ 一条 warning + 空 dict，调用方按"没有台账"继续。
+    丢弃：无 UID、起止缺失或相等、**起止为 naive datetime**（spec D22：D9 要和 aware
+    墙钟比较，naive 值会 ``TypeError``）、重复 UID（保留第一条）。
+    """
+    from icalendar import Calendar
+
+    try:
+        cal = Calendar.from_ical(text)
+    except Exception as exc:  # 截断、编码坏、结构走样都归这一类
+        logger.warning("考试台账不可解析，本次按没有台账处理：%s", exc)
+        return {}
+
+    entries: dict[str, LedgerEntry] = {}
+    for component in cal.walk("VEVENT"):
+        uid = str(component.get("uid") or "").strip()
+        if not uid:
+            logger.warning("考试台账里有一条没有 UID，已丢弃")
+            continue
+        if uid in entries:
+            logger.warning("考试台账里 UID 重复：%s，保留第一条", uid)
+            continue
+        start = getattr(component.get("dtstart"), "dt", None)
+        end = getattr(component.get("dtend"), "dt", None)
+        if not isinstance(start, datetime) or not isinstance(end, datetime):
+            logger.warning("考试台账条目 %s 的起止不是 DATE-TIME，已丢弃", uid)
+            continue
+        if start.tzinfo is None or end.tzinfo is None:
+            logger.warning("考试台账条目 %s 的起止没有时区，已丢弃（否则保留期比较会失败）", uid)
+            continue
+        if end <= start:
+            logger.warning("考试台账条目 %s 的结束不晚于开始，已丢弃", uid)
+            continue
+        entries[uid] = LedgerEntry(
+            uid=uid,
+            start=start,
+            end=end,
+            summary=str(component.get("summary") or ""),
+            location=_optional_text(component.get("location")),
+            description=_optional_text(component.get("description")),
+        )
+    return entries
+
+
 def build_exam_events(exams: Sequence[ExamSchedule], semester_key: str) -> list[CalendarEvent]:
     """考试 → 单场、绝对时刻、无 RRULE / 无 VALARM 的 VEVENT。"""
     events: list[CalendarEvent] = []

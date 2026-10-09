@@ -694,6 +694,33 @@ def cancel_candidates(
     return sorted(deliverable, key=key), sorted(unresolvable, key=key)
 
 
+#: 撤销事件的 ``STATUS`` 值。台账里**不**写这个字段（spec D10）。
+EXAM_STATUS_CANCELLED = "CANCELLED"
+
+
+def build_cancellation_events(entries: Sequence[LedgerEntry]) -> list[CalendarEvent]:
+    """台账条目 → 待发布的撤销事件（最小字段，spec D3）。
+
+    UID **照抄不重算**：撤销的全部前提就是复用已发布出去的那个 UID，客户端按 UID 匹配
+    才谈得上删除。``summary=""`` 配合 :func:`xjtu_calendar.exporter.render_ics` 的条件化
+    即"不写 SUMMARY 行"（实测 ``add("summary", "")`` 会写出空值行）。
+    顺序保持调用方给的全序，本函数不重排。
+    """
+    return [
+        CalendarEvent(
+            uid=item.uid,
+            summary="",
+            start=item.start,
+            end=item.end,
+            location=None,
+            description=None,
+            meeting=None,
+            status=EXAM_STATUS_CANCELLED,
+        )
+        for item in entries
+    ]
+
+
 def build_exam_events(exams: Sequence[ExamSchedule], semester_key: str) -> list[CalendarEvent]:
     """考试 → 单场、绝对时刻、无 RRULE / 无 VALARM 的 VEVENT。"""
     events: list[CalendarEvent] = []

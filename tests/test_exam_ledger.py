@@ -8,7 +8,9 @@ from datetime import date
 from exam_support import STAMP, captured_logs
 
 from xjtu_calendar.exams import (
+    EXAM_STATUS_CANCELLED,
     LedgerEntry,
+    build_cancellation_events,
     cancel_candidates,
     load_exam_ledger,
     render_exam_ledger,
@@ -252,3 +254,20 @@ def test_total_order_by_start_then_uid():
         ledger=ledger, live_uids=set(), baseline_uids={"a", "b", "c"}, now=NOW
     )
     assert [e.uid for e in deliverable] == ["c", "a", "b"]  # 同日按 uid 升序，全序
+
+
+def test_cancellation_event_copies_uid_and_times_verbatim():
+    src = entry("a", date(2030, 6, 17))
+    (event,) = build_cancellation_events([src])
+    assert event.uid == src.uid
+    assert event.start == src.start and event.end == src.end
+    assert event.status == EXAM_STATUS_CANCELLED
+    # spec D3：最小字段。考场/座位/教师都不再公开。
+    assert event.summary == ""
+    assert event.location is None
+    assert event.description is None
+
+
+def test_cancellation_events_keep_input_order():
+    entries = [entry("b", date(2030, 6, 20)), entry("a", date(2030, 6, 17))]
+    assert [e.uid for e in build_cancellation_events(entries)] == ["b", "a"]

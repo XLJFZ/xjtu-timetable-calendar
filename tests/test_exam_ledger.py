@@ -238,14 +238,36 @@ def test_expired_entries_are_not_cancelled():
     assert deliverable == [] and unresolved == []
 
 
-def test_missing_from_baseline_is_unresolvable_not_emitted():
-    """spec D20：基线里没有该 UID ⇒ resolve_sequence 会给 0，宁可不撤销。"""
-    ledger = ledger_of(("ghost", date(2030, 6, 17)))
+def test_expired_and_baseline_missing_lands_in_neither_list():
+    """筛子顺序是承重的：过期判定必须在基线判定**之前**。
+
+    既已过原定时刻（相对 ``NOW`` 是 2030-05-01）又不在基线里的条目，两个返回列表
+    都不许出现 ⇒ 它安静地退出台账，永远不会被发布。若把基线检查挪到过期检查前面，
+    这条会进 ``unresolvable``：调用方按 D20 给它记「无法安全下发」的 warning，
+    而 spec 对过期条目的口径（D2/D9）是「什么都不发」。上面两个用例各自只踩中
+    一道筛子（past 在基线里、ghost 未过期），都拦不住这次换位 —— 本用例是唯一的钉子。
+    """
+    ledger = ledger_of(("gone", date(2030, 5, 1)))
     deliverable, unresolved = cancel_candidates(
         ledger=ledger, live_uids=set(), baseline_uids=set(), now=NOW
     )
     assert deliverable == []
-    assert [e.uid for e in unresolved] == ["ghost"]
+    assert unresolved == []
+
+
+def test_missing_from_baseline_is_unresolvable_not_emitted():
+    """spec D20：基线里没有该 UID ⇒ resolve_sequence 会给 0，宁可不撤销。
+
+    喂两条同日条目且**逆序**插入台账 dict：``unresolvable`` 必须和 ``deliverable``
+    一样按 ``(start, uid)`` 全序排好，否则发布产物的字节不稳定（台账 dict 按插入序
+    返回，删掉那处 ``sorted`` 时只有本用例会红）。
+    """
+    ledger = ledger_of(("ghost-b", date(2030, 6, 17)), ("ghost-a", date(2030, 6, 17)))
+    deliverable, unresolved = cancel_candidates(
+        ledger=ledger, live_uids=set(), baseline_uids=set(), now=NOW
+    )
+    assert deliverable == []
+    assert [e.uid for e in unresolved] == ["ghost-a", "ghost-b"]
 
 
 def test_total_order_by_start_then_uid():

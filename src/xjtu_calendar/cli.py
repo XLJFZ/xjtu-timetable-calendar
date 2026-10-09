@@ -1276,7 +1276,18 @@ def _subscribe_push(
     # newline=""：留底必须与远端产物字节一致（CRLF 完整），否则下次把它当
     # SEQUENCE 基线读回、以及 status 的 sha 比对都会错位（同 cmd_export）。
     last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
+    # 台账与留底**同一时刻**更新（spec D11）：publish 失败或 NO_CHANGE 都在上面
+    # 提前离开，走不到这里；`None`（门槛没过 / --no-exams）不创建也不改写文件。
+    # 写失败只 warning（D24①），不改 push 的退出码。
+    if result_ics.exam_ledger_text is not None:
+        _write_exam_ledger(cfg, semester, result_ics.exam_ledger_text)
     print(f"已发布：{res.url}")
+    cancelled = int(str(result_ics.info.get("exam_cancellations", 0)))
+    if cancelled:
+        print(
+            f"撤销：{cancelled} 条（已发布的考试事件在本次产物中标记为取消，"
+            "支持删除的客户端会移除它们；一次性导入的客户端仍需手动删除）"
+        )
     return 0
 
 

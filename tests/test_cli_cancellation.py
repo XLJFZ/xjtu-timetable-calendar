@@ -15,9 +15,10 @@ from exam_support import (
     write_ledger,
 )
 
-from xjtu_calendar import fileutil, subscribe
+from xjtu_calendar import cli, fileutil, subscribe
 from xjtu_calendar.cli import main
 from xjtu_calendar.config import Settings
+from xjtu_calendar.errors import XjtuCalendarError
 from xjtu_calendar.fetcher import save_raw
 
 
@@ -54,7 +55,13 @@ def _register(cfg: Settings) -> None:
 
 
 def _stub_publish(monkeypatch: pytest.MonkeyPatch, outcome=None) -> list[str]:
-    """真 publish 要动 git；这里换成 no-op，并把调用记进 order 以便断言时序。"""
+    """真 publish 要动 git；这里换成 no-op，并把调用记进 order 以便断言时序。
+
+    R2 口径：台账这一侧**套壳并转调**——先记 ``"ledger-write"`` 再调真实的
+    ``cli._write_exam_ledger`` 让它真的落盘。这样 ``order == ["publish", "ledger-write"]``
+    描述的是一次真实发生过的写盘；把被测函数 stub 掉的话，两条时序/字节断言
+    都会变成空话（bytes 无论写在哪都不会变）。
+    """
     order: list[str] = []
     monkeypatch.setattr(
         subscribe,
@@ -68,6 +75,13 @@ def _stub_publish(monkeypatch: pytest.MonkeyPatch, outcome=None) -> list[str]:
             )
         ),
     )
+    real_write_ledger = cli._write_exam_ledger
+
+    def write_and_record(cfg, semester, text):
+        order.append("ledger-write")
+        real_write_ledger(cfg, semester, text)
+
+    monkeypatch.setattr(cli, "_write_exam_ledger", write_and_record)
     return order
 
 
@@ -150,4 +164,66 @@ def test_export_summary_reports_cancellations(tmp_path, monkeypatch, capsys):
 def test_export_summary_omits_zero_cancellations(tmp_path, monkeypatch, capsys):
     cfg = _env(tmp_path, monkeypatch)
     assert _export(cfg) == 0
+    assert "撤销" not in capsys.readouterr().out
+
+
+def test_push_writes_ledger_after_publish_succeeds(tmp_path, monkeypatch):
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg)
+    order = _stub_publish(monkeypatch)
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert order == ["publish", "ledger-write"]  # D11：先发布成功，再动留底与台账
+
+
+def test_push_failure_leaves_ledger_untouched(tmp_path, monkeypatch):
+    """D11 的反证：把台账写入挪到 publish 之前，这条立刻红。
+
+    R2 裁决：不 stub `_write_exam_ledger`——让**真**函数在场。台账文本的 DTSTAMP
+    跟着课表快照 mtime 走、与固件的固定 2030-01-01 不同，真写一次字节必变；
+    若把函数打桩掉，bytes 无论写在哪都不会变，断言就成了空话。
+    """
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg)
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    before = ledger.read_bytes()
+
+    def blow_up(_cfg, _state, _ics):
+        raise XjtuCalendarError("远端拒绝")
+
+    monkeypatch.setattr(subscribe, "publish", blow_up)
+    main(["subscribe", "push", "--semester", SEMESTER])
+    assert ledger.read_bytes() == before
+
+
+def test_no_change_push_leaves_ledger_untouched(tmp_path, monkeypatch):
+    """NO_CHANGE 早退（`cli.py:1249-1251`）时台账同样不写：此时台账本来也未变。"""
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg)
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    _stub_publish(monkeypatch, outcome=subscribe.PublishOutcome.NO_CHANGE)
+    before = ledger.read_bytes()
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert ledger.read_bytes() == before
+
+
+def test_push_summary_reports_pending_cancellations(tmp_path, monkeypatch, capsys):
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg)
+    _stub_publish(monkeypatch)
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "撤销：1 条" in out
+    assert "一次性导入" in out  # 不许把话说满：这类客户端仍不会自动删
+
+
+def test_push_summary_omits_zero_cancellations(tmp_path, monkeypatch, capsys):
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg)
+    cfg.exam_ledger_path(SEMESTER).unlink()  # 没有台账 ⇒ 没什么可撤销
+    _stub_publish(monkeypatch)
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     assert "撤销" not in capsys.readouterr().out

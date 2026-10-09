@@ -58,6 +58,22 @@ def entry(uid: str, day: date, start: str = "15:00", end: str = "17:30") -> Ledg
     )
 
 
+#: 合成"私密"标记（不是真实课程名）：日志泄漏用例靠它判断 warning 有没有复读台账原文。
+PRIVATE_MARKER = "私密课程名ZZ"
+
+
+def ledger_doc(*event_bodies: str) -> str:
+    """把若干 VEVENT 体（不含 `BEGIN/END:VEVENT` 行）拼进同一个 VCALENDAR。
+
+    喂给读取端的坏数据要**结构合法**才走得到逐条丢弃那条路，所以这里只拼外壳。
+    """
+    parts = ["BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:x\r\n"]
+    for body in event_bodies:
+        parts.append(f"BEGIN:VEVENT\r\n{body}END:VEVENT\r\n")
+    parts.append("END:VCALENDAR\r\n")
+    return "".join(parts)
+
+
 def test_render_exam_ledger_is_minimal_but_parseable():
     text = render_exam_ledger([], [entry("a", date(2030, 6, 17))], dtstamp=STAMP)
     assert text.startswith("BEGIN:VCALENDAR\r\n")
@@ -143,3 +159,49 @@ def test_load_exam_ledger_keeps_first_of_duplicate_uids():
     # 计划稿这里写的是 `== "示例课程a"`，但固件 `entry()` 的 summary 带「（结课考试）」后缀；
     # 按本用例声明的不变量「保留第一条」断言完整的第一条 summary。
     assert got["a"].summary == "示例课程a（结课考试）"
+
+
+def test_load_exam_ledger_drops_poisoned_entry_and_keeps_the_rest():
+    """spec D15 的另一半：属性值是**延迟解码**的 ⇒ `from_ical` 不炸、读 `.dt` 才炸。
+
+    这种条目必须逐条丢弃（其余照常返回），既不许抛异常，也不许把整本台账降级成 `{}`。
+    """
+    text = ledger_doc(
+        f"UID:bad\r\nDTSTART;VALUE=DATE-TIME:{PRIVATE_MARKER}\r\n",
+        "UID:good\r\nDTSTART:20300617T150000Z\r\nDTEND:20300618T150000Z\r\nSUMMARY:ok\r\n",
+    )
+    with captured_logs() as records:
+        got = load_exam_ledger(text)
+    assert sorted(got) == ["good"], "一条坏数据不该带走整本台账"
+    assert got["good"].start.tzinfo is not None
+    assert any("bad" in rec.getMessage() for rec in records), "丢弃要能定位到 UID"
+
+
+def test_load_exam_ledger_drops_entry_with_multiple_uid_lines():
+    """两条 `UID` 行 ⇒ icalendar 返回 list，`str()` 出来是 `[vText(b'one'), ...]` 式的垃圾键。
+
+    非单个文本的 UID 与没有 UID 同罪：丢弃 + warning，不许留成假条目。
+    """
+    text = ledger_doc(
+        "UID:one\r\nUID:two\r\nDTSTART:20300617T150000Z\r\nDTEND:20300618T150000Z\r\n"
+    )
+    with captured_logs() as records:
+        got = load_exam_ledger(text)
+    assert got == {}
+    assert any("UID" in rec.getMessage() for rec in records)
+
+
+def test_load_exam_ledger_warnings_hide_ledger_text():
+    """spec §8「日志不打印台账内容」：icalendar 的报错逐字引用原文，日志不能跟着复读。
+
+    两条降级路径（整篇不可解析 / 单条读不出）都要喂进 `PRIVATE_MARKER`，
+    断言抓到的每条 warning 渲染结果里都没有它，也没带 traceback。
+    """
+    whole_doc = f"BEGIN:VCALENDAR\r\n\xff\xfe 不是 ICS {PRIVATE_MARKER}"
+    entry_doc = ledger_doc(f"UID:bad\r\nDTSTART;VALUE=DATE-TIME:{PRIVATE_MARKER}\r\n")
+    with captured_logs() as records:
+        assert load_exam_ledger(whole_doc) == {}
+        assert load_exam_ledger(entry_doc) == {}
+    assert records, "两条降级路径都该留下 warning"
+    assert [rec.getMessage() for rec in records if PRIVATE_MARKER in rec.getMessage()] == []
+    assert not any(rec.exc_info for rec in records), "exc_info 会把原文带进 traceback"

@@ -588,46 +588,73 @@ def _optional_text(value: object) -> str | None:
 def load_exam_ledger(text: str) -> dict[str, LedgerEntry]:
     """台账文本 → ``{UID: LedgerEntry}``。
 
-    **不抛异常**（spec D15）：不可解析 ⇒ 一条 warning + 空 dict，调用方按"没有台账"继续。
-    丢弃：无 UID、起止缺失或相等、**起止为 naive datetime**（spec D22：D9 要和 aware
-    墙钟比较，naive 值会 ``TypeError``）、重复 UID（保留第一条）。
+    **不抛异常**（spec D15），但两条降级路径要分清：
+
+    - 整篇不可解析 ⇒ 一条 warning + 空 dict，调用方按"没有台账"继续；
+    - 单条 VEVENT 读不出 ⇒ 一条 warning + **只丢那一条**，其余照常返回。
+      这一条不是可选优化：本版本的 icalendar 把属性值解码推迟到访问时，
+      结构合法的文档也能在 ``component.get("dtstart").dt`` 上抛
+      ``BrokenCalendarProperty``，所以逐条读取整体包在 try 里。
+
+    两条路径的 warning 都只报**失败种类**（异常类名），绝不带台账原文
+    ——spec §8「日志不打印台账内容」，而 icalendar 的报错信息会逐字引用原文。
+    丢弃：UID 缺失或不是单个文本、起止缺失或相等、**起止为 naive datetime**
+    （spec D22：D9 要和 aware 墙钟比较，naive 值会 ``TypeError``）、重复 UID（保留第一条）。
     """
     from icalendar import Calendar
 
     try:
         cal = Calendar.from_ical(text)
     except Exception as exc:  # 截断、编码坏、结构走样都归这一类
-        logger.warning("考试台账不可解析，本次按没有台账处理：%s", exc)
+        # 只报类名：``str(exc)`` 会把台账原文（含课程名/地点）整段带进日志。
+        logger.warning("考试台账整篇不可解析，本次按没有台账处理（%s）", type(exc).__name__)
         return {}
 
     entries: dict[str, LedgerEntry] = {}
     for component in cal.walk("VEVENT"):
-        uid = str(component.get("uid") or "").strip()
-        if not uid:
-            logger.warning("考试台账里有一条没有 UID，已丢弃")
-            continue
-        if uid in entries:
-            logger.warning("考试台账里 UID 重复：%s，保留第一条", uid)
-            continue
-        start = getattr(component.get("dtstart"), "dt", None)
-        end = getattr(component.get("dtend"), "dt", None)
-        if not isinstance(start, datetime) or not isinstance(end, datetime):
-            logger.warning("考试台账条目 %s 的起止不是 DATE-TIME，已丢弃", uid)
-            continue
-        if start.tzinfo is None or end.tzinfo is None:
-            logger.warning("考试台账条目 %s 的起止没有时区，已丢弃（否则保留期比较会失败）", uid)
-            continue
-        if end <= start:
-            logger.warning("考试台账条目 %s 的结束不晚于开始，已丢弃", uid)
-            continue
-        entries[uid] = LedgerEntry(
-            uid=uid,
-            start=start,
-            end=end,
-            summary=str(component.get("summary") or ""),
-            location=_optional_text(component.get("location")),
-            description=_optional_text(component.get("description")),
-        )
+        uid = ""
+        try:
+            raw_uid = component.get("uid")
+            # 一个 VEVENT 写了两条 `UID` 时 icalendar 返回 list，`str()` 出来是
+            # `[vText(b'one'), vText(b'two')]` 这种垃圾键；非单个文本与没有 UID 同罪。
+            if not isinstance(raw_uid, str):
+                logger.warning("考试台账里有一条的 UID 不是单个文本，已丢弃")
+                continue
+            uid = raw_uid.strip()
+            if not uid:
+                logger.warning("考试台账里有一条没有 UID，已丢弃")
+                continue
+            if uid in entries:
+                logger.warning("考试台账里 UID 重复：%s，保留第一条", uid)
+                continue
+            start = getattr(component.get("dtstart"), "dt", None)
+            end = getattr(component.get("dtend"), "dt", None)
+            if not isinstance(start, datetime) or not isinstance(end, datetime):
+                logger.warning("考试台账条目 %s 的起止不是 DATE-TIME，已丢弃", uid)
+                continue
+            if start.tzinfo is None or end.tzinfo is None:
+                logger.warning(
+                    "考试台账条目 %s 的起止没有时区，已丢弃（否则保留期比较会失败）", uid
+                )
+                continue
+            if end <= start:
+                logger.warning("考试台账条目 %s 的结束不晚于开始，已丢弃", uid)
+                continue
+            entries[uid] = LedgerEntry(
+                uid=uid,
+                start=start,
+                end=end,
+                summary=str(component.get("summary") or ""),
+                location=_optional_text(component.get("location")),
+                description=_optional_text(component.get("description")),
+            )
+        except Exception as exc:
+            # 属性延迟解码才炸（BrokenCalendarProperty 等）：丢这一条，别的照留。
+            # 同样只报类名 + UID，UID 之外的台账内容一个字都不进日志（spec §8）。
+            if uid:
+                logger.warning("考试台账条目 %s 读不出（%s），已丢弃", uid, type(exc).__name__)
+            else:
+                logger.warning("考试台账里有一条读不出（%s），已丢弃", type(exc).__name__)
     return entries
 
 

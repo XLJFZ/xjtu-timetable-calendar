@@ -395,8 +395,10 @@ def _exam_key(exam: ExamSchedule) -> str:
     这里刻意不调用"看起来一样"的第二份配方，而是直接复用 :func:`_uid_token`
     （``WID`` → ``KSRWID`` → ``课程号|KSDM|日期|开始|结束`` 组合）：两条配方一旦分叉
     （例如键里不写 ``KSDM`` 与结束时刻），缺 ``WID`` 的行会被报成「时间变更」，
-    而它在导出时带着的是**新 UID** —— v1 没有 ``STATUS:CANCELLED`` / ``METHOD:CANCEL``
-    通路（§7.1），旧事件会永久留在每个订阅者的日历里。同源之后这类行只会报成
+    而它在导出时带着的是**新 UID** —— 旧 UID 自 v0.6 起由撤销通路
+    （``docs/design/2026-10-09-exam-cancellation.md``）以 ``STATUS:CANCELLED`` 下发，
+    不再"永久留在每个订阅者的日历里"；但客户端行为不一，一次性导入型客户端
+    （部分国产 ROM 系统日历）仍需手动删除。同源之后这类行只会报成
     取消 + 新增：diff 不承诺它做不到的原地更新。
 
     调用时刻意传 ``announce=False``：这里用 ``_uid_token`` 只是为了**取配对键**，不是要

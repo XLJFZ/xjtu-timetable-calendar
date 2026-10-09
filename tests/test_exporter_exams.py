@@ -1,8 +1,10 @@
 """考试事件并进同一份 .ics（设计文档 §6.5）。
 
 合并点是整个特性的**收口处**：课程侧的 ``seen_uids`` 去重只管课程，考试事件是在
-它外面并进来的；``summarize``/``date_range`` 只吃课程，``sequence_stats`` 却**必须**
-吃合并后的全集；考试侧任何失败都只准降级，不准让导出非零退出（§7）。
+它外面并进来的；``summarize``/``date_range`` 只吃课程，``sequence_stats`` 吃的是
+「课程 + live 考试」（**不含撤销条目**，``docs/design/2026-10-09-exam-cancellation.md``
+D23；撤销数量单独走 ``info["exam_cancellations"]``）；考试侧任何失败都只准降级，
+不准让导出非零退出（§7）。
 下面每条用例都按这些约束逐个证伪。
 """
 
@@ -216,7 +218,9 @@ def test_non_utf8_exam_snapshot_degrades_and_export_exits_zero(tmp_path, monkeyp
 
 
 def test_sequence_stats_see_exam_events(tmp_path):
-    """R1：``sequence_stats`` 必须吃合并后的全集（§6.5:311）。
+    """R1：``sequence_stats`` 吃「课程 + live 考试」（§6.5:311；D23 起撤销条目不进
+    stats，撤销数量走 ``info["exam_cancellations"]``，见
+    ``docs/design/2026-10-09-exam-cancellation.md``）。
 
     简报原写法证伪不了任何东西：无基线时 ``sequence_stats`` 恒为 ``None``
     （``exporter.py:685-700``），断言 ``is not None`` **必红**；放宽成 ``added >= 1``
@@ -247,8 +251,9 @@ def test_sequence_stats_see_exam_events(tmp_path):
 def test_rescheduled_exam_keeps_its_uid_and_bumps_sequence(tmp_path):
     """R5（§9:450-452）：同 ``WID``、不同 ``KSSJMS`` → UID 不变、SEQUENCE +1。
 
-    v1 没有取消通路（§7.1），改期**只能**靠同 UID 原地更新；一旦 UID 变了，
-    订阅端就会留下一场从没发生过的旧考试时间 —— 本特性最糟的用户可见故障。
+    撤销通路上线后（`docs/design/2026-10-09-exam-cancellation.md`）改期**仍只能**靠同
+    UID 原地更新：一旦 UID 变了，旧条目虽会以 ``STATUS:CANCELLED`` 下发，但一次性导入型
+    客户端不会回源，仍留下一场从没发生过的旧考试时间 —— 依然是本特性最糟的用户可见故障。
     """
     cfg = make_home(tmp_path, semester=SEMESTER)
     save_raw(exam_payload([exam_row(WID="RESCH-1")]), cfg, SEMESTER, kind="exams")

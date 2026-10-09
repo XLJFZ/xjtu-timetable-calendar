@@ -189,8 +189,9 @@ def test_composite_fallback_key_carries_the_same_fields_as_the_uid_recipe(over):
 
     两侧都没有 WID / KSRWID 时，UID 落到 `KCH|KSDM|KSRQ|开始|结束` 组合；键若少了
     `KSDM` 或结束时刻，diff 会报出一条现实中不存在的「时间变更」——那条变更对应的其实是
-    **新 UID**，而 v1 没有 `STATUS:CANCELLED` / `METHOD:CANCEL` 通路（§7.1），旧事件会
-    永久留在每个订阅者的日历里。键与 UID 同源之后，这种行只会报成 取消 + 新增。
+    **新 UID**。自 `docs/design/2026-10-09-exam-cancellation.md`（撤销通路）起，旧 UID 会以
+    `STATUS:CANCELLED` 下发、不再永久留在订阅端日历里，但把它错报成「原地更新」仍然是假话。
+    键与 UID 同源之后，这种行只会报成 取消 + 新增。
     """
     old = _exams(exam_row(WID="", KSRWID=""))[0]
     new = _exams(exam_row(WID="", KSRWID="", **over))[0]

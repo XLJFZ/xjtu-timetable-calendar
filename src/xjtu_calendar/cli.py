@@ -1116,10 +1116,12 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
             print(f"  {marker} {describe_exam_change(exam_change)}")
         print()
         if any(exam_change.kind == EXAM_KIND_CANCELLED for exam_change in exam_diff.changes):
-            # §7.1：v1 不发布 STATUS:CANCELLED / METHOD:CANCEL，报出取消≠客户端删掉它。
+            # spec D13（docs/design/2026-10-09-exam-cancellation.md）：取消会以
+            # STATUS:CANCELLED 真的下发；但一次性导入型客户端不会回源，那半句照旧要说。
             print(
-                "注意：被取消的考试不会从已订阅的日历里自动消失（本工具不发布取消事件），"
-                "必要时请在日历中手动删除。"
+                "注意：本次 diff 报出的取消会在下次 export/subscribe push 时以 "
+                "STATUS:CANCELLED 下发；不再回源的订阅客户端会自动移除，"
+                "而一次性导入的客户端（部分国产 ROM 系统日历）仍需手动删除。"
             )
             print()
 

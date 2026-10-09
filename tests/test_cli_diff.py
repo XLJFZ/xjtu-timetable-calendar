@@ -228,7 +228,7 @@ def test_first_exam_snapshot_reports_every_row_as_added(
 def test_cancelled_exam_tells_the_user_the_client_may_keep_it(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """取消的考试在 v1 没有 CANCEL 通路（§7.1）：报告要说清"可能要手动删"。"""
+    """取消会随撤销通路下发（spec D13），但一次性导入型客户端可能要手动删：报告要说清。"""
     _write_timetable_snapshots(home, _row("示例课程甲", "D-1"))
     _write_exam_snapshots(home, [], [exam_row()])
 
@@ -342,3 +342,18 @@ def test_corrupt_previous_exam_snapshot_is_also_skipped(
     assert "本次未比对考试" in captured.out
     assert "考试快照" in captured.out
     assert "考试变更" not in captured.out  # 跳过 = 没比对，不假装产出了变更
+
+
+def test_diff_cancel_note_points_at_the_new_cancel_path(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D13：取消现在会自动下发；"一次性导入型客户端仍需手动删"这半句不许丢。"""
+    _write_timetable_snapshots(home, _row("示例课程甲", "D-1"))
+    _write_exam_snapshots(home, [], [exam_row(WID="WID-GONE")])  # 新快照为空 ⇒ 一条取消
+
+    assert main(["diff", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "考试变更" in out and "取消" in out
+    assert "不会从已订阅的日历里自动消失" not in out, "旧断言还挂着（spec D13）"
+    assert "STATUS:CANCELLED" in out, "要告诉用户取消会真的下发"
+    assert "手动删除" in out, "一次性导入型客户端那半句事实没变，不许顺手删掉"

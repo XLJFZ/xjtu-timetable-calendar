@@ -31,6 +31,23 @@ from xjtu_calendar.fetcher import save_raw
 from xjtu_calendar.schedules import combine
 
 
+def test_fresh_subscriber_still_gets_ledger_text(tmp_path: Path) -> None:
+    """§6.6 空值口径：门槛过了且**有 live 考试**就产出文本，哪怕本地还没有台账。
+
+    全新订阅者（live 考试在、还没有台账文件）**必须**拿到非 None 的台账文本：Task 9/10
+    只在 `exam_ledger_text is not None` 时落盘建文件，若这里给 None 就永远不会有台账，
+    撤销通路对首屏用户直接死掉。文本须含本次 live 考试的 UID（D19：用**过滤前**的 live 集）。
+    """
+    cfg = exam_home(tmp_path)
+    assert not cfg.exam_ledger_path(SEMESTER).exists(), "全新用户：本地还没有台账文件"
+
+    result = build_ics_for_semester(cfg, SEMESTER, cancel_expiry_at=NOW)
+
+    assert result.exam_ledger_text is not None
+    for uid in exam_uids(cfg):
+        assert uid in result.exam_ledger_text
+
+
 def test_vanished_exam_is_cancelled_in_the_next_export(tmp_path: Path) -> None:
     gone_row = exam_row(WID="WID-GONE")
     stay_row = exam_row(WID="WID-STAYS", KCM="示例课程乙")
@@ -180,6 +197,62 @@ def test_no_exams_emits_neither_live_nor_cancellations(tmp_path: Path) -> None:
     assert "VEVENT" in result.ics  # 课程侧照常
     assert result.exam_ledger_text is None
     assert cfg.exam_ledger_path(SEMESTER).read_bytes() == before
+
+
+def test_binary_ledger_degrades_without_changing_the_exit(tmp_path: Path) -> None:
+    """D15/§7 红线：台账是**二进制/坏编码字节** ⇒ 读它不许冒出 build_ics_for_semester。
+
+    `ledger_path.read_text(encoding="utf-8")` 在注入块里、**不在**外层考试事件 try 的保护
+    范围内；不就地兜住就会把 UnicodeDecodeError 抛穿导出，让一个考试侧问题改变退出码。
+    期望：不抛异常 + warning（只报学期/失败种类，绝不带台账内容）+ 当作没台账（撤销数 0），
+    但仍用本次 live 考试产出 `exam_ledger_text`（覆盖坏台账正是 §7 的修复动作）。
+    """
+    cfg = exam_home(tmp_path)  # 课表 + live 考试可信
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"\xff\xfe\x00not-utf-8-at-all")  # 非 UTF-8 字节，read_text 会炸
+
+    with captured_logs() as records:
+        result = build_ics_for_semester(cfg, SEMESTER, cancel_expiry_at=NOW)
+
+    assert result.info["exam_cancellations"] == 0, "读不出 ⇒ 当作没台账，一条都不撤"
+    assert "STATUS:CANCELLED" not in result.ics
+    assert result.exam_ledger_text is not None, "仍须产出文本以覆盖这份坏台账"
+    assert exam_uids(cfg)[0] in result.exam_ledger_text
+    assert any("读不出" in rec.getMessage() for rec in records)
+
+
+def test_cancellation_colliding_with_course_uid_is_dropped(tmp_path: Path) -> None:
+    """§9：伪造一条与**课程 UID 撞车**的撤销条目 ⇒ 走既有全局 UID 断言丢弃路径，不静默写进产物。
+
+    撤销条目不豁免 UID 唯一性。为造出撞车，**从渲染产物里取一条课程 UID**（不在测试里
+    重算课程 UID 配方，配方抄第二份看守就废了）；该 UID 在台账里、不在 live 考试集里、
+    时刻未过 ⇒ 进入撤销候选，但并入 `render_events` 时撞上课程事件 ⇒ 丢弃 + warning。
+    """
+    cfg = exam_home(tmp_path)  # 真课表（有课程事件）+ live 考试
+    # 只渲染课程侧拿一个真实课程 UID，再用它伪造一条"消失的考试"撤销候选
+    courses_only = build_ics_for_semester(cfg, SEMESTER, include_exams=False)
+    course_uid = str(next(iter(Calendar.from_ical(courses_only.ics).walk("VEVENT"))).get("uid"))
+
+    write_ledger(
+        cfg,
+        SEMESTER,
+        [
+            LedgerEntry(
+                uid=course_uid,
+                start=combine(date(2030, 6, 20), "09:00"),
+                end=combine(date(2030, 6, 20), "11:00"),
+                summary="示例课程甲（结课考试）",
+            )
+        ],
+    )
+
+    with captured_logs() as records:
+        result = build_ics_for_semester(cfg, SEMESTER, cancel_expiry_at=NOW)
+
+    assert "STATUS:CANCELLED" not in result.ics, "撞车撤销条目不许被写进产物"
+    assert result.info["exam_cancellations"] == 0
+    assert any("撤销事件 UID 与已有事件冲突" in rec.getMessage() for rec in records)
 
 
 def test_cancellations_do_not_mask_the_empty_calendar_warning(tmp_path: Path) -> None:

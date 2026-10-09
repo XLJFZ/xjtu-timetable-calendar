@@ -862,10 +862,6 @@ def build_ics_for_semester(
     cancellation_events: list[CalendarEvent] = []
     pending_entries: list[LedgerEntry] = []
     ledger_exists = False
-    #: 台账是否**成功读到过**条目（`load_exam_ledger` 返回非空）。决定 `exam_ledger_text`
-    #: 的空值口径（§6.6：读到过 ⇒ 一律返回文本，哪怕剪完是空的；损坏/空 ⇒ 当作没读，None）。
-    #: 用它而不是 `ledger` 本身：`ledger` 只在下个 `if` 分支里赋值，降级路径读它会 NameError（R4）。
-    ledger_read = False
     if include_exams and exams_trusted:
         # 运行时 import 留在函数体内：exams.py 顶层 `from .exporter import ...`，反向成环
         # （循环依赖规则）。类型注解用的 `LedgerEntry` 由文件顶部 TYPE_CHECKING 分支提供（R5）。
@@ -875,11 +871,25 @@ def build_ics_for_semester(
         ledger_exists = ledger_path.is_file()
         ledger: dict[str, LedgerEntry] = {}
         if ledger_exists:
-            ledger = load_exam_ledger(ledger_path.read_text(encoding="utf-8"))
+            try:
+                ledger = load_exam_ledger(ledger_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError) as exc:
+                # 台账是二进制/坏编码字节时 `read_text` 抛 UnicodeDecodeError，目录权限问题时
+                # 抛 OSError；这一段**不在**外层考试事件 try 的保护范围内，不就地兜住就会冒出
+                # `build_ics_for_semester` ⇒ 一个考试侧问题把 export 变成非零退出（spec D15/§7
+                # 红线）。就地降级成"当作没有台账"：`ledger` 留空 ⇒ 本次不撤销任何考试。但
+                # `ledger_exists` 仍为 True，下面的空值口径照旧用本次 live 考试产出
+                # `exam_ledger_text`，让调用方**覆盖这份读不出的坏台账**（§7：损坏 ⇒ warning +
+                # 当作无台账、产物正常；覆盖正是期望的修复动作）。warning 只报学期与失败种类，
+                # 绝不带台账内容（spec §8「日志不打印台账内容」，而异常原文会逐字引用坏字节）。
+                logger.warning(
+                    "考试台账 %s 读不出（%s），本次当作无台账处理并用当前考试覆盖它",
+                    semester,
+                    type(exc).__name__,
+                )
         else:
             logger.info("本地还没有 %s 的考试台账，本次不撤销任何已发布考试", semester)
         if ledger:
-            ledger_read = True
             deliverable, unresolvable = cancel_candidates(
                 ledger=ledger,
                 live_uids=live_exam_uids,
@@ -917,12 +927,14 @@ def build_ics_for_semester(
 
     stamp = dtstamp or _stamp_from_snapshot(stamp_source or cfg.raw_timetable_path(semester))
 
-    #: 台账文本（§6.6 空值口径）：门槛过了且**读到过**台账就产出文本，哪怕剪完只含仍待
-    #: 撤销的条目或干脆剪空——过期/unresolvable 条目正是靠这段回写被真正剪掉。
-    #: live 侧用**未经日期过滤**的 `pre_filter_exam_events`（D19，与候选同源），pending
-    #: 侧用可下发候选；本任务**不落盘**（写文件是 Task 9/10 的 CLI 职责）。
+    #: 台账文本（§6.6 空值口径）：门槛过了（`exams_trusted` 蕴含 `include_exams`）**且**
+    #: 要么本地有台账文件、要么本次有 live 考试 —— 就要产出文本。全新订阅者（有 live 考试、
+    #: 还没有台账文件）也必须拿到文本，否则 Task 9/10 只在 `text is not None` 时落盘建文件，
+    #: 撤销通路对首屏用户直接死掉。反过来：门槛没过、`--no-exams`、既没读到台账又没 live 考试
+    #: ⇒ None，调用方不得建文件。live 侧用**未经日期过滤**的 `pre_filter_exam_events`
+    #: （D19，与候选同源），pending 侧用可下发候选；本任务**不落盘**（写文件是 Task 9/10 的职责）。
     exam_ledger_text: str | None = None
-    if ledger_read:
+    if exams_trusted and (ledger_exists or pre_filter_exam_events):
         from .exams import render_exam_ledger
 
         exam_ledger_text = render_exam_ledger(

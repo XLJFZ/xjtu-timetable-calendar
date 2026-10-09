@@ -115,6 +115,15 @@ class Settings:
         """原始课表 JSON 缓存（含个人信息，**不提交**）。"""
         return self.home / "raw"
 
+    @property
+    def subscribe_dir(self) -> Path:
+        """订阅状态、工作副本与发布留底（含 token 与 .ics，含个人信息，**不提交**）。
+
+        目录字面量的唯一归属地在这里；`subscribe.subscribe_dir()` 只做转发。
+        **不在 `ensure_dirs()` 里创建**：台账是可选特性，写入点自己 `mkdir`（spec D24①）。
+        """
+        return self.home / "subscribe"
+
     def ensure_dirs(self) -> None:
         """创建全部数据目录。"""
         for directory in (
@@ -157,6 +166,14 @@ class Settings:
     def raw_exams_prev_path(self, semester_key: str) -> Path:
         """`diff` 的考试比较基线（单代轮转，同课表口径）。"""
         return self.raw_dir / f"exams-{semester_key}.prev.json"
+
+    def exam_ledger_path(self, semester_key: str) -> Path:
+        """考试台账：曾以 live 形态发布过、原定时刻还没过去的考试账本。
+
+        含考试原名/考场/座位，**永不发布**、只留本地、写盘 `private=True`
+        （docs/design/2026-10-09-exam-cancellation.md §8）。
+        """
+        return self.subscribe_dir / f"last-exams-{semester_key}.ics"
 
 
 def find_browser() -> str | None:

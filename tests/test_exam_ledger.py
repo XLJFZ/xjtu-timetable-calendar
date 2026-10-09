@@ -7,7 +7,12 @@ from datetime import date
 
 from exam_support import STAMP, captured_logs
 
-from xjtu_calendar.exams import LedgerEntry, load_exam_ledger, render_exam_ledger
+from xjtu_calendar.exams import (
+    LedgerEntry,
+    cancel_candidates,
+    load_exam_ledger,
+    render_exam_ledger,
+)
 from xjtu_calendar.exporter import render_ics
 from xjtu_calendar.models import CalendarEvent
 from xjtu_calendar.schedules import combine
@@ -205,3 +210,45 @@ def test_load_exam_ledger_warnings_hide_ledger_text():
     assert records, "两条降级路径都该留下 warning"
     assert [rec.getMessage() for rec in records if PRIVATE_MARKER in rec.getMessage()] == []
     assert not any(rec.exc_info for rec in records), "exc_info 会把原文带进 traceback"
+
+
+NOW = combine(date(2030, 6, 1), "08:00")  # 所有 2030-06-1x 的考试都还没到
+
+
+def ledger_of(*uids_and_days: tuple[str, date]) -> dict[str, LedgerEntry]:
+    return {uid: entry(uid, day) for uid, day in uids_and_days}
+
+
+def test_candidate_only_when_absent_from_live():
+    ledger = ledger_of(("a", date(2030, 6, 17)), ("b", date(2030, 6, 20)))
+    deliverable, _ = cancel_candidates(
+        ledger=ledger, live_uids={"b"}, baseline_uids={"a", "b"}, now=NOW
+    )
+    assert [e.uid for e in deliverable] == ["a"]
+
+
+def test_expired_entries_are_not_cancelled():
+    """spec D2/D9：原定时刻已过 ⇒ 什么都不发，也不留在结果里。"""
+    ledger = ledger_of(("past", date(2030, 5, 1)))
+    deliverable, unresolved = cancel_candidates(
+        ledger=ledger, live_uids=set(), baseline_uids={"past"}, now=NOW
+    )
+    assert deliverable == [] and unresolved == []
+
+
+def test_missing_from_baseline_is_unresolvable_not_emitted():
+    """spec D20：基线里没有该 UID ⇒ resolve_sequence 会给 0，宁可不撤销。"""
+    ledger = ledger_of(("ghost", date(2030, 6, 17)))
+    deliverable, unresolved = cancel_candidates(
+        ledger=ledger, live_uids=set(), baseline_uids=set(), now=NOW
+    )
+    assert deliverable == []
+    assert [e.uid for e in unresolved] == ["ghost"]
+
+
+def test_total_order_by_start_then_uid():
+    ledger = ledger_of(("b", date(2030, 6, 17)), ("a", date(2030, 6, 17)), ("c", date(2030, 6, 10)))
+    deliverable, _ = cancel_candidates(
+        ledger=ledger, live_uids=set(), baseline_uids={"a", "b", "c"}, now=NOW
+    )
+    assert [e.uid for e in deliverable] == ["c", "a", "b"]  # 同日按 uid 升序，全序

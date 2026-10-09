@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -656,6 +656,42 @@ def load_exam_ledger(text: str) -> dict[str, LedgerEntry]:
             else:
                 logger.warning("考试台账里有一条读不出（%s），已丢弃", type(exc).__name__)
     return entries
+
+
+def cancel_candidates(
+    *,
+    ledger: Mapping[str, LedgerEntry],
+    live_uids: Collection[str],
+    baseline_uids: Collection[str],
+    now: datetime,
+) -> tuple[list[LedgerEntry], list[LedgerEntry]]:
+    """台账 − live ⇒ ``(可下发的撤销候选, 无法安全下发的候选)``，都按 ``(start, uid)`` 全序。
+
+    三道筛子对应设计文档的三条决策：
+
+    - ``live_uids``：**未经日期过滤**的考试 UID（D19）。过滤后的集合会把窗口外考试
+      当成"消失"，一次局部导出就剪掉全局订阅状态。
+    - ``now``：墙钟。原定开始时刻已过 ⇒ 既不下发也不保留（D2/D9），条目就此退出台账。
+    - ``baseline_uids``：上一次发布产物的 UID 集合。不在其中的候选进 ``unresolvable``：
+      ``resolve_sequence`` 会给 ``SEQUENCE:0``，而客户端对更低序号应当忽略 ⇒ 发了等于
+      没发，还骗自己"撤销过了"（D20）。调用方要把 ``unresolvable`` 记 warning 并**从
+      台账剪掉**。
+
+    同日两场考试是实测见过的（spec §4.1），所以排序必须是全序。
+    """
+    deliverable: list[LedgerEntry] = []
+    unresolvable: list[LedgerEntry] = []
+    for item in ledger.values():
+        if item.uid in live_uids:
+            continue
+        if item.start < now:
+            continue
+        if item.uid not in baseline_uids:
+            unresolvable.append(item)
+            continue
+        deliverable.append(item)
+    key = lambda e: (e.start, e.uid)  # noqa: E731 —— 两处排序同一口径，不提公共函数
+    return sorted(deliverable, key=key), sorted(unresolvable, key=key)
 
 
 def build_exam_events(exams: Sequence[ExamSchedule], semester_key: str) -> list[CalendarEvent]:

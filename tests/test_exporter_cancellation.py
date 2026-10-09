@@ -164,6 +164,11 @@ def test_from_date_filter_does_not_cancel_out_of_window_exams(tmp_path: Path) ->
     )
 
     assert "STATUS:CANCELLED" not in result.ics
+    # D19 的另一半：台账同样**不许**按窗口截断——窗口外考试的 UID 必须还在回写文本里，
+    # 否则一次局部导出就永久剪掉全局订阅状态（把 `live=` 换成过滤后的 `exam_events` 即红）。
+    text = result.exam_ledger_text
+    assert text is not None
+    assert exam_uids(cfg, outside)[0] in text, "窗口外考试被从台账里剪掉了（D19：应吃过滤前集）"
 
 
 def test_uid_absent_from_baseline_is_dropped_and_warned(tmp_path: Path) -> None:
@@ -232,7 +237,9 @@ def test_cancellation_colliding_with_course_uid_is_dropped(tmp_path: Path) -> No
     cfg = exam_home(tmp_path)  # 真课表（有课程事件）+ live 考试
     # 只渲染课程侧拿一个真实课程 UID，再用它伪造一条"消失的考试"撤销候选
     courses_only = build_ics_for_semester(cfg, SEMESTER, include_exams=False)
-    course_uid = str(next(iter(Calendar.from_ical(courses_only.ics).walk("VEVENT"))).get("uid"))
+    course_events = list(Calendar.from_ical(courses_only.ics).walk("VEVENT"))
+    assert course_events, "课程固件没产出任何 VEVENT ⇒ 撞车前提不成立，先修固件"
+    course_uid = str(course_events[0].get("uid"))
 
     write_ledger(
         cfg,
@@ -253,6 +260,12 @@ def test_cancellation_colliding_with_course_uid_is_dropped(tmp_path: Path) -> No
     assert "STATUS:CANCELLED" not in result.ics, "撞车撤销条目不许被写进产物"
     assert result.info["exam_cancellations"] == 0
     assert any("撤销事件 UID 与已有事件冲突" in rec.getMessage() for rec in records)
+    # 评审遗留 1：被 UID 断言丢掉的条目**不许**留在台账里当 pending——撞车下轮照撞，
+    # 留在台账就是永久兑现不了的承诺 + 每轮重试；须与 D20 的 unresolvable 同形退场。
+    # （把 `pending_entries` 改回 `deliverable` 即红。）
+    text = result.exam_ledger_text
+    assert text is not None  # 本次有 live 考试 ⇒ 有台账文本
+    assert course_uid not in text, "被丢弃的撤销条目不得继续占用台账"
 
 
 def test_cancellations_do_not_mask_the_empty_calendar_warning(tmp_path: Path) -> None:
@@ -277,3 +290,92 @@ def test_cancellations_do_not_mask_the_empty_calendar_warning(tmp_path: Path) ->
 
     assert any("没有生成任何事件" in rec.getMessage() for rec in records)
     assert "STATUS:CANCELLED" in result.ics  # 撤销照发，只是不许掩盖告警
+
+
+def test_stats_updated_not_polluted_by_cancellations(tmp_path: Path) -> None:
+    """D23：撤销条目的 UID 在基线里是 live 形态，混进 stats 就凭空抬高 `updated`。
+
+    这条必须可反证：把 stats 的入参改回 `render_events`（含撤销），
+    `updated == 0` 立即变 `updated == 1`。
+    """
+    cfg = exam_home(tmp_path)
+    published = build_ics_for_semester(cfg, SEMESTER)  # 此刻考试还是 live
+    baseline = tmp_path / "published.ics"
+    baseline.write_text(published.ics, encoding="utf-8", newline="")
+    write_ledger(cfg, SEMESTER, published_ledger(cfg))
+    save_raw(exam_payload([]), cfg, SEMESTER, kind="exams")  # 确认无考试 ⇒ 全部撤销
+
+    result = build_ics_for_semester(
+        cfg, SEMESTER, baseline_probe=str(baseline), cancel_expiry_at=NOW
+    )
+
+    assert result.info["exam_cancellations"] == 1
+    stats = result.sequence_stats
+    assert stats is not None
+    published_events = published.ics.count("BEGIN:VEVENT")
+    assert stats["preserved"] == published_events - 1  # 少的那条正是被撤销的考试
+    assert stats["updated"] == 0
+    assert stats["added"] == 0
+
+
+def test_ledger_text_carries_live_plus_in_window_pending(tmp_path: Path) -> None:
+    cfg = exam_home(tmp_path, exam_row(WID="WID-A"), exam_row(WID="WID-B", KCM="示例课程乙"))
+    entries = published_ledger(cfg, exam_row(WID="WID-A"), exam_row(WID="WID-B"))
+    write_ledger(cfg, SEMESTER, entries)
+    save_raw(exam_payload([exam_row(WID="WID-A")]), cfg, SEMESTER, kind="exams")
+
+    result = build_ics_for_semester(cfg, SEMESTER, cancel_expiry_at=NOW)
+
+    text = result.exam_ledger_text
+    assert text is not None
+    assert "STATUS" not in text and "SEQUENCE" not in text  # D10
+    assert entries[0].uid in text  # 本次仍 live
+    assert entries[1].uid in text  # 已撤销但仍在窗口内 ⇒ 留在台账里以便下次复述
+
+
+def test_ledger_text_none_when_neither_ledger_nor_exams(tmp_path: Path) -> None:
+    """`None` ⟺ 调用方不得创建也不得改写文件（spec §6.6 的空值口径）。"""
+    cfg = exam_home(tmp_path)
+    cfg.raw_exams_path(SEMESTER).unlink()
+    assert not cfg.exam_ledger_path(SEMESTER).exists()
+
+    assert build_ics_for_semester(cfg, SEMESTER).exam_ledger_text is None
+
+
+def test_stale_ledger_is_pruned_into_text_when_everything_expired(tmp_path: Path) -> None:
+    """读到过台账 ⇒ 必须回写，哪怕剪完什么都不剩（否则过期条目永不退场）。"""
+    cfg = exam_home(tmp_path)
+    entries = published_ledger(cfg)
+    write_ledger(cfg, SEMESTER, entries)
+    save_raw(exam_payload([]), cfg, SEMESTER, kind="exams")
+
+    result = build_ics_for_semester(cfg, SEMESTER, cancel_expiry_at=PAST)
+
+    assert result.exam_ledger_text is not None
+    assert entries[0].uid not in result.exam_ledger_text
+
+
+def test_corrupt_ledger_without_live_exams_still_emits_text(tmp_path: Path) -> None:
+    """R9 裁定（钉死边界，不是事故）：台账存在但读不出、且本次 live 考试为零 ⇒ 仍是文本。
+
+    §6.6 的严格读法或许想要 `None`，裁定的结论是**保持现状**：用当前（空）状态覆盖一份
+    读不出的台账正是 §7 规定的修复动作；调用方"不得创建"的约束管的是文件不存在
+    的场景，这里文件已存在、写下去的是**修复**；文本字节跨进程稳定（DTSTAMP 取快照
+    mtime，不吃挂钟），不会破坏 subscribe 的内容哈希幂等跳过。
+    """
+    cfg = exam_home(tmp_path)
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"\xff\xfe\x00not-utf-8-at-all")  # read_text 直接炸 ⇒ 当作无台账
+    save_raw(exam_payload([]), cfg, SEMESTER, kind="exams")  # 确认无考试 ⇒ live 集为空
+
+    with captured_logs() as records:
+        first = build_ics_for_semester(cfg, SEMESTER, cancel_expiry_at=NOW)
+        second = build_ics_for_semester(cfg, SEMESTER, cancel_expiry_at=NOW)
+
+    text = first.exam_ledger_text
+    assert text is not None, "R9：读不出的台账 + live 考试为零 ⇒ 仍产出空台账文本用于覆盖"
+    assert "STATUS" not in text and "SEQUENCE" not in text  # D10/D22
+    assert len(Calendar.from_ical(text).walk("VEVENT")) == 0
+    assert second.exam_ledger_text == text, "同一快照 ⇒ 文本字节一致（stamp 来自快照 mtime）"
+    assert any("读不出" in rec.getMessage() for rec in records)

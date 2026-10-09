@@ -533,18 +533,20 @@ def summarize(
 class ExportResult:
     """build_ics_for_semester 的返回：渲染文本 + 汇总数据（CLI 打印用）。
 
-    ``info`` 中与考试相关的键只有一个：``exam_events``，即**进了产物**的考试事件数
-    （已过日期过滤与全局 UID 断言）。``events`` 与 ``date_range`` 的口径始终只算
-    课程事件，见设计文档 §6.5 第 1 条。
+    ``info`` 中与考试相关的键有两个：``exam_events`` 是**进了产物**的 live 考试事件数
+    （已过日期过滤与全局 UID 断言）；``exam_cancellations`` 是本次实际下发的撤销条数
+    ——撤销条目**不进** ``sequence_stats``（spec D23），数量只在这里体现。
+    ``events`` 与 ``date_range`` 的口径始终只算课程事件，见设计文档 §6.5 第 1 条。
     """
 
     ics: str
     info: dict[str, object]
     sequence_stats: dict[str, int] | None
-    #: 撤销通路重写后的考试台账文本（spec §8）。`None` ⟺ 门槛没过、`--no-exams`、
-    #: 或既没读到台账也没什么可记 —— 此时调用方**不得**创建文件（§6.6）。
-    #: 只要读到过台账就返回文本（可能只含仍待撤销的条目），让过期条目被真正剪掉。
-    #: 本任务只负责**产出**这段文本；落盘由 Task 9/10 的 CLI 负责（本任务绝不写文件）。
+    #: 本次应回写的考试台账文本；空值口径见 spec §6.6：``None`` ⟺ 撤销门槛没过
+    #: （D18，`--no-exams` 同形）、或既没读到台账也没有任何 live 考试 —— 此时调用方
+    #: **不得创建也不得改写**该文件。读到过台账就返回文本（可能已把过期条目剪光），
+    #: 不存在"算出空台账但不回写"的中间状态。live 侧取**未经日期过滤**的考试集（D19）。
+    #: 本字段只**产出**文本；落盘是 Task 9/10 的 CLI 职责（exporter 绝不写文件）。
     exam_ledger_text: str | None = None
 
 
@@ -911,18 +913,25 @@ def build_ics_for_semester(
                     item.uid,
                 )
             cancellation_events = build_cancellation_events(deliverable)
-            pending_entries = deliverable
             # 全局 UID 唯一性：撤销条目**不豁免**，处置与考试事件一致（丢弃后来者 + warning），
             # 写法与本函数上面的 `kept_exam` 同形。
             seen_uids = {event.uid for event in render_events}
             kept_cancellations: list[CalendarEvent] = []
-            for event in cancellation_events:
+            kept_pending: list[LedgerEntry] = []
+            # `build_cancellation_events` 保持调用方的全序、不重排（exams.py:701），
+            # 所以事件与条目可以按位置配对；`strict=True` 给配对上锁。
+            for event, entry in zip(cancellation_events, deliverable, strict=True):
                 if event.uid in seen_uids:
                     logger.warning("撤销事件 UID 与已有事件冲突，已丢弃：%s", event.uid)
                     continue
                 seen_uids.add(event.uid)
                 kept_cancellations.append(event)
+                kept_pending.append(entry)
             cancellation_events = kept_cancellations
+            # pending 只含**实际下发**的条目：被 UID 断言丢掉的撤销不许写回台账当
+            # "待撤销"——撞车下轮照撞，留在台账就是永久兑现不了的承诺 + 每轮重试，
+            # 必须随丢弃一同退场（与 D20 的 unresolvable 处置同形）。
+            pending_entries = kept_pending
             render_events = [*render_events, *cancellation_events]
 
     stamp = dtstamp or _stamp_from_snapshot(stamp_source or cfg.raw_timetable_path(semester))
@@ -959,9 +968,11 @@ def build_ics_for_semester(
     info["exam_cancellations"] = len(cancellation_events)
     stats: dict[str, int] | None = None
     if baseline is not None:
-        # 反过来 `sequence_stats` **必须**吃合并后的全集，否则考试的
-        # SEQUENCE/added 统计永远失真（新增的那条考试会被算成 0）。
-        stats = sequence_stats(render_events, baseline)
+        # stats 口径（spec D23）：必须含「课程 + live 考试」——否则考试的 SEQUENCE/新增
+        # 统计失真（`test_sequence_stats_see_exam_events` 看守）；但**不含**撤销条目：
+        # 它们的 UID 在基线里以 live 形态存在，指纹必变，混进来会凭空抬高 `updated`。
+        # 撤销数量单独走 `info["exam_cancellations"]`。
+        stats = sequence_stats([*events, *kept_exam], baseline)
 
     return ExportResult(
         ics=ics,

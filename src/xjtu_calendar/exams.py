@@ -7,12 +7,12 @@ import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
 from .config import Settings
-from .exporter import UID_DOMAIN  # 顶层导入；exporter 反向只在函数内 import（避免循环）
+from .exporter import PRODID, UID_DOMAIN  # 顶层导入；exporter 反向只在函数内 import（避免循环）
 from .models import CalendarEvent, ExamSchedule
 from .parser import ParseReport
 from .schedules import combine
@@ -505,6 +505,76 @@ def describe_exam_change(change: ExamChange) -> str:
     # 期中考试与期末考试的「座位变更」在输出里分不出是哪一场。
     when = "" if change.date_str in f"{change.old} {change.new}" else f"（{change.date_str}）"
     return f"{change.kind}：{label}{when}：{change.old} → {change.new}"
+
+
+# --------------------------------------------------------------------------- #
+# 台账（spec §8）：记录「曾以 live 形态发布」的考试，供后续渲染撤销事件
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class LedgerEntry:
+    """台账里的一条：某场**曾以 live 形态发布**的考试，保留最后一次发布的字段。
+
+    只在本地存在（spec §8），`start`/`end` 必须是带 tz 的 datetime —— 保留期要和 aware 的
+    墙钟比较（spec D9/D22）。
+    """
+
+    uid: str
+    start: datetime
+    end: datetime
+    summary: str
+    location: str | None = None
+    description: str | None = None
+
+
+def render_exam_ledger(
+    live: Sequence[CalendarEvent],
+    pending: Sequence[LedgerEntry],
+    *,
+    dtstamp: datetime,
+) -> str:
+    """渲染台账：``live`` 的全字段 ∪ ``pending`` 的原字段，按 ``(start, uid)`` 全序。
+
+    台账不是发布产物（spec D10/D22）：**不写** STATUS / SEQUENCE / LAST-MODIFIED /
+    METHOD / X-WR-CALNAME，也不走 :func:`xjtu_calendar.exporter.render_ics`（那个函数
+    无条件写 DTSTAMP/SEQUENCE，会把 D10 立刻推翻）。同 UID 时 live 形态胜出。
+    ``add_missing_timezones()`` 必须调用：读取端要靠 TZID 拿回 aware datetime。
+    """
+    from icalendar import Calendar, Event
+
+    chosen: dict[str, LedgerEntry] = {}
+    for item in pending:
+        chosen.setdefault(item.uid, item)
+    for event in live:
+        chosen[event.uid] = LedgerEntry(
+            uid=event.uid,
+            start=event.start,
+            end=event.end,
+            summary=event.summary,
+            location=event.location,
+            description=event.description,
+        )
+
+    cal = Calendar()
+    cal.add("prodid", PRODID)
+    cal.add("version", "2.0")
+    cal.add("calscale", "GREGORIAN")
+    for item in sorted(chosen.values(), key=lambda e: (e.start, e.uid)):
+        component = Event()
+        component.add("uid", item.uid)
+        component.add("dtstamp", dtstamp)
+        component.add("dtstart", item.start)
+        component.add("dtend", item.end)
+        if item.summary:
+            component.add("summary", item.summary)
+        if item.location:
+            component.add("location", item.location)
+        if item.description:
+            component.add("description", item.description)
+        cal.add_component(component)
+    if chosen:
+        cal.add_missing_timezones()
+    raw: bytes = cal.to_ical()
+    return raw.decode("utf-8")
 
 
 def build_exam_events(exams: Sequence[ExamSchedule], semester_key: str) -> list[CalendarEvent]:

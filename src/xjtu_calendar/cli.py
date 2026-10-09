@@ -1298,35 +1298,56 @@ def _subscribe_rotate(
 
     ``include_exams``：与 push 同口径透传给构建管线（spec §6.7）。rotate 若不接
     ``--no-exams``，用户明确关掉的考试会被悄悄塞回订阅 URL——正是本参数要防的缺陷。
+
+    行为（spec D12 / §6.8）：换 token **之前**先跑一次探针渲染，有已发布却尚未撤销的
+    考试时打印警告；探针只算不写（台账文本一律丢弃），且与随后的真实渲染读**同一份**
+    SEQUENCE 基线，所以警告条数就等于真正发出去的撤销条数。
     """
     from . import subscribe
 
     _validate_publish_branch(state.branch)
     old = state.token
+    # 留底既是真实渲染的 SEQUENCE 基线，也**必须**是探针的基线——两个分支读同一份证据，
+    # 量出来的撤销数才等于实际下发的撤销数。探针若不带基线就走 exporter
+    # `_cancellation_baseline_uids` 的"台账是唯一凭据"分支，把全部候选算成可下发：
+    # `push --no-exams` 之后（D21：留底里没有考试 UID、台账还记着）rotate 会警告 N 条，
+    # 真实渲染却把这 N 条全判成 D20 `unresolvable`——一条不发、还当场把它们永久移出台账，
+    # 报给用户的与实际发生的正相反（虚报只朝"多报"这一侧偏）。
+    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
     # rotate 会换新 token = 换订阅 URL，旧地址此后永远收不到撤销（spec D12）。
     # 这里是**探针渲染**：只取撤销数量，返回的台账文本必须丢弃（D24②——此刻产物
     # 还没发布出去，落台账等于"假装撤销过"）。try **只罩探针**：撤销警告是增量，
-    # 探针失败降级为 probe_cancel=0 + logger.warning（异常只报类型名，不带台账
-    # 与考试个人数据，spec §8），不许拖崩 rotate 主功能；换 token 之后的真实
-    # 渲染在下面的另一个 try 里，其异常不受这一块影响（fail-closed 路径照旧）。
+    # 探针失败（渲染异常，或 `info` 里的计数坏成非整数/非数字类型）降级为
+    # probe_cancel=0 + logger.warning（异常只报类型名，不带台账与考试个人数据，
+    # spec §8），不许拖崩 rotate 主功能；换 token 之后的真实渲染在下面的另一个 try 里，
+    # 其异常不受这一块影响（fail-closed 路径照旧）。
+    probe_cancel = 0
     try:
-        probe = build_ics_for_semester(cfg, semester, include_exams=include_exams)
+        probe = build_ics_for_semester(
+            cfg,
+            semester,
+            baseline_probe=str(last_local) if last_local.is_file() else None,
+            include_exams=include_exams,
+        )
         probe_cancel = int(str(probe.info.get("exam_cancellations", 0)))
-    except XjtuCalendarError as exc:
+    except (XjtuCalendarError, ValueError, TypeError) as exc:
         probe_cancel = 0
         logger.warning(
             "subscribe rotate 的撤销探针渲染失败，本次跳过撤销警告（不影响换 token）：%s",
             type(exc).__name__,
         )
-    if probe_cancel:
+    # 警告只对"旧 URL 确实挂过事件、且这次真会把撤销对照留底发出去"的订阅成立：
+    # 从没发布成功过就没有收到过考试的旧地址（D12 的措辞对其不成立）；留底缺失时下面
+    # 直接早退、一条也发不出去，报数字就成了虚警。文案不含"重新运行以确认"之类的闸门
+    # 承诺——这里没有停等确认的交互，也不许为了它新增 CLI 旗标。
+    if probe_cancel and state.last_push is not None and last_local.is_file():
         print(
             f"注意：本次有 {probe_cancel} 条考试事件尚未从旧订阅地址撤销，"
-            "rotate 之后旧地址将永远收不到撤销；确认要继续请重新运行 subscribe rotate。"
+            "rotate 后旧地址将永远收不到撤销。"
         )
     subscribe.rotate_token(cfg, state)
     print(f"新订阅 URL：{state.subscription_url}（补发成功前旧 URL 仍可读取）")
     print(f"旧 token（{old[:4]}…）在本次补发成功后失效，请更新所有日历客户端的订阅地址。")
-    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
     if not last_local.is_file():
         if state.last_push is not None:
             # 已有成功推送却没留底：push 会拒绝重建（SEQUENCE 归零护栏），

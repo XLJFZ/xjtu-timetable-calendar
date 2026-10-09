@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from pathlib import Path
 
@@ -39,44 +40,55 @@ def _export(cfg: Settings, *extra: str) -> int:
     return main(["export", "--semester", SEMESTER, "-o", str(cfg.home / "out.ics"), *extra])
 
 
-def _register(cfg: Settings) -> None:
+def _register(cfg: Settings, *, last_push: bool = False) -> None:
     """跳过 `subscribe init`（它要真远端），直接落一份订阅状态。
 
     与 ``tests/test_cli_exams.py`` 的同名辅助同形；那两个文件刻意不互 import。
+
+    ``last_push``：rotate 的撤销警告只服务于**有过成功发布**的订阅——D12 说的是"旧订阅
+    地址此后收不到撤销"，而从没发布成功的地址上压根没有任何考试事件可收。默认关，
+    push 侧用例的现状不受影响（`cli.py` 的 SEQUENCE 归零护栏读的就是这个字段）。
     """
-    subscribe.save_state(
-        cfg,
-        subscribe.SubscriptionState(
-            semester=SEMESTER,
-            repo_url="https://example.invalid/calendar.git",
-            branch="main",
-            token="deadbeef",
-            url_base="https://me.github.io/timetable/",
-        ),
+    state = subscribe.SubscriptionState(
+        semester=SEMESTER,
+        repo_url="https://example.invalid/calendar.git",
+        branch="main",
+        token="deadbeef",
+        url_base="https://me.github.io/timetable/",
     )
+    if last_push:
+        state.last_push = subscribe.PushRecord(
+            pushed_at="2030-01-01T00:00:00+00:00", content_sha256="0" * 64, token="deadbeef"
+        )
+    subscribe.save_state(cfg, state)
 
 
-def _stub_publish(monkeypatch: pytest.MonkeyPatch, outcome=None) -> list[str]:
+def _stub_publish(
+    monkeypatch: pytest.MonkeyPatch, outcome=None, shipped: list[str] | None = None
+) -> list[str]:
     """真 publish 要动 git；这里换成 no-op，并把调用记进 order 以便断言时序。
 
     R2 口径：台账这一侧**套壳并转调**——先记 ``"ledger-write"`` 再调真实的
     ``cli._write_exam_ledger`` 让它真的落盘。这样 ``order == ["publish", "ledger-write"]``
     描述的是一次真实发生过的写盘；把被测函数 stub 掉的话，两条时序/字节断言
     都会变成空话（bytes 无论写在哪都不会变）。
+
+    ``shipped``：把**真正随产物发出去**的 ICS 文本收进列表，供「警告条数 == 实发条数」
+    这类跨分支不变式比对（默认不收集，现有调用点逐字不变）。
     """
     order: list[str] = []
-    monkeypatch.setattr(
-        subscribe,
-        "publish",
-        lambda _cfg, _state, _ics: (
-            order.append("publish")
-            or subscribe.PublishResult(
-                outcome=outcome or subscribe.PublishOutcome.PUSHED,
-                url="https://e.invalid/x.ics",
-                content_sha256="0" * 64,
-            )
-        ),
-    )
+
+    def fake_publish(_cfg: Settings, _state: object, ics: str) -> subscribe.PublishResult:
+        order.append("publish")
+        if shipped is not None:
+            shipped.append(ics)
+        return subscribe.PublishResult(
+            outcome=outcome or subscribe.PublishOutcome.PUSHED,
+            url="https://e.invalid/x.ics",
+            content_sha256="0" * 64,
+        )
+
+    monkeypatch.setattr(subscribe, "publish", fake_publish)
     real_write_ledger = cli._write_exam_ledger
 
     def write_and_record(cfg, semester, text):
@@ -274,20 +286,48 @@ def test_push_summary_omits_zero_cancellations(tmp_path, monkeypatch, capsys):
     assert "撤销" not in capsys.readouterr().out
 
 
-def _ready_for_rotate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
-    """rotate 的两个前置：订阅状态已注册 + 本地有发布留底（无留底它会直接 return）。"""
+def _published_artifact(cfg: Settings, *, include_exam: bool = True) -> str:
+    """`last-<学期>.ics` 的**真实留底形态**：整条渲染管线走一遍取产物。
+
+    ``include_exam=True``：把台账里那场考试按 **live 形态**再渲染一次（`exams_payload`
+    只喂内存里的响应，不动盘上"本学期无考试"的快照），得到的产物就是"上次发布真的把这场
+    考试发出去了"的证据。UID 由真实管线推导，**绝不手抄 sha256**——配方一改这里跟着红，
+    正是看守该做的事（同 `exam_support.exam_uids` 的理由）。
+
+    ``include_exam=False``：`push --no-exams` 之后留在盘上的产物（spec D21）——合法 ICS、
+    课程事件齐全，但**没有**已发布考试的 UID。撤销判定以这份 UID 集为准（D20），所以它是
+    "探针与真实渲染基线不一致"那个 bug 的唯一可观测形态。
+    """
+    if not include_exam:
+        return cli.build_ics_for_semester(cfg, SEMESTER, include_exams=False).ics
+    return cli.build_ics_for_semester(
+        cfg, SEMESTER, exams_payload=exam_payload([exam_row(WID="WID-A")])
+    ).ics
+
+
+def _ready_for_rotate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, published: bool = True
+) -> Settings:
+    """rotate 的三个前置：订阅状态已注册 + 有过成功发布（警告的前提）+ 本地有发布留底
+    （无留底它会直接早退，跳过全部被测路径）。
+
+    留底**必须**是含已发布考试 UID 的真产物，不能是 `BEGIN:VCALENDAR` 空壳：空壳里
+    没有任何 VEVENT ⇒ 探针与真实渲染都算出 0 条撤销 ⇒ "警告条数 == 实发条数"这条核对
+    在空壳上恒成立，本轮 Important 修复（两者共用同一份 SEQUENCE 基线）就永远测不出来。
+    """
     cfg = _env(tmp_path, monkeypatch)
-    _register(cfg)
+    _register(cfg, last_push=published)
     last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
     last.parent.mkdir(parents=True, exist_ok=True)
-    last.write_text("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", encoding="utf-8", newline="")
+    last.write_text(_published_artifact(cfg), encoding="utf-8", newline="")
     return cfg
 
 
 def test_rotate_warns_before_changing_token(tmp_path, monkeypatch, capsys):
     """D12 + D24②：警告必须在 `rotate_token` 之前，且探针**不许**抢先落台账。"""
-    _ready_for_rotate(tmp_path, monkeypatch)
-    order = _stub_publish(monkeypatch)  # 已含 publish / _write_exam_ledger 两处埋点
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    shipped: list[str] = []
+    order = _stub_publish(monkeypatch, shipped=shipped)  # 已含 publish / _write_exam_ledger 埋点
     real_rotate = subscribe.rotate_token
     monkeypatch.setattr(
         subscribe,
@@ -305,6 +345,84 @@ def test_rotate_warns_before_changing_token(tmp_path, monkeypatch, capsys):
     # 探针只算不写：台账写入必须排在 rotate 与 publish 之后
     assert order[order.index("rotate") + 1 :] == ["publish", "ledger-write"]
     assert "ledger-write" not in order[: order.index("rotate")]
+    # 文案口径（spec §6.8:248-251）：只陈述"N 条尚未撤销 + 旧地址此后收不到"，
+    # **不许**承诺"重新运行 rotate 即可确认继续"——实现里没有停一下等确认的交互，
+    # 加了就是给用户假闸门。
+    assert "确认要继续" not in out
+    # 警告的条数 == **真正发出去**的撤销条数（探针与真实渲染读同一份留底证据）。
+    # 本场景留底认这个 UID，所以"摘掉探针的 baseline_probe"在本条上照绿——红的是
+    # `test_rotate_warning_tracks_the_retained_artifact`（留底不认 UID 的那一侧）。
+    # 本条守的是另一半：数字不许凭空出现、时序、以及台账写的是台账文本。
+    assert "本次有 1 条" in out
+    assert len(shipped) == 1
+    assert shipped[0].count("STATUS:CANCELLED") == 1
+    # rotate 写的台账：是**台账文本**而不是产物文本（D10/D22：台账永远没有 SEQUENCE），
+    # 且那条已下发的撤销仍留在台账里排队（口径与 push 侧同名断言一致）。
+    ledger_text = cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8")
+    assert "SEQUENCE" not in ledger_text
+    assert "STATUS:CANCELLED" not in ledger_text
+    assert exam_uids(cfg, exam_row(WID="WID-A"))[0] in ledger_text
+
+
+def test_rotate_warning_tracks_the_retained_artifact(tmp_path, monkeypatch, capsys):
+    """Important 回归：留底里没有该 UID（`push --no-exams` 之后，D21）⇒ 一条都不许虚报。
+
+    这份场景里台账还记着那场考试、快照确认本学期无考试 ⇒ 候选 1 条。但真实渲染以留底的
+    UID 集判可发性（D20）：留底是 `--no-exams` 产物、不含该 UID ⇒ 候选全进 `unresolvable`
+    ⇒ **实发 0 条**，并且这一条**当场被永久移出台账**（下次渲染再也看不到它）。
+    探针若不带同一份基线，就走"台账是唯一凭据"的分支把 1 条全算成可下发 ⇒ 用户听到
+    「有 1 条尚未撤销」，实际发生的是"撤销一条没发、记录还毁了"——报的与做的正相反。
+    """
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
+    last.write_text(_published_artifact(cfg, include_exam=False), encoding="utf-8", newline="")
+    shipped: list[str] = []
+    _stub_publish(monkeypatch, shipped=shipped)
+    uid = exam_uids(cfg, exam_row(WID="WID-A"))[0]
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "撤销" not in out, f"虚警：留底没这个 UID ⇒ 实发 0 条，却报了数\n{out}"
+    assert len(shipped) == 1
+    assert "STATUS:CANCELLED" not in shipped[0]  # 实发确实是 0 条
+    assert uid not in cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8")  # D20 就地剪账
+
+
+def test_rotate_stays_silent_for_a_never_published_subscription(tmp_path, monkeypatch, capsys):
+    """Minor 3：只跑过 `export`（建了台账）、从没发布成功的用户不该被警告。
+
+    警告讲的是"旧订阅地址从此收不到撤销"，而这条地址上从没挂过任何事件。真实渲染照旧
+    把撤销发出去（留底在场、基线认这个 UID），所以"没警告"不是因为"没得撤销"。
+    """
+    cfg = _ready_for_rotate(tmp_path, monkeypatch, published=False)
+    shipped: list[str] = []
+    _stub_publish(monkeypatch, shipped=shipped)
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    assert "撤销" not in capsys.readouterr().out
+    assert len(shipped) == 1 and "STATUS:CANCELLED" in shipped[0]
+    # 撤销已下发、条目照旧在台账里排队 ⇒ "没警告"是闸门生效，不是"这条链路没跑"。
+    ledger = cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8")
+    assert exam_uids(cfg, exam_row(WID="WID-A"))[0] in ledger
+
+
+def test_rotate_stays_silent_without_a_retained_artifact(tmp_path, monkeypatch, capsys):
+    """Minor 3 + Important 的另一半：留底缺失 ⇒ rotate 早退、一条也发不出去 ⇒ 不许报数。
+
+    这条同时把"探针的基线表达式"钉在 `str(留底) if 留底存在 else None` 上：留底缺失时
+    探针走"台账是唯一凭据"的分支（与 push 首屏同形），量出 N>0 却没有任何真实渲染会读它
+    （`not last_local.is_file()` 直接 return）。把警告的闸门从"留底存在"上摘掉即红。
+    """
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    subscribe.subscribe_dir(cfg).joinpath(f"last-{SEMESTER}.ics").unlink()
+    shipped: list[str] = []
+    _stub_publish(monkeypatch, shipped=shipped)
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "撤销" not in out
+    assert shipped == []  # 真实渲染压根没跑
+    assert "本地留底缺失" in out  # 走的是 last_push 已存在的早退分支
 
 
 def test_rotate_stays_silent_when_nothing_to_cancel(tmp_path, monkeypatch, capsys):
@@ -314,6 +432,27 @@ def test_rotate_stays_silent_when_nothing_to_cancel(tmp_path, monkeypatch, capsy
 
     assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
     assert "撤销" not in capsys.readouterr().out
+
+
+def test_rotate_publish_failure_leaves_ledger_untouched(tmp_path, monkeypatch):
+    """D11 的反证（rotate 半边）：token 已换但 publish 失败 ⇒ 台账一个字节都不许动。
+
+    R2 口径：这条的要点正是"`_write_exam_ledger` **没跑**"，所以真函数必须在场、不许
+    stub（打桩的话字节比对恒绿）。把 `_write_exam_ledger(...)` 挪到 `publish` 之前即红：
+    D20 会把"没随产物发出去"的候选剪出台账，撤销记录被永久抹掉。
+    """
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    before = ledger.read_bytes()
+
+    def blow_up(_cfg, _state, _ics):
+        raise XjtuCalendarError("远端拒绝")
+
+    monkeypatch.setattr(subscribe, "publish", blow_up)
+    # §7 fail-closed：token 已落盘换新、发布却失败必须是非零退出。
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) != 0
+    assert subscribe.load_state(cfg, SEMESTER).token != "deadbeef"  # 确实换了 token
+    assert ledger.read_bytes() == before
 
 
 def test_rotate_survives_a_failing_probe(tmp_path, monkeypatch, capsys):
@@ -348,3 +487,37 @@ def test_rotate_survives_a_failing_probe(tmp_path, monkeypatch, capsys):
     # 是因为探针失败回落 probe_cancel=0。若把 except 改成放行异常或重试渲染，
     # 上面两条先红——"断言警告不在"不是空话。
     assert "永远收不到撤销" not in capsys.readouterr().out
+
+
+def test_rotate_survives_a_non_numeric_probe_count(tmp_path, monkeypatch, capsys):
+    """Minor 5：`info` 里的计数坏成非整数也不许改变 rotate 的退出码。
+
+    计数取自 `int(str(...))`，坏值是 `ValueError` 而不是 `XjtuCalendarError`；except 元组
+    少了它，异常就从探针冒到 `main` 顶层 handler ⇒ 退出码翻成 1（撤销警告这种增量绝不
+    能把换 token 的主功能带崩）。第一次调用（探针）返回坏计数，其后原样委派真实渲染。
+    """
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    shipped: list[str] = []
+    _stub_publish(monkeypatch, shipped=shipped)
+    real_build = cli.build_ics_for_semester
+    calls: list[int] = []
+
+    def junky_count_build(*args, **kwargs):
+        result = real_build(*args, **kwargs)
+        calls.append(1)
+        if len(calls) == 1:
+            return dataclasses.replace(
+                result, info={**result.info, "exam_cancellations": "not-a-number"}
+            )
+        return result
+
+    monkeypatch.setattr(cli, "build_ics_for_semester", junky_count_build)
+    monkeypatch.setattr("xjtu_calendar.cli.setup_logging", lambda **_kw: None)
+    with captured_logs() as records:
+        assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    assert len(calls) == 2
+    assert any("探针" in rec.getMessage() and rec.levelno >= logging.WARNING for rec in records)
+    assert "永远收不到撤销" not in capsys.readouterr().out
+    # 探针的降级不许碰到真实渲染：撤销照发（留底认这个 UID）。
+    assert shipped[0].count("STATUS:CANCELLED") == 1
+    assert cfg.exam_ledger_path(SEMESTER).is_file()

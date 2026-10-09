@@ -100,6 +100,15 @@ def test_snapshot_age_days(tmp_path: Path) -> None:
     age = subscribe.snapshot_age_days(cfg, SEMESTER)
     assert age is not None and age < 1  # 夹具刚写的文件
     assert subscribe.snapshot_age_days(cfg, "no-such") is None
+    # kind 默认值不变：既有调用点（cli.py publish/status）不传 kind，行为逐字保持。
+    assert subscribe.snapshot_age_days(cfg, SEMESTER, kind="exams") is None  # 无考试快照
+
+
+def test_snapshot_age_days_rejects_unknown_kind(tmp_path: Path) -> None:
+    """N4：与 fetcher._raw_paths 同口径——kind 拼错要当场 ValueError，不许静默按课表读出错数据。"""
+    cfg = make_home(tmp_path)
+    with pytest.raises(ValueError, match="未知的快照类型"):
+        subscribe.snapshot_age_days(cfg, SEMESTER, kind="exam")
 
 
 def test_has_unpublished_changes(tmp_path: Path) -> None:

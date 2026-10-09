@@ -1,6 +1,15 @@
 # 考试安排接入（`exams` 数据源）实现计划
 
-> **执行方式：** 按任务逐条实现（TDD），每个任务收尾过一次独立评审，全部完成后再做全分支终审。步骤用 checkbox（`- [ ]`）跟踪。
+> **执行方式：** 按任务逐条实现（TDD），每个任务收尾过一次独立评审，全部完成后再做全分支终审。
+>
+> **执行结果（2026-10-09）：** 12 个任务全部完成，分支 `exam-schedule`（HEAD `20ad6a6`，基点 `0bd9414`），
+> 每任务均经独立评审；终审后的一轮合并修复关闭了 7 项（含 §8 `private=True` 无法证伪这条 Important）。
+> 门禁：pytest 601 passed / 4 skipped（跳过项全是 Windows 不执行 POSIX 权限位）、mypy strict 干净、
+> ruff check 干净、ruff format 68 文件已格式化。
+> 两处与本文原稿不同，以代码为准：Task 7 的端点缺失判定走 `require_endpoint` + `EndpointNotConfigured`；
+> 翻页护栏（spec §6.4）原稿漏列，已补进 `cli._fetch_exams`。
+> 下面步骤框已勾满；其中「断网/会话过期跑 fetch」与 push/rotate 两项是**离线等价验证**
+> （stubbed transport 用例 + `--from-file` 真跑），未打真实请求，也不需要为此登录任何账号。
 
 **Goal:** 把 eHall「我的考试安排」接进现有 `fetch → 快照 → 解析 → 导出 → diff → subscribe` 管线，让同一份 .ics 同时包含课程事件与考试事件。
 
@@ -48,7 +57,7 @@
 | Modify | `src/xjtu_calendar/exporter.py` | `build_ics_for_semester` 并入考试事件 + 全局 UID 断言 |
 | Modify | `src/xjtu_calendar/subscribe.py` | `snapshot_age_days(..., kind=)` 泛化 |
 | Modify | `src/xjtu_calendar/cli.py` | `--no-exams`（fetch/export/push/rotate）、diff 考试小节 |
-| Modify | `tests/subscribe_support.py` | `make_home` 支持真信封与考试快照 |
+| 未改（按落地修订） | `tests/subscribe_support.py` | 原计划「`make_home` 支持真信封与考试快照」**没有实施**：任何任务都没动过该文件。真信封形态由 `tests/exam_support.py` 提供（`exam_payload`/`timetable_envelope`），需要真信封的用例在**各测试内部直接覆盖** `make_home` 写出的课表 payload 文件——spec §9 对固件改造点的要求以此方式满足 |
 | Modify | `README.md` / `CHANGELOG.md` | 「考试安排」小节、旗标表、`[Unreleased]` |
 
 ---
@@ -64,7 +73,7 @@
 - Consumes: `models._validate_hhmm(value, label)`（同文件私有工具，`:352`，`SchedulePeriods` 已在用；`ExamSchedule.__post_init__` 直接调用，不需要 import）
 - Produces: `models.ExamSchedule`（frozen dataclass，字段见下）；`tests/exam_support` 里的 `exam_row(**over)`、`exam_payload(rows, *, code=1, msg="查询成功", module="wdksap")`、`timetable_envelope(rows)`、`captured_logs()`（日志抓取，替代 caplog）、`DEMO_DAY = "2030-06-17"`、`SEMESTER = "2026-2027-1"`
 
-- [ ] **Step 1: 写失败测试**（固件本身也要被测，否则后面所有断言都建在沙子上）
+- [x] **Step 1: 写失败测试**（固件本身也要被测，否则后面所有断言都建在沙子上）
 
 ```python
 # tests/test_exams.py
@@ -122,12 +131,12 @@ def test_exam_schedule_is_frozen_and_rejects_end_before_start():
     assert replace(exam, start_time="9:00").start_time == "09:00"  # 归一化后再比较
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `python -m pytest tests/test_exams.py -q`
 Expected: FAIL — `ImportError: cannot import name 'ExamSchedule'`（或 `No module named 'tests.exam_support'`）
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 > `tests/exam_support.py` 不是包（`tests/` 下没有 `__init__.py`，`pythonpath` 只配了 `src`），
 > 所以用例里一律写 `from exam_support import ...`，与既有 `from subscribe_support import ...`
@@ -267,12 +276,12 @@ def exam_payload(
     }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `python -m pytest tests/test_exams.py -q`
 Expected: PASS（2 passed）
 
-- [ ] **Step 5: 四条门禁 + 提交**
+- [x] **Step 5: 四条门禁 + 提交**
 
 ```bash
 python -m pytest -q && python -m mypy && python -m ruff check . && python -m ruff format --check .
@@ -292,7 +301,7 @@ git commit -m "feat(models): add ExamSchedule with HH:MM time holders"
 - Consumes: `models.ExamSchedule`（T1）
 - Produces: `exams.parse_exam_time_text(text: str | None) -> tuple[str, str] | None`（返回两个 `"HH:MM"`；解析不出返回 `None`）
 
-- [ ] **Step 1: 写失败测试**（表格化覆盖 §4.1 四种形态 + 四类脏输入）
+- [x] **Step 1: 写失败测试**（表格化覆盖 §4.1 四种形态 + 四类脏输入）
 
 ```python
 import pytest
@@ -338,12 +347,12 @@ def test_date_prefix_is_stripped_before_matching():
     assert parse_exam_time_text("2030/06/17 09:00-11:00") == ("09:00", "11:00")
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `python -m pytest tests/test_exams.py -q -k exam_time_text`
 Expected: FAIL — `ModuleNotFoundError: No module named 'xjtu_calendar.exams'`
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 ```python
 """考试安排（`studentWdksapApp`）的解析与导出。设计文档：docs/design/2026-10-08-exam-schedule.md。"""
@@ -383,12 +392,12 @@ def parse_exam_time_text(text: str | None) -> tuple[str, str] | None:
     return found[0], found[1]
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `python -m pytest tests/test_exams.py -q -k exam_time_text`
 Expected: PASS（6 + 8 + 1 条）
 
-- [ ] **Step 5: 门禁 + 提交**
+- [x] **Step 5: 门禁 + 提交**
 
 ```bash
 python -m pytest -q && python -m mypy && python -m ruff check . && python -m ruff format --check .
@@ -408,7 +417,7 @@ git commit -m "feat(exams): parse the four observed KSSJMS time shapes"
 - Consumes: `exam_support.exam_payload/exam_row/timetable_envelope`；`parse_exam_time_text`（T2）；`models.ExamSchedule`（T1）；`datetime.date.fromisoformat`（星期一致性检查）
 - Produces: `exams.iter_exam_rows(payload) -> list[dict]`（结构遍历，模块名不硬编码）；`exams.parse_exam_rows(payload, *, campus_names=None, report=None) -> list[ExamSchedule]`；`exams.campus_names_from_timetable(timetable_payload) -> dict[str, str]`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 from exam_support import exam_payload, exam_row
@@ -486,12 +495,12 @@ def test_weekday_consistent_produces_no_warning():
     assert report.warnings == []
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `python -m pytest tests/test_exams.py -q -k "exam_rows or campus"`
 Expected: FAIL — `ImportError: cannot import name 'parse_exam_rows'`
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 ```python
 from collections.abc import Mapping
@@ -630,12 +639,12 @@ def _check_weekday_consistency(rep: ParseReport, name: str, day: str, time_text:
 
 > 注意 `date_str` 持有 ISO 日期字符串而不是 `date`，与 `ExamSchedule` 的 `start_time/end_time` 一致，交给 `schedules.combine` 统一转换——避免 `date.fromisoformat` 与 `academic_calendar._parse_date` 对 `"YYYY-MM-DD 00:00:00"` 直接抛 `ValueError`。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `python -m pytest tests/test_exams.py -q`
 Expected: PASS
 
-- [ ] **Step 5: 门禁 + 提交**
+- [x] **Step 5: 门禁 + 提交**
 
 ```bash
 python -m pytest -q && python -m mypy && python -m ruff check . && python -m ruff format --check .
@@ -655,7 +664,7 @@ git commit -m "feat(exams): parse exam rows with campus mapping"
 - Consumes: `iter_exam_rows`（T3）
 - Produces: `exams.ExamState`（`Enum`：`HAS_EXAMS` / `NO_EXAMS` / `UNKNOWN`）、`exams.ExamOutcome`（frozen dataclass：`state`、`rows`、`msg`、`code`）、`exams.classify_exam_payload(payload) -> ExamOutcome`
 
-- [ ] **Step 1: 写失败测试**（判据逐条对应 §7 表）
+- [x] **Step 1: 写失败测试**（判据逐条对应 §7 表）
 
 ```python
 from exam_support import exam_payload, exam_row
@@ -693,12 +702,12 @@ def test_state_unknown_when_module_missing():
     assert classify_exam_payload({"code": "0", "datas": {}}).state is ExamState.UNKNOWN
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `python -m pytest tests/test_exams.py -q -k state`
 Expected: FAIL — `ImportError: cannot import name 'classify_exam_payload'`
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 ```python
 from dataclasses import dataclass
@@ -752,12 +761,12 @@ def classify_exam_payload(payload: Any) -> ExamOutcome:
     return ExamOutcome(ExamState.UNKNOWN, (), msg, code)
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `python -m pytest tests/test_exams.py -q -k state`
 Expected: PASS（5 passed）
 
-- [ ] **Step 5: 门禁 + 提交**
+- [x] **Step 5: 门禁 + 提交**
 
 ```bash
 python -m pytest -q && python -m mypy && python -m ruff check . && python -m ruff format --check .
@@ -777,7 +786,7 @@ git commit -m "feat(exams): classify exam payload into the three states"
 - Consumes: `models.CalendarEvent`；`schedules.combine(day: date, hhmm: str) -> datetime`；`exporter.UID_DOMAIN`；`date.fromisoformat`
 - Produces: `exams.make_exam_uid(semester_key: str, exam: ExamSchedule) -> str`；`exams.build_exam_events(exams: Sequence[ExamSchedule], semester_key: str) -> list[CalendarEvent]`
 
-- [ ] **Step 1: 写失败测试**（红线断言写在构造结果上，不是写在文档里）
+- [x] **Step 1: 写失败测试**（红线断言写在构造结果上，不是写在文档里）
 
 ```python
 from datetime import timedelta
@@ -847,12 +856,12 @@ def test_unparsable_exam_never_becomes_a_zero_oclock_event():
     assert build_exam_events(_exams(exam_row(KSSJMS="待定")), "2026-2027-1") == []
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `python -m pytest tests/test_exams.py -q -k "uid or exam_event or zero_oclock"`
 Expected: FAIL — `ImportError: cannot import name 'build_exam_events'`
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 ```python
 import hashlib
@@ -936,12 +945,12 @@ def build_exam_events(exams: Sequence[ExamSchedule], semester_key: str) -> list[
 
 （`CalendarEvent` 的导入加到文件顶部：`from .models import CalendarEvent, ExamSchedule`。）
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `python -m pytest tests/test_exams.py -q`
 Expected: PASS
 
-- [ ] **Step 5: 加一条"考试事件进得了 SEQUENCE 基线"的端到端断言**
+- [x] **Step 5: 加一条"考试事件进得了 SEQUENCE 基线"的端到端断言**
 
 Step 1 的 `test_rendered_ics_uses_datetime_for_exams` 只看渲染文本；红线真正的后果是
 `sequence.parse_baseline`（`sequence.py:139-141`）会不会收下这条事件。直接把它喂给
@@ -961,7 +970,7 @@ def test_exam_event_survives_baseline_roundtrip():
 Run: `python -m pytest tests/test_exams.py -q -k baseline_roundtrip`
 Expected: PASS（若失败，说明 icalendar 把 tz-aware datetime 降级成了 date，必须回到 `combine`）
 
-- [ ] **Step 6: 门禁 + 提交**
+- [x] **Step 6: 门禁 + 提交**
 
 ```bash
 python -m pytest -q && python -m mypy && python -m ruff check . && python -m ruff format --check .
@@ -982,7 +991,7 @@ git commit -m "feat(exams): build DATE-TIME exam events with WID-based UIDs"
 - Consumes: `fileutil.atomic_write_text(path, text, *, private=False)`
 - Produces: `Settings.raw_exams_path(semester_key) -> Path`、`Settings.raw_exams_prev_path(semester_key) -> Path`、`save_raw(payload, cfg, semester_key, *, kind="timetable") -> Path`、`load_raw(cfg, semester_key, *, kind="timetable") -> Any`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 def test_raw_exams_paths_live_beside_timetable_snapshots(tmp_path):
@@ -1020,12 +1029,12 @@ def test_load_raw_missing_exams_snapshot_hint(tmp_path):
         load_raw(cfg, "2026-2027-1", kind="exams")
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `python -m pytest tests/test_config.py tests/test_fetcher.py -q -k "exams or kind or owner_only"`
 Expected: FAIL — `AttributeError: 'Settings' object has no attribute 'raw_exams_path'`
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 `config.py`（紧挨现有 `raw_timetable_prev_path`）：
 
@@ -1081,12 +1090,12 @@ def load_raw(cfg: Settings, semester_key: str, *, kind: str = "timetable") -> An
 
 > `kind=` 必须是**关键字参数且带默认值**，否则 `test_fetcher.py:271-289` 的逐字位置断言会破。`private=True` 对课表快照同样生效（同含个人信息），属预期收紧，若有测试断言旧权限需一并修正。
 
-- [ ] **Step 4: 跑测试确认通过（含既有快照轮转用例不破）**
+- [x] **Step 4: 跑测试确认通过（含既有快照轮转用例不破）**
 
 Run: `python -m pytest tests/test_fetcher.py tests/test_config.py -q`
 Expected: PASS
 
-- [ ] **Step 5: 门禁 + 提交**
+- [x] **Step 5: 门禁 + 提交**
 
 ```bash
 python -m pytest -q && python -m mypy && python -m ruff check . && python -m ruff format --check .
@@ -1114,7 +1123,7 @@ git commit -m "feat(fetcher): kind-aware raw snapshots with private writes"
 | 浏览器拦截 | 否 | `fetch_via_browser` 的 `hint_keywords` 不含 `wdksap`，捕获不到 |
 | `--no-exams` | 否 | 三条分支一律跳过；本地快照不动 |
 
-- [ ] **Step 1: 加端点定义**（`endpoints` 数组末尾）
+- [x] **Step 1: 加端点定义**（`endpoints` 数组末尾）
 
 ```json
 {
@@ -1128,7 +1137,7 @@ git commit -m "feat(fetcher): kind-aware raw snapshots with private writes"
 
 并在 `_readme` 数组里追加一行：`"exam_schedule 路径来自 2026-10-08 真实观测（studentWdksapApp）。"`
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
 打桩点必须选 **`xjtu_calendar.fetcher` 模块上的 `fetch_via_http`**：`cmd_fetch` 是在函数体
 内 `from .fetcher import fetch_via_http`（`cli.py:248-254`），每次调用都重新从模块取属性，
@@ -1292,12 +1301,12 @@ def _timetable_then_boom(endpoint, *, cfg=None, params=None, transport=None):
 > 裸 `except Exception`：那会把 `KeyboardInterrupt`/编程错误一起吞掉，让课表侧的 bug
 > 变得不可见。两层各司其职：内层管"可预期的业务失败"，外层管"不可预期的一律降级"。
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `python -m pytest tests/test_exams_fetch.py -q`
 Expected: FAIL（`raw_exams_path` 文件不存在）
 
-- [ ] **Step 4: 写最小实现**（`fetch` 解析器加旗标 + HTTP 分支加一次多发）
+- [x] **Step 4: 写最小实现**（`fetch` 解析器加旗标 + HTTP 分支加一次多发）
 
 ```python
 fetch.add_argument(
@@ -1310,6 +1319,20 @@ fetch.add_argument(
 `cmd_fetch` 的 HTTP 分支，在课表 `save_raw` 之后：
 
 ```python
+def _exam_fallback_note(cfg, semester_code):
+    """降级提示的后半句（Task 11 评审 F1 更正后的 shipped 口径）：
+    有旧快照就报出**它是哪一天的**，没有就明说不含考试——**禁止**不查存在性
+    就写「沿用已有快照」。"""
+    path = cfg.raw_exams_path(semester_code)
+    if not path.is_file():
+        return "本地没有考试快照，本次导出不含考试"
+    try:
+        day = datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
+    except OSError:  # 快照刚被移走：宁可不报日期，也不谎称"没有快照"
+        return "本地已有考试快照，本次导出继续沿用它"
+    return f"不覆盖已有快照，沿用 {day} 的考试快照"
+
+
 def _fetch_exams(endpoints, cfg, semester_code, *, reason_if_skipped=None):
     """宁缺毋滥：任何失败都只记日志，**绝不覆盖**已有快照，绝不非零退出。"""
     if reason_if_skipped:
@@ -1323,14 +1346,15 @@ def _fetch_exams(endpoints, cfg, semester_code, *, reason_if_skipped=None):
     try:
         payload = fetch_via_http(endpoint, cfg=cfg, params={"XNXQDM": semester_code})
     except (AuthenticationExpired, TimetableFetchError) as exc:
-        logger.warning("考试安排获取失败，沿用已有快照：%s", exc)
+        logger.warning("考试安排获取失败（%s）；%s", exc, _exam_fallback_note(cfg, semester_code))
         return None
     outcome = classify_exam_payload(payload)
     if outcome.state is ExamState.UNKNOWN:
         logger.warning(
-            "考试安排响应无法判定（extParams.code=%r msg=%r）；不覆盖已有快照",
+            "考试安排响应无法判定（extParams.code=%r msg=%r）；%s",
             outcome.code,
             outcome.msg,
+            _exam_fallback_note(cfg, semester_code),
         )
         return None
     if outcome.state is ExamState.NO_EXAMS:
@@ -1340,14 +1364,20 @@ def _fetch_exams(endpoints, cfg, semester_code, *, reason_if_skipped=None):
     return path
 ```
 
+> **本块已按 shipped 口径更正**（原稿的两条 warning 文案「考试安排获取失败，沿用已有
+> 快照」「不覆盖已有快照」不带快照日期、也不区分"有没有旧快照"，Task 11 评审 F1 已修）。
+> 落地版另有两处与此草图不同、以 `cli.py` 为准：缺端点走 `require_endpoint` +
+> 捕获 `EndpointNotConfigured`（而非 `endpoints[...]` + `KeyError`），落盘前有
+> `totalSize` 翻页护栏（§6.4，行数不符只 warning、照常保存）。
+
 `--from-file` 与浏览器两条分支调用它时传 `reason_if_skipped="--from-file 导入没有会话，考试需在线获取"` / `"浏览器拦截只覆盖课表接口"`；HTTP 分支正常调用。**`required: false` 没有运行期效果**（`Endpoint.required` 无读取点），所以"缺端点不影响课表"靠的是上面这个 `try/KeyError`，不是那个字段。
 
-- [ ] **Step 5: 跑测试确认通过 + 手工确认异常类名**
+- [x] **Step 5: 跑测试确认通过 + 手工确认异常类名**
 
 Run: `python -m pytest tests/test_exams_fetch.py -q && python -c "from xjtu_calendar.errors import AuthenticationExpired, EndpointNotConfigured, TimetableFetchError"`
 Expected: PASS / 无输出
 
-- [ ] **Step 6: 门禁 + 提交**
+- [x] **Step 6: 门禁 + 提交**
 
 ```bash
 python -m pytest -q && python -m mypy && python -m ruff check . && python -m ruff format --check .
@@ -1367,7 +1397,7 @@ git commit -m "feat(fetch): fetch exam schedule over HTTP with three-state safet
 - Consumes: `exams.parse_exam_rows` / `build_exam_events`（T3/T5，**在函数体内 import**，避免与 `exams` 的顶层 `from .exporter import UID_DOMAIN` 成环）；`load_raw(cfg, semester, kind="exams")`（T6）；`campus_names_from_timetable`
 - Produces: `build_ics_for_semester(..., include_exams: bool = True, exams_payload: dict | None = None)`；`ExportResult.info["exam_events"]`（int）；`ExportResult.info["events"]` 与 `date_range` **仍只统计课程事件**
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 """考试事件并进同一份 .ics（设计文档 §6.5）。"""
@@ -1486,12 +1516,12 @@ def test_exam_only_in_range_does_not_warn_about_no_events(tmp_path):
     assert not any("没有生成任何事件" in rec.getMessage() for rec in records)
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `python -m pytest tests/test_exporter_exams.py -q`
 Expected: FAIL — `TypeError: build_ics_for_semester() got an unexpected keyword argument 'include_exams'`
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 改动全在 `build_ics_for_semester` 内部，**顺序很关键**：考试并进「日期过滤之前」，
 但 `summarize` 与 `date_range` 只吃课程事件，`sequence_stats` 吃合并后的全集。
@@ -1571,12 +1601,12 @@ def _in_range(event: CalendarEvent, lower: date | None, upper: date | None) -> b
 新增 `"exam_events": len(kept_exam)`。原来那句 `if not events:` 的告警改成 `if not render_events:`，
 否则"只有考试、没有课"的假期学期会误报。
 
-- [ ] **Step 4: 跑测试确认通过 + 基线不破**
+- [x] **Step 4: 跑测试确认通过 + 基线不破**
 
 Run: `python -m pytest tests/test_exporter_exams.py tests/test_exporter.py tests/test_sequence.py -q`
 Expected: PASS
 
-- [ ] **Step 5: 门禁 + 提交**
+- [x] **Step 5: 门禁 + 提交**
 
 ```bash
 python -m pytest -q && python -m mypy && python -m ruff check . && python -m ruff format --check .
@@ -1596,7 +1626,7 @@ git commit -m "feat(exporter): merge exam events with a global UID guard"
 - Consumes: `build_ics_for_semester(..., include_exams=...)`（T8）
 - Produces: `export --no-exams`、`subscribe push --no-exams`、`subscribe rotate --no-exams`；`_subscribe_rotate(cfg, state, semester, *, include_exams=True)`（**签名改动**，不是只加旗标）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 捕获式假实现只锁 **CLI 接线**（旗标有没有落到 `build_ics_for_semester`）；exporter 侧
 `include_exams=False` 的真实产物行为在 T8 的 `tests/test_exporter_exams.py` 已锁死。
@@ -1728,12 +1758,12 @@ def test_subscribe_actions_forward_the_flag(
 实现侧口径：**三个调用点都显式传 `include_exams=not args.no_exams`**（不靠默认值），
 所以上面的 `is True` / `is False` 断言是确定的。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `python -m pytest tests/test_cli_exams.py -q`
 Expected: FAIL — `unrecognized arguments: --no-exams`（argparse 先报错，压根到不了断言）
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 三个解析器各加同一个旗标（help 文案一致），`cmd_export` 与两个 subscribe 动作把 `include_exams=not args.no_exams` 传下去：
 
@@ -1748,12 +1778,12 @@ for parser in (export, push, rotate):
 
 `_subscribe_rotate` 现在**不接收 `args`**（`cli.py:973` 的签名是 `(cfg, state, semester)`），按上面的关键字参数改签名并更新调用点。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `python -m pytest tests/test_cli_exams.py -q`
 Expected: PASS
 
-- [ ] **Step 5: 门禁 + 提交**
+- [x] **Step 5: 门禁 + 提交**
 
 ```bash
 python -m pytest -q && python -m mypy && python -m ruff check . && python -m ruff format --check .
@@ -1775,7 +1805,7 @@ git commit -m "feat(cli): pass --no-exams through export, push and rotate"
 - Produces: `exams.ExamChange`（frozen：`kind`/`course_name`/`field`/`old`/`new`/`when`）、`exams.ExamDiff`（`added`/`removed`/`changes` + `is_empty`）、`exams.diff_exams(old_exams, new_exams) -> ExamDiff`
 - **不复用 `diff.SlotChange`**：它强制 `weekday: int` 与 `periods: tuple[int, ...]`，而 `cli.py:810-814` 用 `'一二三四五六日'[change.weekday - 1]` 打印 —— 传 0 会**静默印成「日」**，传越界值直接 `IndexError` 让 `diff` 崩掉。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 import json
@@ -1861,12 +1891,12 @@ def test_cli_diff_reports_exam_change_when_courses_are_identical(
 > `payload_row()` 两次解析再比对必然 `is_empty`（既有 `test_diff.py` 已锁同快照无变化）。
 > 断言里的 `"无变化" not in out` 就是钉住「只改了考试也被当成有变化」。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `python -m pytest tests/test_diff_exams.py -q`
 Expected: FAIL — `ImportError: cannot import name 'diff_exams'`
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 ```python
 @dataclass(frozen=True)
@@ -1933,12 +1963,12 @@ def diff_exams(old_exams: Sequence[ExamSchedule], new_exams: Sequence[ExamSchedu
 
 再在六个小节之后追加「考试变更」一节（新增 / 取消 / 时间变更 / 教室变更 / 座位变更），文案中文、不出现学号姓名。
 
-- [ ] **Step 4: 跑测试确认通过 + CLI 冒烟**
+- [x] **Step 4: 跑测试确认通过 + CLI 冒烟**
 
 Run: `python -m pytest tests/test_diff_exams.py tests/test_cli_diff.py -q`
 Expected: PASS（既有课表 diff 用例不得因短路改动而破）
 
-- [ ] **Step 5: 门禁 + 提交**
+- [x] **Step 5: 门禁 + 提交**
 
 ```bash
 python -m pytest -q && python -m mypy && python -m ruff check . && python -m ruff format --check .
@@ -1960,7 +1990,7 @@ git commit -m "feat(diff): report exam changes"
 - Consumes: `config.raw_exams_path`（T6）、既有 `logging_setup.redact`（按键打码，`:145`）
 - Produces: `snapshot_age_days(cfg, semester, *, kind="timetable") -> float | None`（默认值保持既有行为，`cli.py:940-942` 调用点不破）；`exams.exam_snapshot_lag_days(cfg, semester) -> float | None`（考试快照落后课表快照的天数，考试更新则 `0.0`，任一缺失则 `None`）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 放进 `tests/test_exams_fetch.py`（该文件已为 T7 建好，`snapshot_age_days` 的既有测试在
 `tests/test_subscribe.py`，本任务只往里补一条 kind 断言）。
@@ -2055,12 +2085,12 @@ def test_teacher_and_log_id_keys_are_redacted() -> None:
 > CLI 级断言，用 `exam_support.captured_logs()` 抓日志，**不要用 `caplog`**——
 > `setup_logging` 把 `propagate` 置了 False，caplog 在跑过 `main()` 的会话里抓不到东西。
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `python -m pytest tests/test_subscribe.py tests/test_exams_fetch.py -q -k "exam or zjjsxm"`
 Expected: FAIL — 意外关键字参数 `kind` / 断言失败
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 `subscribe.py`（`snapshot_age_days` 现状 `:304-311` 硬读 `raw_timetable_path`）：
 
@@ -2118,12 +2148,12 @@ if lag is not None and lag > 7:
 `_SENSITIVE_KEYS` 追加 `"sjbh"`（座位号在部分响应里用这个键）、`"zjjsxm"`（主考教师）。
 `xh` / `xm` / `skjs` / `teacher` 已在名单里，别重复加。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `python -m pytest tests/test_subscribe.py tests/test_exams_fetch.py -q`
 Expected: PASS
 
-- [ ] **Step 5: 门禁 + 提交**
+- [x] **Step 5: 门禁 + 提交**
 
 ```bash
 python -m pytest -q && python -m mypy && python -m ruff check . && python -m ruff format --check .
@@ -2143,7 +2173,7 @@ git commit -m "feat(export): exam snapshot staleness warning and redaction keys"
 - Consumes: 前十一个任务的产物
 - Produces: 用户可见的说明与已知限制
 
-- [ ] **Step 1: README 新增小节**（必须写清四条，缺一不可）
+- [x] **Step 1: README 新增小节**（必须写清四条，缺一不可）
 
 1. 默认包含考试，`--no-exams` 关闭；关闭不删本地快照。
 2. **只有 HTTP 路径能拿到考试**：`--from-file` 与浏览器拦截路径不抓（`fetch_via_browser` 的关键词不含 `wdksap`）。
@@ -2152,7 +2182,7 @@ git commit -m "feat(export): exam snapshot staleness warning and redaction keys"
 
 命令参考表补：`fetch/export/subscribe push/subscribe rotate` 的 `[--no-exams]`；模块树补 `exams.py`。
 
-- [ ] **Step 2: CHANGELOG**
+- [x] **Step 2: CHANGELOG**
 
 ```markdown
 ## [Unreleased]
@@ -2166,7 +2196,7 @@ git commit -m "feat(export): exam snapshot staleness warning and redaction keys"
 - `save_raw`/`load_raw` 增加 `kind=`；原始快照一律以 `private=True` 落盘（含课表快照）。
 ```
 
-- [ ] **Step 3: 文档门禁（Markdown 里的 ```python 块也归 `ruff format --check .` 管）**
+- [x] **Step 3: 文档门禁（Markdown 里的 ```python 块也归 `ruff format --check .` 管）**
 
 ```bash
 python -m ruff format --check . && python -m ruff check . && python -m mypy && python -m pytest -q
@@ -2174,14 +2204,14 @@ python -m ruff format --check . && python -m ruff check . && python -m mypy && p
 
 Expected: 四条全绿。若 `ruff format --check .` 报本文档或 `docs/design/…md`，先 `ruff format <该文件>` 再提交（本项目已被这条门禁坑过两次）。
 
-- [ ] **Step 4: 真实快照离线复验**（不联网，用 gitignored 的真实缓存）
+- [x] **Step 4: 真实快照离线复验**（不联网，用 gitignored 的真实缓存）
 
 ```bash
 python -m xjtu_calendar export --semester <真实学期代码> -o _notes/exam-real.ics
 ```
 Expected: 事件数 = 课程事件 + 考试行数；打开 .ics 抽查 `DTSTART;TZID=` 全部带时刻；**产物文件绝不提交**（含个人信息，`_notes/` 已 gitignore）。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add README.md CHANGELOG.md
@@ -2192,11 +2222,13 @@ git commit -m "docs(exam): document exam schedule integration"
 
 ## 验收清单（全分支终审前）
 
-- [ ] 四条门禁全绿；`git log --oneline` 每任务一笔提交。
-- [ ] 未新增运行时依赖；`pyproject.toml` 除 `package-data` 外未动。
-- [ ] 课程事件的 UID / SEQUENCE / 字节输出与接入前**完全一致**（用同一快照 diff 两份 .ics 验证）。
-- [ ] 考试事件全部是 `DATE-TIME`，`grep -c "VALUE=DATE" <产物.ics>` 为 0。
-- [ ] 断开网络/会话过期状态下跑 `fetch`：课表成功、考试记 warning、旧快照未被覆盖、退出码 0。
-- [ ] `--no-exams` 在 fetch/export/push/rotate 四条路径上都有效，且不删本地快照。
-- [ ] `_notes/` 与 `raw/` 里的真实快照没有出现在 `git status`。
-- [ ] 公开侧文档（README/CHANGELOG/design/plan）不含真实课程名、学号、教师名、考试日期。
+- [x] 四条门禁全绿；`git log --oneline` 每任务一笔提交。
+- [x] 未新增运行时依赖；`pyproject.toml` 除 `package-data` 外未动。
+- [x] 课程事件的 UID / SEQUENCE / 字节输出与接入前**完全一致**（用同一快照 diff 两份 .ics 验证；
+  事后已自动化为 golden 回归用例 `tests/test_legacy_course_export_golden.py`，
+  基线由 `0bd9414681` 的代码对全合成输入导出）。
+- [x] 考试事件全部是 `DATE-TIME`，`grep -c "VALUE=DATE" <产物.ics>` 为 0。
+- [x] 断开网络/会话过期状态下跑 `fetch`：课表成功、考试记 warning、旧快照未被覆盖、退出码 0。
+- [x] `--no-exams` 在 fetch/export/push/rotate 四条路径上都有效，且不删本地快照。
+- [x] `_notes/` 与 `raw/` 里的真实快照没有出现在 `git status`。
+- [x] 公开侧文档（README/CHANGELOG/design/plan）不含真实课程名、学号、教师名、考试日期。

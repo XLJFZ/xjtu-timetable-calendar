@@ -19,6 +19,46 @@
   **年级不参与 UID 计算、不写入 VEVENT**，因此已导入 / 已订阅的用户不会因标题变化而
   重收课程：以现有留底为基线重算，96 个事件的 UID、`SEQUENCE:0`、`LAST-MODIFIED`
   全部保持原值，产物与线上仅差 `X-WR-CALNAME` 一行。
+- **考试安排接入**：`fetch` 的 HTTP 路径在抓课表的同时抓「我的考试安排」
+  （`studentWdksapApp`，form 参数 `XNXQDM` 与课表同形），快照落
+  `raw/exams-<学期>.json` 并同样单代轮转；`export` / `subscribe push` /
+  `subscribe rotate` 把考试事件并入**同一份 .ics、同一个订阅 URL**（不新增第二份
+  日历）。考试事件为单场绝对时刻的 `VEVENT`——带 `TZID=Asia/Shanghai` 的
+  DATE-TIME（**刻意非全天事件**，否则进不了 SEQUENCE 留底基线、客户端永不更新）、
+  无 RRULE、无 VALARM（提醒交客户端）；`SUMMARY` =「课程名（类型词）」，
+  校区+教室进 `LOCATION`，考试全称 / 课程号 / **座位号** / 学分 / 主考教师进
+  `DESCRIPTION`。UID 优先依据接口行 ID `WID`（缺失依次降级 `KSRWID`、内容组合，
+  降级有日志；**改期后服务器是否换 `WID` 发布时未验证**，若换则表现为
+  「取消 + 新增」而非原地更新）。**默认包含**，`fetch/export/subscribe push/
+  subscribe rotate` 均可 `--no-exams` 关闭（fetch 侧不抓、其余不并入，本地快照
+  一律不删）。响应按 `extParams` **三态判定**：有考试 / 确认无考试 / 状态未知；
+  状态未知**绝不覆盖已有快照**（沿用旧数据并在 warning 里报出快照日期，无快照则
+  明说不含考试），且考试侧任何失败都不把 `fetch`/`export` 拖成非零退出。
+  已知限制：**已发布的考试事件不会因关闭开关或考试取消而从客户端消失**（v1 无
+  `STATUS:CANCELLED` 取消通路，需客户端手动删除，v2 立项）。新增
+  `src/xjtu_calendar/exams.py` 与 README「考试安排」小节。
+- **`diff` 新增「考试变更」小节**：与课程小节并列，按行 ID 配对，报告
+  **新增 / 取消 / 时间变更 / 教室变更 / 座位变更** 五类（**考试改名不在其列**——
+  课程侧会报改名，这一不对称与「UID 稳定，原地更新仅对携带 `WID` 的行成立」
+  一并写进 README）；首次拿到考试快照时全部按「新增」报告，不假装「无变化」；
+  报告含取消项时额外提示客户端不会自动删除。
+- **考试快照陈旧提示**：`export` 并入考试时，比较**考试快照 vs 同学期课表快照**
+  （相对口径，不是「距今多少天」；考试排期跟着课表一起变），考试侧落后超过 7 天
+  给出 warning「考试数据来自 X 日的课表同期快照，建议重新 fetch（本次仍按现有
+  快照导出）」；`--no-exams` 不并入考试，该提示保持安静。
+- **翻页护栏**：考试响应行数与 `totalSize` 不一致时记 warning 但仍照常落盘
+  （实测一页够用，此为将来超过一页时「静默丢考试」留警痕）。
+
+### Changed
+
+- **`save_raw`/`load_raw` 增加 `kind=`**（考试快照走 `kind="exams"`；默认值不变，
+  课表路径零行为变化）；**原始快照一律以 `private=True` 落盘**——此前 `save_raw`
+  写盘继承 umask，与 spec §8 的凭据待遇不符，本次连同**课表快照**一并收紧
+  （POSIX 0600，Windows 尽力而为）。
+- 日志按键打码名单补 `sjbh` 与 `zjjsxm`（主考教师姓名）；机制不变，
+  既有 `xh`/`xm`/`skjs`/`teacher` 覆盖其余敏感键。
+- `subscribe.snapshot_age_days` 泛化为 `(..., kind=)`（默认 `"timetable"`，
+  既有调用点行为逐字节不变），供考试快照相对陈旧度比较复用天数算式的唯一归属地。
 
 ---
 

@@ -23,23 +23,28 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import shutil
 import subprocess
 import sys
 import urllib.error
+from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from . import __version__
 from .academic_calendar import AcademicCalendar
 from .config import Settings
 from .errors import (
+    AuthenticationExpired,
     AuthenticationRequired,
     EndpointNotConfigured,
     GitNotAvailable,
     SemesterNotConfigured,
     SubscribeNotConfigured,
+    TimetableFetchError,
     XjtuCalendarError,
 )
 from .exporter import build_ics_for_semester
@@ -48,10 +53,16 @@ from .logging_setup import get_logger, setup_logging
 if TYPE_CHECKING:
     # cmd_subscribe 各分支内部惰性 `from . import subscribe`；这里只为类型标注。
     from . import subscribe
+    from .fetcher import Endpoint
 
 __all__ = ["build_parser", "main"]
 
 logger = get_logger()
+
+#: 考试快照陈旧告警的滞后阈值（天，spec §7:382-386 的相对口径；数值由 plan 锁定为 7）。
+#: 教务的考试排期按学期跟着课表走，落后一周以内多半只是「本周课表又刷过一次」，
+#: 每次 export 都报警太聒噪；超过 7 天才值得提一句「考试可能已改期」。
+EXAM_STALE_LAG_DAYS = 7.0
 
 
 # --------------------------------------------------------------------------- #
@@ -93,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="抓取方式：http 复用会话请求接口；browser 用浏览器拦截前端请求；auto 优先 http",
     )
     fetch.add_argument("--from-file", help="跳过网络，直接从本地 JSON 文件读取（用于离线调试）")
+    fetch.add_argument(
+        "--no-exams",
+        action="store_true",
+        help="不抓考试安排（默认抓；抓失败不影响课表导出）",
+    )
 
     # --- export ---
     export = sub.add_parser("export", help="解析课表并生成 .ics")
@@ -122,6 +138,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-sequence",
         action="store_true",
         help="不使用基线：所有事件按新增处理（SEQUENCE: 0）",
+    )
+    export.add_argument(
+        "--no-exams",
+        action="store_true",
+        help="不并入考试安排（默认并入；本地快照不删）",
     )
 
     # --- notice ---
@@ -184,8 +205,18 @@ def build_parser() -> argparse.ArgumentParser:
     push_p = sact.add_parser("push", help="构建 .ics 并强推到发布分支")
     push_p.add_argument("--semester")
     push_p.add_argument("--input", help="直接指定课表 JSON（默认用 fetch 缓存）")
+    push_p.add_argument(
+        "--no-exams",
+        action="store_true",
+        help="不并入考试安排（默认并入；本地快照不删）",
+    )
     rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
     rot_p.add_argument("--semester")
+    rot_p.add_argument(
+        "--no-exams",
+        action="store_true",
+        help="不并入考试安排（默认并入；本地快照不删）",
+    )
     st_p = sact.add_parser("status", help="查看订阅状态、URL 与新鲜度")
     st_p.add_argument("--semester")
     st_p.add_argument("--verify", action="store_true", help="匿名 GET 自检 URL 可达性")
@@ -274,6 +305,14 @@ def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
         logger.info("已从本地文件读取课表：%s", source)
         path = save_raw(payload, cfg, semester)
         logger.info("已缓存到 %s", path)
+        _fetch_exams(
+            {},
+            cfg,
+            semester,
+            reason_if_skipped=(
+                "已指定 --no-exams" if args.no_exams else "--from-file 导入没有会话，考试需在线获取"
+            ),
+        )
         return 0
 
     # --- 网络路径 ---
@@ -328,9 +367,123 @@ def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
         raise SemesterNotConfigured("无法确定学期", hint="用 --semester 指定（格式如 2026-2027-1）")
     path = save_raw(payload, cfg, semester)
     logger.info("已获取课表原始数据，缓存到 %s", path)
+
+    # 考试安排（行为矩阵见设计文档 §6.2）：只有 HTTP 分支抓；--no-exams 与浏览器分支只记日志。
+    # 内层 `_fetch_exams` 管可预期的业务失败（认证/抓取/三态判定），这里外层再兜一层
+    # "不可预期的一律降级"——考试是增量，绝不能把它的异常带崩课表主功能的退出码（§7 末条）。
+    if args.no_exams:
+        _fetch_exams(endpoints, cfg, semester, reason_if_skipped="已指定 --no-exams")
+    elif use_http:
+        try:
+            _fetch_exams(endpoints, cfg, semester)
+        except Exception as exc:
+            logger.warning("考试安排出现未预期错误，已跳过（课表不受影响）：%s", exc)
+    else:
+        _fetch_exams(endpoints, cfg, semester, reason_if_skipped="浏览器拦截只覆盖课表接口")
+
     print()
     print("提示：该缓存文件含个人信息，已在 .gitignore 中排除，请勿提交或分享。")
     return 0
+
+
+def _exam_total_size(payload: Any) -> int | None:
+    """从三态判定**选中的同一 module** 读 `totalSize`（翻页护栏用，设计文档 §6.4）。
+
+    模块选取直接调 `exams._exam_module`（判据唯一的归属地），不在这里抄一份同样的条件：
+    抄本会让"行数与总数出自同一个 module"这条保证只靠注释维持——将来谁改选模块的口径
+    （加模块名偏好、改 `extParams` 条件），护栏就会跨模块比较，正好废掉它存在的意义。
+
+    无法核对时返回 ``None`` 并**不**报警（避免噪音）。数字以字符串形态给出（这个 API 族
+    的外层 `code` 就是字符串 ``"0"``，同族字段同样可能带引号）时兜一层 `int(str(...))`，
+    否则非数字／缺键才会真的返回 ``None``。
+    """
+    from .exams import _exam_module
+
+    module = _exam_module(payload)
+    if module is None:
+        return None
+    try:
+        return int(str(module.get("totalSize")))
+    except (TypeError, ValueError):
+        return None
+
+
+def _exam_fallback_note(cfg: Settings, semester_code: str) -> str:
+    """考试降级提示里"本地这份数据现在算什么"的后半句（设计文档 §7:376）。
+
+    有旧快照就报出**它是哪天的**（取 `raw_exams_path` 的 mtime），让用户知道自己正在沿用
+    哪一份数据；"距今多少天"的算式属于 Task 11 的 `snapshot_age_days(..., kind="exams")`，
+    这里只给日期。没有旧快照就明说不含考试——**绝不**写"沿用已有快照"，那是让用户相信
+    自己正在依赖一个根本不存在的东西。
+    """
+    path = cfg.raw_exams_path(semester_code)
+    if not path.is_file():
+        return "本地没有考试快照，本次导出不含考试"
+    try:
+        day = datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
+    except (OSError, OverflowError, ValueError):
+        # 快照刚被移走（OSError）：宁可不报日期，也不反过来谎称"没有快照"。
+        # 坏 mtime（文件系统抽风/时钟回拨）：`fromtimestamp` 在 Windows 上抛 OSError[Errno 22]，
+        # 在 POSIX 上抛 OverflowError/ValueError——与 export 侧同族写法（本文件
+        # cmd_export 的 `contextlib.suppress(OSError, OverflowError, ValueError)`，终审 F3）
+        # 一致，三类一起兜，否则未评审过的通用异常文案会顶掉这句降级说明。
+        return "本地已有考试快照，本次导出继续沿用它"
+    return f"不覆盖已有快照，沿用 {day} 的考试快照"
+
+
+def _fetch_exams(
+    endpoints: Mapping[str, Endpoint],
+    cfg: Settings,
+    semester_code: str,
+    *,
+    reason_if_skipped: str | None = None,
+) -> Path | None:
+    """宁缺毋滥：任何失败都只记日志，**绝不覆盖**已有快照，绝不非零退出。
+
+    三态判定唯一归属点是 `exams.classify_exam_payload`（裁决 1）：只有 HAS_EXAMS /
+    NO_EXAMS 才 `save_raw(kind="exams")`；UNKNOWN（无法判定的响应／会话过期／抓取失败）
+    一律不动本地快照。缺端点走 `require_endpoint` + `EndpointNotConfigured`（裁决 2），
+    与课表同口径——`load_endpoints` 会过滤占位符路径，"缺失"有两种来源，这里一并兜住。
+    """
+    from .exams import ExamState, classify_exam_payload
+    from .fetcher import fetch_via_http, require_endpoint, save_raw
+
+    if reason_if_skipped:
+        logger.info("%s，本次不抓考试安排", reason_if_skipped)
+        return None
+    try:
+        endpoint = require_endpoint(endpoints, "exam_schedule")
+    except EndpointNotConfigured:
+        logger.warning("未配置 exam_schedule 端点，跳过考试安排（课表不受影响）")
+        return None
+    try:
+        payload = fetch_via_http(endpoint, cfg=cfg, params={"XNXQDM": semester_code})
+    except (AuthenticationExpired, TimetableFetchError) as exc:
+        logger.warning("考试安排获取失败（%s）；%s", exc, _exam_fallback_note(cfg, semester_code))
+        return None
+    outcome = classify_exam_payload(payload)
+    if outcome.state is ExamState.UNKNOWN:
+        logger.warning(
+            "考试安排响应无法判定（extParams.code=%r msg=%r）；%s",
+            outcome.code,
+            outcome.msg,
+            _exam_fallback_note(cfg, semester_code),
+        )
+        return None
+    if outcome.state is ExamState.NO_EXAMS:
+        logger.info("本学期暂无考试安排（接口确认：空）")
+    total_size = _exam_total_size(payload)
+    if total_size is not None and total_size != len(outcome.rows):
+        # §6.4 翻页护栏：只告警，绝不据此拒绝落盘（裁决 3）——今天一页够用，
+        # 但将来某学期超过一页时，这条 warning 阻止考试被静默丢弃而无任何痕迹。
+        logger.warning(
+            "考试响应行数（%d）与 totalSize（%d）不一致，可能超过一页；本次仍照常缓存",
+            len(outcome.rows),
+            total_size,
+        )
+    path = save_raw(payload, cfg, semester_code, kind="exams")
+    logger.info("考试安排已缓存到 %s", path)
+    return path
 
 
 def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
@@ -353,7 +506,34 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
         sequence_from=args.sequence_from,
         baseline_probe=args.output,
         no_sequence=args.no_sequence,
+        include_exams=not args.no_exams,
     )
+
+    # §7:382-386 陈旧口径：考试快照 vs **同学期课表快照**（不是"距今多少天"）。
+    # 文案严格按 spec 的「考试数据来自 X 日的课表同期快照」，再加补救动作与"本次仍
+    # 继续"的 fail-closed 说明。日期取考试快照 mtime，与 Task 7 `_exam_fallback_note`
+    # 读同一份 mtime——两处刻意不合并（见 Task 11 报告的重复说明）。
+    # --no-exams 时本次产物里根本没有考试事件，任何「考试可能已改期」的提示对本次
+    # 运行都是谎话（spec §7:390-392 把 --no-exams 当作有意的回滚出口）：整块跳过。
+    # 任何滞后计算/stat 失败（如并发 fetch 正在轮转快照的窗口）都视作"没有可提醒的"：
+    # 宁缺毋滥，export 绝不因此报错或非零退出。坏 mtime（文件系统抽风/时钟回拨）还会让
+    # `datetime.fromtimestamp` 抛 OverflowError/ValueError——本机 Windows 上表现成
+    # OSError[Errno 22]、POSIX 上才是这两类，三类一起 suppress 才封得住（终审 F3，§7:387）。
+    if not args.no_exams:
+        from .exams import exam_snapshot_lag_days
+
+        with contextlib.suppress(OSError, OverflowError, ValueError):
+            lag = exam_snapshot_lag_days(cfg, semester)
+            if lag is not None and lag > EXAM_STALE_LAG_DAYS:
+                exam_day = (
+                    datetime.fromtimestamp(cfg.raw_exams_path(semester).stat().st_mtime)
+                    .date()
+                    .isoformat()
+                )
+                logger.warning(
+                    "考试数据来自 %s 的课表同期快照，考试可能已改期，建议重新 fetch（本次仍按现有快照导出）",
+                    exam_day,
+                )
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -726,14 +906,27 @@ def cmd_schedule(args: argparse.Namespace, cfg: Settings) -> int:
 
 
 def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
-    """比对新旧课表快照。
+    """比对新旧课表快照与考试快照。
 
     默认比较「上一次 fetch」与「这一次 fetch」——``fetch`` 会在覆盖前把旧快照
     原子轮转成 ``*.prev.json``，所以正常用过两次 fetch 后本命令零参数可用。
     只 fetch 过一次时不猜、不假装成功，明确说明基线缺失以及如何补救。
+
+    考试侧（设计文档 §6.6）走同一对轮转出来的快照（``raw/exams-*.json``），
+    比对结果作为并列的「考试变更」小节输出；``--old/--new`` 只对课表生效。
     """
     from .diff import describe_periods, describe_slot, diff_meetings
-    from .parser import TimetableParser
+    from .exams import (
+        EXAM_KIND_ADDED,
+        EXAM_KIND_CANCELLED,
+        ExamDiff,
+        campus_names_from_timetable,
+        describe_exam_change,
+        diff_exams,
+        parse_exam_rows,
+    )
+    from .models import ExamSchedule
+    from .parser import ParseReport, TimetableParser
 
     semester = args.semester or cfg.semester_key
 
@@ -755,6 +948,12 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
     else:
         new_path = old_path  # 不会走到：old 分支已要求 semester 或 --old
 
+    def _read_json(path: Path, label: str) -> object:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise XjtuCalendarError(f"{label}快照不是合法 JSON：{path}（{exc}）") from exc
+
     def _load(path: Path, label: str) -> object:
         if not path.is_file():
             raise XjtuCalendarError(
@@ -762,15 +961,14 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
                 hint="快照来自 fetch（每次 fetch 会把上一份轮转为 *.prev.json 作为比较基线）。"
                 "刚 fetch 过一次还没有基线属正常；也可以先用 --old 指定一份之前保存的 raw JSON。",
             )
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise XjtuCalendarError(f"{label}快照不是合法 JSON：{path}（{exc}）") from exc
+        return _read_json(path, label)
 
     old_parser = TimetableParser()
     new_parser = TimetableParser()
-    _, old_meetings = old_parser.parse(_load(old_path, "旧"))
-    _, new_meetings = new_parser.parse(_load(new_path, "新"))
+    old_payload = _load(old_path, "旧")
+    new_payload = _load(new_path, "新")
+    _, old_meetings = old_parser.parse(old_payload)
+    _, new_meetings = new_parser.parse(new_payload)
 
     print(f"旧快照: {old_path}（{old_parser.report.summary()}）")
     print(f"新快照: {new_path}（{new_parser.report.summary()}）")
@@ -779,8 +977,74 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
             logger.warning("解析跳过（可能影响比对完整性）：%s", reason)
     print()
 
+    def _exam_rows(path: Path, label: str, campus: Mapping[str, str]) -> list[ExamSchedule]:
+        rep = ParseReport()
+        rows = parse_exam_rows(_read_json(path, label), campus_names=campus, report=rep)
+        for reason in rep.skipped:
+            logger.warning("%s快照解析跳过（可能影响比对完整性）：%s", label, reason)
+        for warning in rep.warnings:
+            logger.warning("%s快照：%s", label, warning)
+        return rows
+
+    def _diff_exam_snapshots() -> tuple[ExamDiff, str, str]:
+        """比对考试快照，返回 ``(变更, 「本次没比对考试」的说明, 考试小节抬头)``。
+
+        取数口径（§6.6:333-336）：考试侧**只有**默认路径这一种来源 —— 快照按学期存放
+        （``raw/exams-<学期>.json`` 与其 ``.prev``），``--old/--new`` 只对课表生效。
+        三种"没法比对"都要明说，不能拿一句「无变化」糊过去：没给学期、
+        本地根本没有考试快照（从没抓过考试／状态未知时按宁缺毋滥没有落盘）、
+        或考试快照读不出／不是合法 JSON（评审 F1：坏快照只跳过考试，不杀课程报告）。
+        """
+        if not semester:
+            return (
+                ExamDiff(),
+                "本次未比对考试：--old/--new 只指定课表快照，考试快照按学期存放（需要 --semester）。",
+                "",
+            )
+        new_exams_path = cfg.raw_exams_path(semester)
+        if not new_exams_path.is_file():
+            return (
+                ExamDiff(),
+                f"本次未比对考试：本地没有 {semester} 的考试快照"
+                "（由 fetch 写入；本学期尚未排考时本来就没有）。",
+                "",
+            )
+        prev_exams_path = cfg.raw_exams_prev_path(semester)
+        first_snapshot = not prev_exams_path.is_file()
+        # 两侧**共用同一份**校区对照（取自新的课表快照，§6.3）：各取各的话，两份课表快照里
+        # XXXQDM_DISPLAY 的差别会变成一条根本不存在的「教室变更」。
+        campus_names = campus_names_from_timetable(new_payload)
+        try:
+            new_exams = _exam_rows(new_exams_path, "新考试", campus_names)
+            # 没有 .prev = 本学期**第一次**拿到考试快照：旧侧按空表比对，于是每行都报「新增」
+            # （§6.6:336-337）。计划稿写的"任一侧缺失就打说明、返回空 diff"是错的 —— 那会让
+            # diff 打出「无变化」，而日历里实实在在多出了一整批考试事件。
+            old_exams: list[ExamSchedule] = (
+                [] if first_snapshot else _exam_rows(prev_exams_path, "旧考试", campus_names)
+            )
+        except (XjtuCalendarError, OSError, UnicodeDecodeError) as exc:
+            # 评审 F1（Important）：考试是**增量侧**，坏快照（读不出／非合法 JSON）只能跳过考试
+            # 比对，绝不能像课程快照那样抛错杀掉整份报告 —— 上面一屏还是「缺快照 → 打一行说明、
+            # 继续比课程」的口径，这里必须一致：走 exam_skip_note 通道、点名是考试快照坏掉，
+            # 课程照常往下比、exit 0。
+            return ExamDiff(), f"本次未比对考试：考试快照读取失败（{exc}）", ""
+        preface = (
+            "无上一份考试快照（本学期首次抓到考试安排），以下考试变更全部按新增报告。"
+            if first_snapshot
+            else ""
+        )
+        return diff_exams(old_exams, new_exams), "", preface
+
     result = diff_meetings(old_meetings, new_meetings)
-    if result.is_empty:
+    # 考试小节必须在 `result.is_empty` 短路**之前**取好（§6.6:327-331）：只改考试
+    # （座位重排、换考场正是学期中最常见的事件）时课程侧为空，旧写法在打印任何小节
+    # 之前就 return，考试变更一个字都不会出现。
+    exam_diff, exam_skip_note, exam_preface = _diff_exam_snapshots()
+    if exam_skip_note:
+        print(exam_skip_note)
+        print()
+
+    if result.is_empty and exam_diff.is_empty:
         print("无变化：两份快照的课程、时段、周次、教室与教师完全一致。")
         return 0
 
@@ -813,6 +1077,27 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
                 f"{change.old} → {change.new}"
             )
         print()
+
+    if exam_diff.changes:
+        if exam_preface:
+            print(exam_preface)
+            print()
+        print(f"考试变更（{len(exam_diff.changes)} 项）:")
+        # 记号与课程小节一致：+ 新增、- 取消、~ 改了某个字段。
+        # 循环变量不能复用上面的 `change`：那个是 `SlotChange`，mypy strict 会把两个
+        # 形状的字段名混在一起报错（课程与考试的变更记录**本来就不该共用一个名字**）。
+        exam_markers = {EXAM_KIND_ADDED: "+", EXAM_KIND_CANCELLED: "-"}
+        for exam_change in exam_diff.changes:
+            marker = exam_markers.get(exam_change.kind, "~")
+            print(f"  {marker} {describe_exam_change(exam_change)}")
+        print()
+        if any(exam_change.kind == EXAM_KIND_CANCELLED for exam_change in exam_diff.changes):
+            # §7.1：v1 不发布 STATUS:CANCELLED / METHOD:CANCEL，报出取消≠客户端删掉它。
+            print(
+                "注意：被取消的考试不会从已订阅的日历里自动消失（本工具不发布取消事件），"
+                "必要时请在日历中手动删除。"
+            )
+            print()
 
     print("提示：确认无误后重新 export 即可拿到更新后的 .ics（UID 稳定，原地更新）。")
     return 0
@@ -895,7 +1180,7 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
     if args.action == "push":
         return _subscribe_push(args, cfg, state, semester)
     if args.action == "rotate":
-        return _subscribe_rotate(cfg, state, semester)
+        return _subscribe_rotate(cfg, state, semester, include_exams=not args.no_exams)
     return _subscribe_status(args, cfg, state, semester)
 
 
@@ -958,6 +1243,7 @@ def _subscribe_push(
         semester,
         input_path=getattr(args, "input", None),
         baseline_probe=str(last_local) if last_local.is_file() else None,
+        include_exams=not args.no_exams,
     )
     res = subscribe.publish(cfg, state, result_ics.ics)
     if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
@@ -970,7 +1256,14 @@ def _subscribe_push(
     return 0
 
 
-def _subscribe_rotate(cfg: Settings, state: subscribe.SubscriptionState, semester: str) -> int:
+def _subscribe_rotate(
+    cfg: Settings, state: subscribe.SubscriptionState, semester: str, *, include_exams: bool = True
+) -> int:
+    """换 token 并在有本地留底时重新发布。
+
+    ``include_exams``：与 push 同口径透传给构建管线（spec §6.7）。rotate 若不接
+    ``--no-exams``，用户明确关掉的考试会被悄悄塞回订阅 URL——正是本参数要防的缺陷。
+    """
     from . import subscribe
 
     _validate_publish_branch(state.branch)
@@ -990,7 +1283,9 @@ def _subscribe_rotate(cfg: Settings, state: subscribe.SubscriptionState, semeste
             print("（本地尚无发布留底，运行 subscribe push 完成首次发布。）")
         return 0
     try:
-        result_ics = build_ics_for_semester(cfg, semester, baseline_probe=str(last_local))
+        result_ics = build_ics_for_semester(
+            cfg, semester, baseline_probe=str(last_local), include_exams=include_exams
+        )
         subscribe.publish(cfg, state, result_ics.ics)
     except XjtuCalendarError as exc:
         # token 已落盘换新、发布却失败：不能报成功。远端还挂在旧文件名上

@@ -150,6 +150,14 @@ class Settings:
         """上一次 fetch 的快照（``diff`` 的比较基线；单代轮转，含个人信息）。"""
         return self.raw_dir / f"timetable-{semester_key}.prev.json"
 
+    def raw_exams_path(self, semester_key: str) -> Path:
+        """考试安排原始快照。含个人信息，只应留在 home 下（已 gitignore）。"""
+        return self.raw_dir / f"exams-{semester_key}.json"
+
+    def raw_exams_prev_path(self, semester_key: str) -> Path:
+        """`diff` 的考试比较基线（单代轮转，同课表口径）。"""
+        return self.raw_dir / f"exams-{semester_key}.prev.json"
+
 
 def find_browser() -> str | None:
     """自动探测可用的 Chromium 系浏览器。

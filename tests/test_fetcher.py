@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import httpx
@@ -35,6 +36,7 @@ from xjtu_calendar.fetcher import (
     classify_body,
     fetch_via_http,
     load_endpoints,
+    load_raw,
     require_endpoint,
     save_raw,
 )
@@ -287,3 +289,89 @@ def test_save_raw_rotates_previous_snapshot(cfg: Settings) -> None:
     save_raw({"v": 3}, cfg, "2026-fall")
     assert json.loads(previous.read_text(encoding="utf-8")) == {"v": 2}
     assert json.loads(current.read_text(encoding="utf-8")) == {"v": 3}
+
+
+def test_save_raw_kind_rotates_only_its_own_stream(tmp_path):
+    cfg = Settings(home=tmp_path)
+    cfg.ensure_dirs()
+    save_raw({"a": 1}, cfg, "2026-2027-1")
+    save_raw({"exams": "v1"}, cfg, "2026-2027-1", kind="exams")
+    save_raw({"exams": "v2"}, cfg, "2026-2027-1", kind="exams")
+    assert cfg.raw_timetable_prev_path("2026-2027-1").exists() is False  # 课表只写过一次
+    assert cfg.raw_exams_prev_path("2026-2027-1").read_text(encoding="utf-8").find("v1") >= 0
+    assert load_raw(cfg, "2026-2027-1", kind="exams") == {"exams": "v2"}
+
+
+def test_exam_snapshot_is_owner_only(tmp_path):
+    """§8 的用户可见结果：考试快照落盘 0600。
+
+    这条**不足以**看守 `private=True`（见下面那条 kwargs 用例的说明）：
+    `atomic_write_text` 走 `tempfile.mkstemp` + `os.replace`，出来的文件本来就是
+    0600，把 `private=True` 删掉它也不红。它钉的是"用户拿到的权限位"，
+    §8 的"必须显式收紧"由 `test_both_snapshot_kinds_request_the_private_write` 钉。
+    """
+    cfg = Settings(home=tmp_path)
+    cfg.ensure_dirs()
+    path = save_raw({"exams": 1}, cfg, "2026-2027-1", kind="exams")
+    mode = path.stat().st_mode & 0o077
+    if os.name != "posix":
+        pytest.skip("Windows 不执行 POSIX 权限位")
+    assert mode == 0
+
+
+def test_both_snapshot_kinds_request_the_private_write(tmp_path, monkeypatch):
+    """§8 的可证伪看守：`private=True` 必须**作为关键字参数**传到 `atomic_write_text`。
+
+    为什么光有上面的 mode 断言不够：`fileutil.atomic_write_text` 用
+    `tempfile.mkstemp` 造临时文件（0600，umask 只会收窄不会放宽），再用
+    `os.replace` 同 inode 改名 —— 所以**删掉 `private=True` 之后落盘权限位分毫不变**，
+    两条 mode 用例在任何平台上都照样绿（Windows 上还整条 skip）。
+    形状照 `test_auth_session.py:142` 的 `ensure_login` 间谍：monkeypatch 包住
+    **`fetcher` 里实际引用的那个名字**（`from .fileutil import atomic_write_text`
+    是模块属性绑定，打桩 `fileutil` 上的同名函数收不到任何调用 → 假绿），
+    替身转调真实实现，写入照常发生。
+    """
+    from xjtu_calendar import fetcher as fetcher_module
+
+    captured: list[dict[str, object]] = []
+    real_write = fetcher_module.atomic_write_text
+
+    def spy(path: Path, text: str, **kwargs: object) -> None:
+        captured.append(kwargs)
+        real_write(path, text, **kwargs)  # 照常完成写入，否则测不到真行为
+
+    monkeypatch.setattr(fetcher_module, "atomic_write_text", spy)
+
+    cfg = Settings(home=tmp_path)
+    cfg.ensure_dirs()
+    save_raw({"a": 1}, cfg, "2026-2027-1")  # 默认 kind：课表快照（Task 6 一并收紧）
+    timetable_kwargs = captured[-1]
+    exam_path = save_raw({"exams": 1}, cfg, "2026-2027-1", kind="exams")
+
+    assert timetable_kwargs.get("private") is True
+    assert captured[-1].get("private") is True
+    # 替身没把写入吞掉：快照内容确实落到了考试路径上
+    assert json.loads(exam_path.read_text(encoding="utf-8")) == {"exams": 1}
+    assert len(captured) == 2  # 两条路径各一次，没有偷偷多写第三份
+
+
+def test_load_raw_missing_exams_snapshot_hint(tmp_path):
+    cfg = Settings(home=tmp_path)
+    with pytest.raises(TimetableFetchError, match="fetch"):
+        load_raw(cfg, "2026-2027-1", kind="exams")
+
+
+def test_unknown_snapshot_kind_is_rejected(tmp_path):
+    """`_raw_paths` 收到未知 kind 必须**直接抛**（终审 F7，`fetcher` 这一侧）。
+
+    `"exam"` 是 `"exams"` 的常见笔误。少了这条 `ValueError`，`kind` 判断会一路落到
+    课表分支返回课表路径：`load_raw(kind="exam")` 于是**读错文件**，把课表信封交给
+    考试解析，得到 0 行还理直气壮地报"本学期无考试"—— 静默的错数据比抛异常难查得多。
+    所以这里先把课表快照写上：回落真的会"成功"，用例才谈得上证伪。
+    `subscribe.snapshot_age_days` 那一侧的同类用例见 Task 11。
+    """
+    cfg = Settings(home=tmp_path)
+    cfg.ensure_dirs()
+    save_raw({"kbList": []}, cfg, "2026-2027-1")
+    with pytest.raises(ValueError, match="未知的快照类型"):
+        load_raw(cfg, "2026-2027-1", kind="exam")

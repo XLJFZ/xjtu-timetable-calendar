@@ -28,6 +28,7 @@ __all__ = [
     "CalendarEvent",
     "Course",
     "CourseMeeting",
+    "ExamSchedule",
     "SchedulePeriod",
     "ScheduleProfile",
     "Semester",
@@ -293,6 +294,43 @@ class CalendarEvent:
             raise ValueError(
                 f"事件结束时间必须晚于开始时间：{self.start.isoformat()} -> {self.end.isoformat()}"
             )
+
+
+@dataclass(frozen=True)
+class ExamSchedule:
+    """一场考试。字段来自 `studentWdksapApp` 的 `wdksap` 行，形态见设计文档 §4。
+
+    时间一律持有为 ``"HH:MM"`` 字符串：拼装统一走 :func:`xjtu_calendar.schedules.combine`，
+    它强制 ``Asia/Shanghai`` 且拒绝 naive datetime。年级/学号/教师姓名这类可改的展示性字段
+    **绝不进 UID**（同 :class:`CourseMeeting` 的约定）。
+    """
+
+    course_id: str | None
+    course_name: str
+    exam_name: str | None
+    date_str: str  # ISO 日期（来自 KSRQ，时间部分恒 00:00:00，已丢弃）
+    start_time: str  # "HH:MM"，来自 KSSJMS
+    end_time: str  # "HH:MM"，来自 KSSJMS
+    location: str | None
+    campus: str | None
+    seat: str | None
+    credits: float | None
+    teacher: str | None
+    row_id: str | None  # WID：UID 首选依据
+    task_id: str | None  # KSRWID：WID 缺失时的退路
+    exam_code: str | None  # KSDM：批次
+
+    def __post_init__(self) -> None:
+        _validate_hhmm(self.start_time, "start_time")
+        _validate_hhmm(self.end_time, "end_time")
+        # 归一化成零补齐的 "HH:MM"：_validate_hhmm 允许 1 位小时，而下面要比字符串，
+        # "9:00" < "11:30" 会给出相反的答案。combine 本身两种都吃，归一化不损失信息。
+        for field_name in ("start_time", "end_time"):
+            raw = getattr(self, field_name).strip()
+            hour, minute = raw.split(":")
+            object.__setattr__(self, field_name, f"{int(hour):02d}:{int(minute):02d}")
+        if self.end_time <= self.start_time:
+            raise ValueError(f"考试结束时间必须晚于开始：{self.start_time} -> {self.end_time}")
 
 
 @dataclass(frozen=True)

@@ -19,6 +19,7 @@ Microsoft Outlook 等应用。
 - [安装](#安装)
 - [快速开始](#快速开始)
 - [URL 订阅（subscribe）](#url-订阅subscribe)
+- [考试安排](#考试安排)
 - [必须由你配置的内容](#必须由你配置的内容)
 - [命令参考](#命令参考)
 - [项目结构](#项目结构)
@@ -238,11 +239,17 @@ python -m xjtu_calendar login
 python -m xjtu_calendar fetch --semester 2026-fall
 ```
 
+HTTP 路径会同时抓考试安排（默认行为，见下文[「考试安排」](#考试安排)）；
+只想抓课表加 `--no-exams`。
+
 ### 4. 导出
 
 ```bash
 python -m xjtu_calendar export --semester 2026-fall --output timetable.ics
 ```
+
+产物默认**同时含本学期的考试事件**（单场绝对时刻、无提醒；座位号在 `DESCRIPTION` 里），
+`--no-exams` 可关闭——细节与已知限制见[「考试安排」](#考试安排)。
 
 日历标题（`X-WR-CALNAME`，也就是客户端里显示的名字）默认**按课表自动推导**为
 「西安交通大学课表 · 大三-上」这样的形式：年级来自课表的入学年级字段（`NJDM`，
@@ -412,6 +419,95 @@ token 状态文件按收紧的文件权限写盘（与 `storage_state.json` 同�
      真正的删除入口在 **设置 → 用户与账号 → 账户与同步**，移除导入产生的那个
      账户即可。**不要**用「设置 → 应用 → 日历 → 清除数据」，那会连你自己的
      日程一起清空。
+
+---
+
+## 考试安排
+
+`fetch` 在抓课表的同时抓 eHall 的「我的考试安排」，`export` / `subscribe push` 把考试
+事件并进**同一份 .ics、同一个订阅 URL**——不需要第二份日历，期末也不必再手抄。
+考试事件是单场绝对时刻的 `VEVENT`（带 `DTSTART;TZID=Asia/Shanghai`），**不用 RRULE、
+不写 VALARM**（提醒交给客户端设置）；`SUMMARY` 为「课程名（类型词）」，类型词取自考试
+名称原文（实测见过 期中/结课/期末考试；出现「补考」「缓考」也原样带出，不做白名单）。
+
+### 默认包含，`--no-exams` 关闭
+
+`fetch` / `export` / `subscribe push` / `subscribe rotate` 四条路径都接受 `--no-exams`：
+`fetch` 侧是**不抓**，export/push/rotate 侧是**不并入**。两种情况本地快照
+`raw/exams-<学期>.json` **都不删除**——回滚只是「这个功能没用」，不是抹掉数据；
+重新打开后无需重抓。
+
+### 只有 HTTP 路径能拿到考试
+
+**只有 `fetch` 的 HTTP 分支会抓考试**，另外两条路径明确不抓（日志会说明原因，
+不是静默失败）：
+
+- `--from-file`：离线导入，没有会话，考试安排需要在线获取；
+- `--source browser`：浏览器拦截按课表关键词过滤捕获的 URL（考试接口路径
+  `wdksap` 不在关键词表内），且只导航课表应用页面。
+
+要拿到考试，就用默认的 HTTP 路径 `fetch`。若考试端点缺失或配置里仍是占位符，
+`fetch` 只跳过考试并记 warning，**课表照常落盘、照常导出**。
+
+### 三态判定：状态未知绝不覆盖已有快照
+
+考试接口「没有考试」和「查询没成功」返回的行数**都是空**，光看 `rows` 区分不了，
+所以判定落在响应的 `extParams.code` 上，分三态：
+
+| 状态 | 行为 |
+|---|---|
+| **有考试** | 写快照，导出考试事件 |
+| **确认无考试** | 写空快照（覆盖旧的），日志说明 |
+| **状态未知**（非 200 / 会话失效 / 登录页 / `extParams` 判不出 / 抓取抛异常） | **不覆盖已有快照**。有旧快照 → 本次继续沿用，warning 里**报出那份快照是哪一天的**；没有旧快照 → warning 明说「本地没有考试快照，本次导出不含考试」 |
+
+两条不变量：
+
+- 考试侧任何失败都**不会**让 `fetch` / `export` 非零退出——课程是主功能，考试是增量；
+- 状态未知时**宁可沿用旧数据也不覆盖**：误覆盖会把已有考试信息抹掉，
+  多留一条 warning 最坏只是「考试晚一天更新」，方向上不可逆的操作选后者。
+
+**翻页护栏**：响应行数与 `totalSize` 不一致时记 warning（提示可能超过一页），
+但**照常落盘**、不阻断——实测一页够用，这条是为将来超过一页时留警痕。
+
+### 已发布的考试事件，关掉开关不会撤销（v1 已知限制）
+
+`render_ics` 只发 `method: PUBLISH` 的普通事件，全仓**没有** `STATUS:CANCELLED` /
+`METHOD:CANCEL` 通路。所以：
+
+- **已经发布出去的考试事件，不会因 `--no-exams` 或考试被取消而从订阅端消失**。
+  客户端对「URL 内容里少了一条事件」的处理各家不一致（Google/Outlook 多为保留），
+  必要时请在客户端**手动删除**旧考试事件。
+- 「宁缺毋滥」只保证**不新增**、不保证**撤销已发布的**。真正的取消通路
+  （发布后保留一段 `STATUS:CANCELLED`）留到 v2 单独立项。
+- 考试 UID 依据接口行 ID `WID`（缺失时依次降级到 `KSRWID`、再到内容组合，
+  降级有日志）。**改期/换考场后服务器是否换 `WID` 尚未验证**——若换，
+  改期会表现为「取消 + 新增」而非原地更新，由 `diff` 的「考试变更」小节先看到。
+
+### 座位号在哪看、`diff` 能报什么
+
+座位号在事件的 **`DESCRIPTION`** 里（与考试全称、课程号、学分、主考教师并列），
+不在 `LOCATION`；`--from-date` / `--to-date` 会**连考试一起裁剪**，不特殊放行。
+
+`diff` 新增「考试变更」小节，与课程小节并列，报五类：**新增 / 取消 / 时间变更 /
+教室变更 / 座位变更**。被取消的考试在报告末尾会再提示一次「不会从已订阅的日历里
+自动消失」。**考试改名不会出现在报告里**（上面五类是唯一口径）——这与课程侧不同：
+课程改名**会**报出来（按时段变化呈现），而考试行只要还带着同一个 `WID`，改名在
+diff 里是静默的。收尾提示「UID 稳定，原地更新」同样只对**携带 `WID`** 的行成立；
+降级到内容组合键的行改了日期会被视为新事件。
+
+### 数据与日志隐私
+
+- 考试快照 `raw/exams-*.json` 与 `.prev.json` 含学号、姓名、教师姓名，
+  只落在本地数据目录（已被 `.gitignore` 排除），并且和课表快照一样以收紧权限
+  （`private=True`）原子落盘；
+- 日志不输出原始响应体；主考教师姓名（`ZJJSXM`）与 `SJBH` 已加入
+  按键打码名单。
+
+### 考试快照的陈旧提示
+
+`export` 并入考试时，若**考试快照落后于同学期课表快照**超过 7 天，会给一条 warning
+（「考试数据来自 X 日的课表同期快照」——考试排期跟着课表一起变，比较口径刻意取
+相对值而非「距今多少天」）。`--no-exams` 不并入考试，此提示自然不出现。
 
 ---
 
@@ -653,12 +749,12 @@ python -m xjtu_calendar schedule --semester 2026-2027-1 --apply
 |---|---|
 | `login [--force]` | 浏览器手动登录，保存本地会话 |
 | `status` | 查看会话与配置状态（不发起网络请求） |
-| `fetch [--semester S] [--source auto\|http\|browser] [--from-file F]` | 获取课表原始 JSON（覆盖前自动把上一份轮转为 `*.prev.json`，作为 `diff` 基线） |
-| `diff [--semester S] [--old F] [--new F]` | 比对新旧课表快照：新增/删除课程、时段增减、周次/教室/教师变化（纯本地） |
-| `export [--semester S] [-o OUT] [--input F] [--name N] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence]` | 生成 `.ics`（`--name` 不给时标题按课表自动推导，见上文「导出」） |
+| `fetch [--semester S] [--source auto\|http\|browser] [--from-file F] [--no-exams]` | 获取课表原始 JSON（HTTP 路径同时抓考试安排；覆盖前自动把上一份轮转为 `*.prev.json`，作为 `diff` 基线） |
+| `diff [--semester S] [--old F] [--new F]` | 比对新旧课表快照：新增/删除课程、时段增减、周次/教室/教师变化；并列「考试变更」小节（新增/取消/时间/教室/座位；纯本地；`--old/--new` 只对课表生效） |
+| `export [--semester S] [-o OUT] [--input F] [--name N] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence] [--no-exams]` | 生成 `.ics`（默认并入考试事件；`--name` 不给时标题按课表自动推导，见上文「导出」） |
 | `notice --url U \| --from-file F [--semester S] [--apply]` | 解析停课/调课通知，预览或合并进学期配置 |
 | `schedule [--url U \| --from-file F] [--semester S] [--apply]` | 解析官方「学生作息时间表」页，预览或合并进作息表配置 |
-| `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F]` \| `subscribe rotate` \| `subscribe status [--verify]`（均可带 `--semester S`） | 把 .ics 发布到自己的 GitHub Pages，日历客户端按 URL 订阅（见上文「URL 订阅」） |
+| `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F] [--no-exams]` \| `subscribe rotate [--no-exams]` \| `subscribe status [--verify]`（均可带 `--semester S`） | 把 .ics 发布到自己的 GitHub Pages，日历客户端按 URL 订阅（见上文「URL 订阅」；push/rotate 默认并入考试，`--no-exams` 同样生效） |
 | `inspect [--input F] [-o OUT]` | 对原始 JSON 做**脱敏**结构分析 |
 
 全局参数：`--debug`（详细异常）、`-q`（静默）、`--version`
@@ -716,6 +812,7 @@ xjtu-timetable-calendar/
 │   ├── academic_calendar.py            # 教学周 → 日期
 │   ├── schedules.py                    # 作息表 / 节次 → 实际时间
 │   ├── parser.py                       # eHall JSON → 标准化模型（接口变更唯一适配点）
+│   ├── exams.py                        # 考试安排：解析 / 三态判定 / 事件构建 / 考试变更比对
 │   ├── auth.py                         # 会话管理
 │   ├── fetcher.py                      # 课表抓取（HTTP / 浏览器双路径）
 │   ├── exporter.py                     # → CalendarEvent → .ics
@@ -748,6 +845,11 @@ xjtu-timetable-calendar/
 │   ├── test_diff.py                    # 课表快照比对（课程/时段/字段三级口径）
 │   ├── test_cli_diff.py                # diff 子命令 e2e + fetch 快照轮转联动
 │   ├── test_cli_notice.py              # notice 子命令 CLI 级 e2e
+│   ├── test_exams.py                   # 考试解析（四种实测时刻形态）/ UID 降级 / 红线
+│   ├── test_exams_fetch.py             # 三态落盘：状态未知绝不覆盖已有快照
+│   ├── test_exporter_exams.py          # 课程+考试合并 / 全局 UID 唯一性 / SEQUENCE 基线
+│   ├── test_diff_exams.py              # 考试变更五类（新增/取消/时间/教室/座位）
+│   ├── test_cli_exams.py               # --no-exams 在 fetch/export/push/rotate 的透传
 │   └── fixtures/
 │       ├── timetable_sample.json           # 手工构造的脱敏样例
 │       ├── ehall_timetable_real_sanitized.json  # 真实结构脱敏固件
@@ -865,7 +967,7 @@ URL/token、强推前有 tree 护栏（拒绝覆盖非本工具产物）。
 
 ```bash
 pip install -e ".[dev]"
-pytest                      # 421 项测试（含 doctest）
+pytest                      # 全量测试（含 doctest；条数以本地运行为准）
 pytest --cov=xjtu_calendar  # 带覆盖率
 ruff check .                # 代码风格（含 scripts/ 与 tests/）
 mypy src                    # 类型检查（strict）
@@ -933,6 +1035,9 @@ Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**�
 - **ICS**：必需属性齐全、**课程 VEVENT 不使用 RRULE**（时区组件内部的规则不受此约束）、
   CRLF、时区 `Asia/Shanghai` 且内嵌 `VTIMEZONE`（TZID 引用完整）、特殊字符转义
 - **接口层**：响应分类（含「200 + 登录页 HTML」判为会话失效）、占位符端点拒绝、401/403 不重试
+- **考试安排**：四种实测时刻形态解析 / 三态判定与「状态未知不覆盖快照」/
+  UID 降级链与同日两场不撞 / 考试事件必须带 `TZID` 的 DATE-TIME（红线）/
+  课程+考试全局 UID 唯一性 / `--no-exams` 四路径透传 / 考试变更五类
 
 ### eHall 接口分析
 
@@ -950,6 +1055,7 @@ python scripts/probe_ehall.py
 |---|---|---|---|
 | `current_semester` | POST | `/jwapp/sys/wdkb/modules/jshkcb/dqxnxq.do` | 当前学年学期（无参数） |
 | `timetable` | POST | `/jwapp/sys/wdkb/modules/xskcb/xskcb.do` | 学生课表（form 参数 `XNXQDM`） |
+| `exam_schedule` | POST | `/jwapp/sys/studentWdksapApp/modules/wdksap/wdksap.do` | 我的考试安排（form 参数 `XNXQDM`；成功标志在 `extParams.code == 1`） |
 
 因此 `fetch --source http` 可直接走轻量路径。若端点配置缺失或仍是占位符，
 `fetch` 会明确报 `EndpointNotConfigured` 而不是拿模板去发请求。
@@ -985,6 +1091,16 @@ python scripts/probe_ehall.py
 确认变化后重新 `export`，UID 稳定所以日历会原地更新。
 用订阅通道的话，把「重新 export」换成 `subscribe push` 即可。
 也可以用 `--old/--new` 显式指定任意两份 raw JSON 做比较。
+
+**Q：考试怎么没进我的日历？/ 关掉或取消后，旧考试事件为什么还留在日历里？**
+
+没进：按顺序检查三件事——① `fetch` 是否走的 HTTP 路径（`--from-file` 与
+`--source browser` **不抓考试**，见「考试安排」）；② 本学期是否已排考
+（未排考时接口返回「查询失败」，属三态里的**状态未知**，本地没有旧快照则产物
+不含考试，日志会说明）；③ 是否带了 `--no-exams`（fetch/export/push/rotate
+四处都会关掉考试）。
+还留着：v1 **没有取消通路**（不发布 `STATUS:CANCELLED`），`--no-exams` 回滚与
+考试取消都只保证「不再发布」，已发布的考试事件需要在客户端手动删除。
 
 **Q：为什么不用一个 RRULE 简化 ICS？**
 
@@ -1034,6 +1150,9 @@ python -m xjtu_calendar login --force
   周次/教室/教师/课程名变化，纯本地比对）
 - [x] URL 订阅发布（`subscribe` 子命令：.ics 以孤儿单提交强推到个人
   GitHub Pages 分支，客户端按不可猜的 token URL 订阅，`rotate` 一键换链接）
+- [x] 考试安排接入（`fetch` HTTP 路径同时抓考试快照，考试事件并入同一份 .ics /
+  同一个订阅 URL；三态判定「状态未知绝不覆盖快照」、`--no-exams` 四路径开关、
+  `diff`「考试变更」小节，见上文「考试安排」）
 
 **待完成**
 
@@ -1044,7 +1163,9 @@ python -m xjtu_calendar login --force
 1. **URL 订阅式 ICS** —— 已交付 `subscribe` 手动发布通道（见上文
    「URL 订阅」：本地构建 + 强推 GitHub Pages，客户端按 URL 自动拉取）；
    **服务端定期重新生成**仍未实现（当前口径是纯手动 push）
-2. **考试安排** —— eHall 考试信息 → 日历
+2. **考试安排** —— 已交付（见上文「考试安排」：`fetch` → 同一份日历内含考试事件）；
+   **取消通路未实现**——已发布的考试事件不会因 `--no-exams` 或考试取消而从客户端
+   消失，v2 拟单独立项发布 `STATUS:CANCELLED`
 3. **校历事件** —— 开学、放假、考试周、校庆、节假日
 4. **多学期管理**
 

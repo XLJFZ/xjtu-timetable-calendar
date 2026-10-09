@@ -20,6 +20,10 @@ schedule*.json
 # 但**测试固件必须提交**（它们是手工构造的脱敏数据，不含个人信息）。
 # 注意顺序：否定规则必须放在对应的排除规则之后才生效。
 !tests/fixtures/*.json
+# G1 的课程侧 golden 也是一份**合成数据**测试固件，却被上面的 `*.ics`（个人课表导出物）
+# 误伤。和 `.json` 同一条理由：不提交就没有回归钉。只放开 tests/fixtures/ 下的 .ics，
+# 仓库根与其它位置的用户导出物仍然被 `*.ics` 挡住。
+!tests/fixtures/*.ics
 
 # **示例配置模板必须提交。**
 # 上面 `schedule*.json` 会误伤 `examples/schedule.example.json`，

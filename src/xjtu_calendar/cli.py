@@ -48,6 +48,7 @@ from .errors import (
     XjtuCalendarError,
 )
 from .exporter import build_ics_for_semester
+from .fileutil import atomic_write_text
 from .logging_setup import get_logger, setup_logging
 
 if TYPE_CHECKING:
@@ -541,6 +542,12 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     # 若用默认 newline=None，Windows 会再翻译一次得到 \r\r\n。
     output.write_text(result.ics, encoding="utf-8", newline="")
 
+    # 考试台账：产物写成功之后才回写（spec D11），且 `None` 时**不创建文件**。
+    # 目录可能不存在（ensure_dirs 刻意不含 subscribe/，D24①），写入失败一律不许
+    # 影响 export 的退出码——课程是主功能。
+    if result.exam_ledger_text is not None:
+        _write_exam_ledger(cfg, semester, result.exam_ledger_text)
+
     # --- 汇总 ---
     info = result.info
     print()
@@ -569,6 +576,11 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     print("Output:")
     print(f"  {output}")
     print()
+    # 撤销数量（spec §6.8）：`N == 0` 时整行不打印，摘要与 v0.5 保持一致。
+    cancelled = int(str(result.info.get("exam_cancellations", 0)))
+    if cancelled:
+        print(f"撤销：{cancelled} 条（已发布考试事件在本次产物中标记为取消）")
+        print()
     logger.info("已生成 %s", output)
     return 0
 
@@ -605,6 +617,18 @@ def cmd_inspect(args: argparse.Namespace, cfg: Settings) -> int:
 # --------------------------------------------------------------------------- #
 # 辅助
 # --------------------------------------------------------------------------- #
+def _write_exam_ledger(cfg: Settings, semester: str, text: str) -> None:
+    """回写考试台账；失败只记 warning，不改调用方的成败。"""
+    path = cfg.exam_ledger_path(semester)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, text, private=True)
+    except OSError as exc:
+        logger.warning("考试台账没能写入 %s（%s），下次仍按原台账判断撤销", path, exc)
+        return
+    logger.debug("考试台账已更新：%s", path)
+
+
 def _payload_size(payload: object) -> int:
     if isinstance(payload, list):
         return len(payload)

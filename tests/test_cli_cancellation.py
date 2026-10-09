@@ -272,3 +272,79 @@ def test_push_summary_omits_zero_cancellations(tmp_path, monkeypatch, capsys):
 
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     assert "撤销" not in capsys.readouterr().out
+
+
+def _ready_for_rotate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
+    """rotate 的两个前置：订阅状态已注册 + 本地有发布留底（无留底它会直接 return）。"""
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg)
+    last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
+    last.parent.mkdir(parents=True, exist_ok=True)
+    last.write_text("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", encoding="utf-8", newline="")
+    return cfg
+
+
+def test_rotate_warns_before_changing_token(tmp_path, monkeypatch, capsys):
+    """D12 + D24②：警告必须在 `rotate_token` 之前，且探针**不许**抢先落台账。"""
+    _ready_for_rotate(tmp_path, monkeypatch)
+    order = _stub_publish(monkeypatch)  # 已含 publish / _write_exam_ledger 两处埋点
+    real_rotate = subscribe.rotate_token
+    monkeypatch.setattr(
+        subscribe,
+        "rotate_token",
+        lambda *a, **k: (order.append("rotate"), real_rotate(*a, **k))[1],
+    )
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "永远收不到撤销" in out
+    # 「新订阅 URL」那行紧跟在 rotate_token **之后**打印：警告排在它前面，才是
+    # "警告先于换 token"的可观测证据——探针挪到 rotate_token 之后时，下面两条
+    # order 断言照样绿（探针不落 order 埋点），只有这句会红。
+    assert out.index("永远收不到撤销") < out.index("新订阅 URL")
+    # 探针只算不写：台账写入必须排在 rotate 与 publish 之后
+    assert order[order.index("rotate") + 1 :] == ["publish", "ledger-write"]
+    assert "ledger-write" not in order[: order.index("rotate")]
+
+
+def test_rotate_stays_silent_when_nothing_to_cancel(tmp_path, monkeypatch, capsys):
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    cfg.exam_ledger_path(SEMESTER).unlink()
+    _stub_publish(monkeypatch)
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    assert "撤销" not in capsys.readouterr().out
+
+
+def test_rotate_survives_a_failing_probe(tmp_path, monkeypatch, capsys):
+    """探针失败不许拖崩 rotate：撤销警告是增量，rotate 是主功能。
+
+    不用"损坏考试快照"触发探针异常——那会被 D18 可信门槛**静默降级**（门槛不过
+    ⇒ 撤销数为 0、不抛），探针根本抛不起来，这条用例什么也证明不了。改为给
+    ``cli.build_ics_for_semester`` 包一层计数器：**第一次**调用（即探针）抛
+    ``XjtuCalendarError``，其后委派真实实现（即换 token 后的真实渲染）。
+    """
+    _ready_for_rotate(tmp_path, monkeypatch)
+    _stub_publish(monkeypatch)
+    real_build = cli.build_ics_for_semester
+    seen: list[int] = []
+
+    def flaky_build(*args, **kwargs):
+        seen.append(1)
+        if len(seen) == 1:
+            raise XjtuCalendarError("模拟探针渲染失败")
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "build_ics_for_semester", flaky_build)
+    # `main()` 里的 setup_logging 会清掉 captured_logs 的 handler（同
+    # `test_export_survives_ledger_write_failure` 记录的坑），临时停成 no-op。
+    monkeypatch.setattr("xjtu_calendar.cli.setup_logging", lambda **_kw: None)
+    with captured_logs() as records:
+        assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    assert len(seen) == 2  # 探针失败没拦住 rotate 自己的真实渲染
+    # 失败要留下 warning 痕迹，不许静默吞掉（级别不低于 WARNING）。
+    assert any("探针" in rec.getMessage() and rec.levelno >= logging.WARNING for rec in records)
+    # 本场景确实有 1 条待撤销（台账在场、考试确认空、可信门槛过）：警告缺席恰恰
+    # 是因为探针失败回落 probe_cancel=0。若把 except 改成放行异常或重试渲染，
+    # 上面两条先红——"断言警告不在"不是空话。
+    assert "永远收不到撤销" not in capsys.readouterr().out

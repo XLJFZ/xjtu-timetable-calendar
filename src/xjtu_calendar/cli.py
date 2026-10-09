@@ -1303,6 +1303,26 @@ def _subscribe_rotate(
 
     _validate_publish_branch(state.branch)
     old = state.token
+    # rotate 会换新 token = 换订阅 URL，旧地址此后永远收不到撤销（spec D12）。
+    # 这里是**探针渲染**：只取撤销数量，返回的台账文本必须丢弃（D24②——此刻产物
+    # 还没发布出去，落台账等于"假装撤销过"）。try **只罩探针**：撤销警告是增量，
+    # 探针失败降级为 probe_cancel=0 + logger.warning（异常只报类型名，不带台账
+    # 与考试个人数据，spec §8），不许拖崩 rotate 主功能；换 token 之后的真实
+    # 渲染在下面的另一个 try 里，其异常不受这一块影响（fail-closed 路径照旧）。
+    try:
+        probe = build_ics_for_semester(cfg, semester, include_exams=include_exams)
+        probe_cancel = int(str(probe.info.get("exam_cancellations", 0)))
+    except XjtuCalendarError as exc:
+        probe_cancel = 0
+        logger.warning(
+            "subscribe rotate 的撤销探针渲染失败，本次跳过撤销警告（不影响换 token）：%s",
+            type(exc).__name__,
+        )
+    if probe_cancel:
+        print(
+            f"注意：本次有 {probe_cancel} 条考试事件尚未从旧订阅地址撤销，"
+            "rotate 之后旧地址将永远收不到撤销；确认要继续请重新运行 subscribe rotate。"
+        )
     subscribe.rotate_token(cfg, state)
     print(f"新订阅 URL：{state.subscription_url}（补发成功前旧 URL 仍可读取）")
     print(f"旧 token（{old[:4]}…）在本次补发成功后失效，请更新所有日历客户端的订阅地址。")
@@ -1334,6 +1354,12 @@ def _subscribe_rotate(
         print(f"修复后运行 subscribe push --semester {semester} 完成发布。")
         return exc.exit_code
     last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
+    # 台账与留底**同一时刻**更新（D11 / spec §6.8：push 与 rotate 同口径）：能走到
+    # 这里说明 publish 已成功；`None`（门槛没过 / --no-exams）不创建也不改写文件。
+    # 探针渲染的那份文本在这里**不参与**——只有随产物真正发布出去的才算撤销过（D24②）。
+    # 写失败只 warning（D24①），不改 rotate 的退出码。
+    if result_ics.exam_ledger_text is not None:
+        _write_exam_ledger(cfg, semester, result_ics.exam_ledger_text)
     print("已用新文件名重新发布。")
     return 0
 

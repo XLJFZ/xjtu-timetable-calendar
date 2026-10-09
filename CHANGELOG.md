@@ -6,7 +6,18 @@
 
 ---
 
-## [Unreleased]
+## [0.5.0] - 2026-10-09
+
+次要版本：把 eHall「我的考试安排」接进现有管线，考试事件与课表共用**同一份 .ics、同一个
+订阅 URL**（不新增第二个 token）；`X-WR-CALNAME` 自动带上年级与学期。
+
+兼容性：考试接入**没有改动课程侧产物**——`--no-exams` 口径的输出与接入前逐字节相同，这条
+承诺由 `tests/test_legacy_course_export_golden.py` 对 `tests/fixtures/legacy_course_export.ics`
+的字节比对钉住。课程事件的 UID / `SEQUENCE` / `LAST-MODIFIED` 一律不变，已导入的用户无需
+重新导入；会变只有标题一行（新增年级与学期后缀），它不参与事件配对。
+
+已知限制：v1 只发 `method:PUBLISH`，**没有取消通路**——关掉开关或考试被取消，已发布的考试
+事件仍留在客户端，需手动删除（v2 立项）。`--no-exams` 可一键回到接入前的行为。
 
 ### Added
 

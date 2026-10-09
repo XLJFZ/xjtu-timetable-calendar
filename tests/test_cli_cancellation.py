@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from exam_support import (
     exam_home,
     exam_payload,
     exam_row,
+    exam_uids,
     published_ledger,
     write_ledger,
 )
@@ -125,8 +127,40 @@ def test_export_survives_ledger_write_failure(tmp_path, monkeypatch):
     monkeypatch.setattr("xjtu_calendar.cli.setup_logging", lambda **_kw: None)
     with captured_logs() as records:
         assert _export(cfg) == 0
-    assert any("台账" in rec.getMessage() for rec in records)
+    ledger_warnings = [
+        rec for rec in records if "台账" in rec.getMessage() and "没能写入" in rec.getMessage()
+    ]
+    assert ledger_warnings
+    # spec §6.8「写失败只 **warning**」：只匹配消息的话，降级成 info/debug 照样绿。
+    assert all(rec.levelno >= logging.WARNING for rec in ledger_warnings)
+    # spec §8「日志不打印台账内容」：台账里有考试原名/考场/座位，异常与告警都不许带上它。
+    assert not any("BEGIN:VCALENDAR" in rec.getMessage() for rec in records)
     assert (cfg.home / "out.ics").is_file()  # 产物照写，主功能不受牵连
+
+
+def test_export_artifact_write_failure_leaves_ledger_untouched(tmp_path, monkeypatch):
+    """D11 的反证（export 半边）：产物没落地 ⇒ 台账一个字节都不能动，且 export 非零。
+
+    把 `cmd_export` 的 `_write_exam_ledger(...)` 挪到 `output.write_text(...)` **之前**，
+    这条立刻红：本次的台账文本会先落盘，而 D20 会把"这次没能随产物发出去"的候选从台账里
+    剪掉 ⇒ 撤销记录被永久抹掉，客户端那边的幽灵考试再没人管了。
+
+    字节比对之所以有牙，是因为固件台账用 `exam_support.STAMP`（固定 2030-01-01）渲染，
+    而本次渲染的 DTSTAMP 跟着课表快照 mtime 走 ⇒ 真写一次字节必变。若哪天有人给 CLI
+    注入 `dtstamp=`，这条与两条 push 字节用例会一起变成空话。
+
+    产物这一侧的 `OSError` 不靠打桩：把输出路径本身做成目录，`write_text` 必抛
+    （Windows 是 `PermissionError`、POSIX 是 `IsADirectoryError`，同为 `OSError`）。
+    """
+    cfg = _env(tmp_path, monkeypatch)
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    before = ledger.read_bytes()
+    output = cfg.home / "out.ics"
+    output.mkdir()
+
+    assert _export(cfg) != 0  # 产物写失败就是真的导出失败，必须 fail-closed
+    assert ledger.read_bytes() == before
+    assert output.is_dir()  # 产物确实没落地
 
 
 def test_ledger_write_requests_private(tmp_path, monkeypatch):
@@ -175,13 +209,23 @@ def test_push_writes_ledger_after_publish_succeeds(tmp_path, monkeypatch):
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     assert order == ["publish", "ledger-write"]  # D11：先发布成功，再动留底与台账
 
+    # 写进去的必须是**台账文本**，不是产物文本：台账不是发布件，按 D10/D22 永远没有
+    # SEQUENCE（`render_ics` 无条件写 SEQUENCE，产物里必现），而待撤销那条考试的 UID
+    # 必须原样留在台账里排队。口径与 export 侧的 `test_export_writes_ledger_after_the_output`
+    # 一致——少了这两句，把 `result_ics.ics` 误当台账写入的话时序照样绿。
+    ledger_text = cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8")
+    assert "SEQUENCE" not in ledger_text
+    assert exam_uids(cfg, exam_row(WID="WID-A"))[0] in ledger_text
+
 
 def test_push_failure_leaves_ledger_untouched(tmp_path, monkeypatch):
     """D11 的反证：把台账写入挪到 publish 之前，这条立刻红。
 
     R2 裁决：不 stub `_write_exam_ledger`——让**真**函数在场。台账文本的 DTSTAMP
-    跟着课表快照 mtime 走、与固件的固定 2030-01-01 不同，真写一次字节必变；
-    若把函数打桩掉，bytes 无论写在哪都不会变，断言就成了空话。
+    跟着课表快照 mtime 走、与固件的固定 2030-01-01（`exam_support.STAMP`）不同，真写
+    一次字节必变；若把函数打桩掉，bytes 无论写在哪都不会变，断言就成了空话。
+    ⇒ 反过来说：哪天有人给 CLI 注入 `dtstamp=`，这条与另外两条字节比对用例
+    （NO_CHANGE、export 产物失败）会一起悄悄变成永真，改固件时务必同步改这里。
     """
     cfg = _env(tmp_path, monkeypatch)
     _register(cfg)
@@ -192,12 +236,13 @@ def test_push_failure_leaves_ledger_untouched(tmp_path, monkeypatch):
         raise XjtuCalendarError("远端拒绝")
 
     monkeypatch.setattr(subscribe, "publish", blow_up)
-    main(["subscribe", "push", "--semester", SEMESTER])
+    # §7 fail-closed：发布失败必须是非零退出，不许悄悄当没事发生。
+    assert main(["subscribe", "push", "--semester", SEMESTER]) != 0
     assert ledger.read_bytes() == before
 
 
 def test_no_change_push_leaves_ledger_untouched(tmp_path, monkeypatch):
-    """NO_CHANGE 早退（`cli.py:1249-1251`）时台账同样不写：此时台账本来也未变。"""
+    """publish 的「NO_CHANGE 早退」块里台账同样不写：此时台账本来也未变。"""
     cfg = _env(tmp_path, monkeypatch)
     _register(cfg)
     ledger = cfg.exam_ledger_path(SEMESTER)

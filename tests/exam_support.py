@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from datetime import date
+
+from xjtu_calendar.schedules import combine
 
 SEMESTER = "2026-2027-1"
 #: 合成基准日：2030-06-17 确实是星期一，与 KSSJMS 括号里的星期自洽。
 DEMO_DAY = "2030-06-17"
+#: 合成 dtstamp：台账与渲染类固件共用（Task 7 之后所有台账固件都用它）。
+STAMP = combine(date(2030, 1, 1), "00:00")
 
 
 @contextlib.contextmanager

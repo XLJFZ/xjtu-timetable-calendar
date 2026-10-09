@@ -288,6 +288,9 @@ class CalendarEvent:
     description: str | None = None
     #: 溯源信息，便于调试与调课比对（不进 ICS 正文）
     meeting: CourseMeeting | None = field(default=None, repr=False, compare=False)
+    #: 仅撤销事件用，取值 ``"CANCELLED"``；课程与 live 考试一律不传（默认 ``None``
+    #: ⇒ 产物字节与不引入该字段时完全一致）。见 docs/design/2026-10-09-exam-cancellation.md D3。
+    status: str | None = None
 
     def __post_init__(self) -> None:
         if self.end <= self.start:

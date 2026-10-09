@@ -479,11 +479,16 @@ def render_ics(
         component.add("last-modified", last_modified)
         component.add("dtstart", item.start)
         component.add("dtend", item.end)
-        component.add("summary", item.summary)
+        if item.summary:
+            # 撤销事件刻意不带 SUMMARY（spec D3 的最小字段）：实测
+            # ``add("summary", "")`` 会写出 ``SUMMARY:`` 空值行，所以只能不调用 add。
+            component.add("summary", item.summary)
         if item.location:
             component.add("location", item.location)
         if item.description:
             component.add("description", item.description)
+        if item.status:
+            component.add("status", item.status)
         cal.add_component(component)
 
     # 所有 VEVENT 就位后补齐 VTIMEZONE（必须在 to_ical() 之前）。

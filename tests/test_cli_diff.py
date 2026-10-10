@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -228,7 +229,7 @@ def test_first_exam_snapshot_reports_every_row_as_added(
 def test_cancelled_exam_tells_the_user_the_client_may_keep_it(
     home: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """取消的考试在 v1 没有 CANCEL 通路（§7.1）：报告要说清"可能要手动删"。"""
+    """取消会随撤销通路下发（spec D13），但一次性导入型客户端可能要手动删：报告要说清。"""
     _write_timetable_snapshots(home, _row("示例课程甲", "D-1"))
     _write_exam_snapshots(home, [], [exam_row()])
 
@@ -342,3 +343,61 @@ def test_corrupt_previous_exam_snapshot_is_also_skipped(
     assert "本次未比对考试" in captured.out
     assert "考试快照" in captured.out
     assert "考试变更" not in captured.out  # 跳过 = 没比对，不假装产出了变更
+
+
+def test_diff_cancel_note_points_at_the_new_cancel_path(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D13：取消现在会自动下发；"一次性导入型客户端仍需手动删"这半句不许丢。"""
+    _write_timetable_snapshots(home, _row("示例课程甲", "D-1"))
+    _write_exam_snapshots(home, [], [exam_row(WID="WID-GONE")])  # 新快照为空 ⇒ 一条取消
+
+    assert main(["diff", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "考试变更" in out and "取消" in out
+    assert "不会从已订阅的日历里自动消失" not in out, "旧断言还挂着（spec D13）"
+    assert "STATUS:CANCELLED" in out, "要告诉用户取消会真的下发"
+    assert "手动删除" in out, "一次性导入型客户端那半句事实没变，不许顺手删掉"
+    # 修复轮 Important 1：主谓装反的病句必须绝迹。本仓库术语（README「已知边界」）里
+    # "不再回源"恰是一次性导入客户端的特征——它们**不会**自动移除；会自动移除的是
+    # 会定期回源拉取的订阅客户端。整句与分小句两个层面都钉死。
+    assert "不再回源的订阅客户端会自动移除" not in out, "病句回归（把主语装反了）"
+    note_line = next(line for line in out.splitlines() if line.startswith("注意："))
+    clauses = re.split("[；，]", note_line)
+    assert not any("不再回源" in c and "移除" in c for c in clauses), (
+        "「不再回源⇄自动移除」配对不许出现"
+    )
+    assert any("移除" in c and "不再回源" not in c for c in clauses), (
+        "自动移除必须归给会回源的客户端"
+    )
+    assert any("仍需手动删除" in c and "一次性导入" in c for c in clauses), (
+        "手动删除那半句要挂在一次性导入上"
+    )
+
+
+def test_diff_summary_line_previews_the_cancellation_count(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D13 后半句：diff 要打出「本次将撤销 N 条」摘要行，N 只数取消、不吃其它变更。"""
+    _write_timetable_snapshots(home, _row("示例课程甲", "D-1"))
+    # 两条变更：一条座位变更（12→30）+ 一条取消（WID-GONE 消失）——N 必须是 1 不是 2。
+    _write_exam_snapshots(home, [exam_row(ZWH="30")], [exam_row(), exam_row(WID="WID-GONE")])
+
+    assert main(["diff", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "考试变更（2 项）" in out
+    assert "本次将撤销：最多 1 条" in out, "摘要行缺失，或把 2 项变更全算成了撤销"
+    assert "已撤销" not in out  # 这是预览：下次发布才会发生，不许说成已完成
+
+
+def test_diff_omits_the_cancellation_summary_when_nothing_is_cancelled(
+    home: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """N == 0 时整行不打印——无条件 print 混不过这条（座位变更不是撤销）。"""
+    _write_timetable_snapshots(home, _row("示例课程甲", "D-1"))
+    _write_exam_snapshots(home, [exam_row(ZWH="30")], [exam_row(ZWH="12")])
+
+    assert main(["diff", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "考试变更" in out and "座位变更" in out
+    assert "将撤销" not in out

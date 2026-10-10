@@ -112,7 +112,8 @@ class SubscriptionState:
 
 
 def subscribe_dir(cfg: Settings) -> Path:
-    return cfg.home / "subscribe"
+    """订阅目录（字面量已收敛到 :attr:`Settings.subscribe_dir`）。"""
+    return cfg.subscribe_dir
 
 
 def state_path(cfg: Settings, semester: str) -> Path:

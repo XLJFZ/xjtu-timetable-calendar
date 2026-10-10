@@ -8,11 +8,30 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
+from collections.abc import Sequence
+from datetime import date
+from pathlib import Path
+
+from subscribe_support import make_home, payload_row
+
+from xjtu_calendar.config import Settings
+from xjtu_calendar.exams import (
+    LedgerEntry,
+    make_exam_uid,
+    parse_exam_rows,
+    render_exam_ledger,
+)
+from xjtu_calendar.fetcher import save_raw
+from xjtu_calendar.parser import ParseReport
+from xjtu_calendar.schedules import combine
 
 SEMESTER = "2026-2027-1"
 #: 合成基准日：2030-06-17 确实是星期一，与 KSSJMS 括号里的星期自洽。
 DEMO_DAY = "2030-06-17"
+#: 合成 dtstamp：台账与渲染类固件共用（Task 7 之后所有台账固件都用它）。
+STAMP = combine(date(2030, 1, 1), "00:00")
 
 
 @contextlib.contextmanager
@@ -87,3 +106,66 @@ def exam_payload(
             }
         },
     }
+
+
+def exam_home(tmp_path: Path, *rows: dict[str, str], semester: str = SEMESTER) -> Settings:
+    """带考试快照的 home：课表走真信封，考试快照手工落盘。
+
+    `subscribe_support.make_home` 写的是 ``{"kbList": rows}`` 简写信封，
+    `campus_names_from_timetable` 不认（设计文档 §9 点名的固件改造点，经裁定不改那个
+    文件）。撤销通路的用例需要「课表 + 考试」都在真信封里，故在此提供第二份固件。
+    """
+    cfg = make_home(tmp_path, semester=semester)
+    cfg.raw_timetable_path(semester).write_text(
+        json.dumps(timetable_envelope([payload_row()]), ensure_ascii=False), encoding="utf-8"
+    )
+    save_raw(exam_payload(list(rows) or [exam_row()]), cfg, semester, kind="exams")
+    return cfg
+
+
+def write_ledger(cfg: Settings, semester: str, entries: Sequence[LedgerEntry]) -> Path:
+    """把台账条目直接落成文件（writer 由 Task 3 提供，这里不重造）。"""
+    path = cfg.exam_ledger_path(semester)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        render_exam_ledger([], list(entries), dtstamp=STAMP), encoding="utf-8", newline=""
+    )
+    return path
+
+
+#: 保留期比较用的墙钟。`exam_row()` 的默认考期是 2030-06-17，所以 `NOW` 之下"时刻未过"
+#: 是默认态，`PAST` 用来测过期退场（spec D2/D9）。
+NOW = combine(date(2030, 6, 1), "08:00")
+PAST = combine(date(2030, 7, 1), "08:00")
+
+
+def exam_uids(cfg: Settings, *rows: dict[str, str]) -> list[str]:
+    """走**真实管线**拿本次会发布的考试 UID。
+
+    不要在测试里重算 sha256：那是把 UID 配方抄第二份，配方一改测试跟着改，看守就废了
+    （与 spec 里"diff 的配对键必须委托 `_uid_token`"同一个理由）。
+    """
+    parsed = parse_exam_rows(
+        exam_payload(list(rows) or [exam_row()]),
+        campus_names={},
+        report=ParseReport(),
+    )
+    return [make_exam_uid(SEMESTER, exam) for exam in parsed]
+
+
+def published_ledger(cfg: Settings, *rows: dict[str, str]) -> list[LedgerEntry]:
+    """把"上次发布过的考试"抄成台账条目（UID 与起止都取真实管线口径）。"""
+    parsed = parse_exam_rows(
+        exam_payload(list(rows) or [exam_row()]), campus_names={}, report=ParseReport()
+    )
+    return [
+        LedgerEntry(
+            uid=make_exam_uid(SEMESTER, exam),
+            start=combine(date.fromisoformat(exam.date_str), exam.start_time),
+            end=combine(date.fromisoformat(exam.date_str), exam.end_time),
+            summary=f"{exam.course_name}（结课考试）",
+            location=f"兴庆 {exam.location}" if exam.location else None,
+            description=f"座位号：{exam.seat}" if exam.seat else None,
+        )
+        for exam in parsed
+    ]

@@ -4,7 +4,7 @@
 
 **Goal:** 让已发布的考试事件在源数据里消失后，于下一份发布产物里带 `STATUS:CANCELLED` 出现，直到它的原定时刻自然过去，从而消掉 v0.5 spec §7.1 的 ghost-event 限制。
 
-**Architecture:** 新增一份**本地考试台账**（`home/subscribe/last-exams-<学期>.ics`）记录"曾以 live 形态发布过、原定时刻未过"的考试；渲染时 `台账 UID − 过滤前 live UID` 得到撤销候选，剪掉时刻已过与"UID 不在 SEQUENCE 基线里"的两类，剩下的以**最小字段**并入同一份 `method:PUBLISH` 产物。幂等不新增机制：靠 `sequence.resolve_sequence` 的既有指纹规则（撤销条目字段每次相同 ⇒ 保号），`EventBaseline` 一个字段都不改。撤销只在"考试数据可信"时计算，任何降级路径都不得产生撤销。
+**Architecture:** 新增一份**本地考试台账**（`home/subscribe/last-exams-<学期>.ics`）记录"曾以 live 形态发布过、原定时刻未过"的考试；渲染时 `台账 UID − 过滤前 live UID` 得到撤销候选，时刻已过的剪掉、"UID 不在 SEQUENCE 基线里"的**跳过下发但留在台账里**（终审 F2/F3），剩下的以**最小字段**并入同一份 `method:PUBLISH` 产物。幂等不新增机制：靠 `sequence.resolve_sequence` 的既有指纹规则（撤销条目字段每次相同 ⇒ 保号），`EventBaseline` 一个字段都不改。撤销只在"考试数据可信（每一行都被产物代表）"时计算，任何降级路径都不得产生撤销。
 
 **Tech Stack:** Python 3.11+（stdlib only：`dataclasses`/`datetime`/`pathlib`/`logging`），`icalendar>=6.1.0`（台账读写与产物共用同一个库），pytest，mypy --strict，ruff。
 
@@ -14,9 +14,9 @@
 
 - 零新增运行时依赖；**不触碰课程 UID 算法与课程事件导出内容**（legacy UID contract，`exporter.make_uid` docstring）。
 - **课程侧字节不变是硬验收**：`tests/test_legacy_course_export_golden.py` 四条用例在任何任务收尾时都必须原样通过，不许改断言、不许加 `exclude`。
-- **撤销的准入门槛（spec D18）**：只有"考试快照读到了且解析没炸"才允许计算撤销。`TimetableFetchError`、任何 `Exception`、以及"有 `parsed` 行但一条都没构建出事件"三种情况都 ⇒ 不可信 ⇒ 不读台账、不撤销、不回写台账。**这条是本次实现最大的风险面**：`live = ∅` 在撤销语义下等于"取消整学期"。
+- **撤销的准入门槛（spec D18 + 终审 F1）**：只有"考试快照读到了且**每一行都被产物代表**"才允许计算撤销。`TimetableFetchError`、任何 `Exception`、以及"有 `parsed` 行但一条都没构建出事件"都 ⇒ 不可信 ⇒ 不读台账、不撤销、不回写。**逐行跳过**（`report.skipped` 非空或 `len(exam_events) < report.total_candidates`）同样 ⇒ 已解析的事件照发、但**本次关闭撤销通路**（warning 只报计数）——否则"某一场考试数据形态变了、其它场正常"会把那场仍存在的考试撤销掉。**这条是本次实现最大的风险面**：`live = ∅`（或因跳过而缺席）在撤销语义下等于"取消整学期/撤销仍存在的考试"。
 - **候选必须用未经日期过滤的 live 集（spec D19）**：`exporter.py:726-727` 的 `--from-date/--to-date` 会连考试一起裁；用过滤后的集合会把窗口外考试撤销并从台账剪掉。
-- **UID 不在 SEQUENCE 基线里的候选一律不下发（spec D20）**：`sequence.py:188-189` 会给 `SEQUENCE:0`，低于客户端已握有的序号 ⇒ 会被忽略，幽灵永存。这类候选丢弃、记 warning，并**从台账里剪掉**（不留下次重来的假象）。
+- **UID 不在 SEQUENCE 基线里的候选一律不下发（spec D20）**：`sequence.py:188-189` 会给 `SEQUENCE:0`，低于客户端已握有的序号 ⇒ 会被忽略，幽灵永存。这类候选丢弃、记 warning，但**留在台账里**排队（终审 F3：判定"不可下发"的只是这次的调用方，剪掉会永久毁掉下次 push 撤销它的能力；自限——到自己的 DTSTART 才被 D2 剪掉）。没有基线可对照时（`--no-sequence`、留底缺失、压根没配基线来源）也走这一支，一条都不撤（终审 F2）。
 - `--no-exams` 是**整块关闭**：不读台账、不算撤销、不回写台账，撤销条目与 live 考试一同缺席（spec D4/D21）。
 - 保留期用**墙钟**（`datetime.now(TZ_XIAN)`），只有测试注入 `cancel_expiry_at`；**不许**用 `_stamp_from_snapshot` 的快照口径判过期（spec D9）。
 - 台账**永不发布**：只落本地、`private=True`、含个人信息；台账文本里**不许**出现 `STATUS`、`SEQUENCE`、`LAST-MODIFIED`、`METHOD`、`X-WR-CALNAME`（spec D10/D22）。
@@ -2164,10 +2164,10 @@ GitHub Release → PyPI，PyPI 不可撤回）。真机演练（spec D5）排在
 | D1 同一份 PUBLISH 文件 | T1 + T7 | `test_status_line_only_appears_when_set`；产物仍只有一个 `METHOD:PUBLISH` |
 | D2 保留到原定时刻过去 | T5 | `test_expired_entries_are_not_cancelled` |
 | D3 最小字段、不写 SUMMARY | T1 + T6 | `test_empty_summary_writes_no_summary_line`、`test_cancellation_event_copies_uid_and_times_verbatim` |
-| D4/D21 `--no-exams` 整块关闭 | T7 + T8 | `test_no_exams_neither_reads_nor_writes_the_ledger` |
+| D4/D21 `--no-exams` 整块关闭 | T7 + T8 | `test_no_exams_emits_neither_live_nor_cancellations` + `test_export_with_no_exams_leaves_ledger_untouched` |
 | D5 真机演练 | T15 Step 6 之后，**不在本计划内** | 见 spec §11 |
-| D6/D7 台账来源与累积 | T3 + T8 | `test_ledger_text_is_returned_and_carries_live_plus_pending` |
-| D8 幂等靠既有指纹规则 | T7 + T8 | 「连渲两次撤销条目字节与 SEQUENCE 相同」用例 |
+| D6/D7 台账来源与累积 | T3 + T8 | `test_ledger_text_carries_live_plus_in_window_pending` |
+| D8 幂等靠既有指纹规则 | T7 + T8 + 终审 | `test_cancellation_sequence_is_previous_plus_one_from_a_real_baseline`（首次转撤销 = 上次发布 +1，真实留底驱动）、`test_cancellation_entry_is_idempotent_across_repeated_renders`（把上次发布的撤销当基线再渲，序号与字节不变） |
 | D9 墙钟保留期 | T5 + T7 | `test_expired_entries_are_not_cancelled`（注入 `now`） |
 | D10/D22 台账格式 | T3 + T4 | `test_render_exam_ledger_is_minimal_but_parseable`、`test_load_exam_ledger_drops_naive_entries` |
 | D11 回写时序 | T9 + T10 | `test_push_failure_leaves_ledger_untouched` |
@@ -2177,8 +2177,8 @@ GitHub Release → PyPI，PyPI 不可撤回）。真机演练（spec D5）排在
 | D15 坏台账降级 | T4 | `test_load_exam_ledger_survives_garbage_text` |
 | D16 版本 0.6.0 | 发布阶段（不在本计划内） | — |
 | D17 不做课程取消 | 全局 | 课程 golden 未变 |
-| **D18 可信门槛** | **T7** | 三条降级用例（缺快照 / 坏字节 / 全批解析失败） |
+| **D18 可信门槛** | **T7 + 终审 F1** | 三条降级用例（缺快照 / 坏字节 / 全批解析失败）；F1「快照逐行跳过 ⇒ 已解析事件照发但关闭撤销通路、只报计数」`test_partially_unparseable_snapshot_disables_cancellation`，NO_EXAMS 仍可信 `test_confirmed_no_exams_is_still_trusted_after_the_partial_guard` |
 | **D19 过滤前 live 集** | **T7** | `test_from_date_filter_does_not_cancel_out_of_window_exams` |
-| **D20 基线可发性** | **T5 + T7** | `test_uid_absent_from_baseline_is_not_emitted` |
+| **D20 基线可发性** | **T5 + T7 + 终审 F2/F3** | `test_uid_absent_from_baseline_is_not_emitted_but_stays_in_ledger` + `test_missing_from_baseline_is_unresolvable_not_emitted`；F2「没配基线一条不撤」`test_no_baseline_configured_cancels_nothing`；F3「unresolvable 留在台账」`test_unresolvable_survives_export_then_push_cancels` |
 | **D23 stats 口径** | **T8** | `test_stats_updated_not_polluted_by_cancellations` |
-| **D24① 目录与退出码** | **T9** | `test_export_succeeds_when_ledger_write_fails` |
+| **D24① 目录与退出码** | **T9 + 终审 F4** | `test_export_survives_ledger_write_failure`；F4「撤销计算/台账序列化整段降级不改退出码」`test_cancellation_and_ledger_render_degrade_without_changing_the_exit` |

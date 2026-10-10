@@ -22,7 +22,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .academic_calendar import AcademicCalendar
 from .config import Settings
@@ -43,6 +43,9 @@ from .schedules import ScheduleTable
 from .sequence import EventBaseline, parse_baseline, resolve_sequence, sequence_stats
 from .timeutil import TZ_XIAN, now_local
 from .weeks import DEFAULT_EXPANSION_LIMIT, format_weeks
+
+if TYPE_CHECKING:  # 仅为注解：exams.py 顶层 import exporter，运行时反向 import 会成环（R5）
+    from .exams import LedgerEntry
 
 __all__ = [
     "PRODID",
@@ -479,11 +482,19 @@ def render_ics(
         component.add("last-modified", last_modified)
         component.add("dtstart", item.start)
         component.add("dtend", item.end)
-        component.add("summary", item.summary)
+        if item.summary or item.status is None:
+            # 撤销事件（`status` 非空且 `summary` 为空）刻意不带 SUMMARY（spec D3 的最小
+            # 字段）：实测 ``add("summary", "")`` 会写出 ``SUMMARY:`` 空值行，所以只能不调用
+            # add。判据是结构性的"是不是撤销条目"（终审 F5a），不是"summary 恰好为空"——
+            # parser 允许纯空白 KCM 被 strip 成 ``""``、CLI 也存 ``course_name.strip()``，
+            # 若只按 truthiness 判，课程侧"永远有 SUMMARY"就只是数据假设而非代码保证。
+            component.add("summary", item.summary)
         if item.location:
             component.add("location", item.location)
         if item.description:
             component.add("description", item.description)
+        if item.status:
+            component.add("status", item.status)
         cal.add_component(component)
 
     # 所有 VEVENT 就位后补齐 VTIMEZONE（必须在 to_ical() 之前）。
@@ -525,14 +536,21 @@ def summarize(
 class ExportResult:
     """build_ics_for_semester 的返回：渲染文本 + 汇总数据（CLI 打印用）。
 
-    ``info`` 中与考试相关的键只有一个：``exam_events``，即**进了产物**的考试事件数
-    （已过日期过滤与全局 UID 断言）。``events`` 与 ``date_range`` 的口径始终只算
-    课程事件，见设计文档 §6.5 第 1 条。
+    ``info`` 中与考试相关的键有两个：``exam_events`` 是**进了产物**的 live 考试事件数
+    （已过日期过滤与全局 UID 断言）；``exam_cancellations`` 是本次实际下发的撤销条数
+    ——撤销条目**不进** ``sequence_stats``（spec D23），数量只在这里体现。
+    ``events`` 与 ``date_range`` 的口径始终只算课程事件，见设计文档 §6.5 第 1 条。
     """
 
     ics: str
     info: dict[str, object]
     sequence_stats: dict[str, int] | None
+    #: 本次应回写的考试台账文本；空值口径见 spec §6.6：``None`` ⟺ 撤销门槛没过
+    #: （D18，`--no-exams` 同形）、或既没读到台账也没有任何 live 考试 —— 此时调用方
+    #: **不得创建也不得改写**该文件。读到过台账就返回文本（可能已把过期条目剪光），
+    #: 不存在"算出空台账但不回写"的中间状态。live 侧取**未经日期过滤**的考试集（D19）。
+    #: 本字段只**产出**文本；落盘是 Task 9/10 的 CLI 职责（exporter 绝不写文件）。
+    exam_ledger_text: str | None = None
 
 
 def _stamp_from_snapshot(path: Path) -> datetime:
@@ -562,6 +580,25 @@ def _in_range(event: CalendarEvent, lower: date | None, upper: date | None) -> b
     return (lower is None or day >= lower) and (upper is None or day <= upper)
 
 
+def _cancellation_baseline_uids(baseline: dict[str, EventBaseline] | None) -> set[str]:
+    """D20 可发性判定用的「上次发布产物 UID 集」（§6.5:210-212、§7:267）。
+
+    只有**真读出来过一份基线**（``baseline`` 非 ``None``）时，才谈得上"这条考试确实发布过、
+    能安全地给它发一条撤销"。``baseline`` 为 ``None``——压根没配基线来源、配了却没读出来
+    （``--no-sequence``、留底缺失/不可解析）、或上次发布来自 ``--no-exams``——一律返回**空集**：
+    没有任何发布凭据 ⇒ 每个候选都进 ``unresolvable``、一条都不撤（终审 F2）。
+
+    早先"没配基线来源就以台账为凭据全可下发"的分支是**错**的：台账如今也被 ``export`` 写，
+    一次 ``subscribe init`` + 首屏 ``push``（没有 ``last_push``、也没有留底可读）会拿本地导出
+    攒下的台账，给一个从没收到过该考试的订阅者发一条无标题的 ``STATUS:CANCELLED``。没有基线
+    可对照，就不是"发布过"的证据。生产里 ``export`` 恒传 ``-o`` 路径、push/rotate 恒传留底，
+    所以本口径只影响"确实没得对照"的场景。
+    """
+    if baseline is not None:
+        return set(baseline)
+    return set()
+
+
 def build_ics_for_semester(
     cfg: Settings,
     semester: str,
@@ -579,6 +616,7 @@ def build_ics_for_semester(
     dtstamp: datetime | None = None,
     include_exams: bool = True,
     exams_payload: dict[str, Any] | None = None,
+    cancel_expiry_at: datetime | None = None,
 ) -> ExportResult:
     """按学期构建 RFC 5545 文本。export 与 subscribe push 共用的唯一管线。
 
@@ -601,6 +639,10 @@ def build_ics_for_semester(
     ``exams_payload``：直接给定考试响应、跳过读快照文件——§6.5 点名的注入接缝，
     当前主要供测试与后续任务使用；``include_exams=False`` 时一并忽略。
     注意 ``input_path`` **只喂课表 payload**，考试数据永远不从它读（§6.5 第 3 条）。
+
+    ``cancel_expiry_at``：撤销保留期比较用的墙钟；``None`` 取 ``datetime.now(TZ_XIAN)``
+    （D9）。只有测试注入，**不暴露成 CLI 旗标**，也不参与 ``--from-date/--to-date``
+    窗口过滤（撤销条目本就在过滤之后单独注入，见 §6.6）。
     """
     from .fetcher import load_raw
 
@@ -677,6 +719,9 @@ def build_ics_for_semester(
     # 失败一律降级（§7:387「绝不因为考试失败而让 export 非零退出」）：
     # 课程是主功能，考试是增量，增量出问题时产物必须等于「没有增量」。
     exam_events: list[CalendarEvent] = []
+    #: 撤销通路的准入门槛（spec D18）：只有"快照读到、解析没炸、且不是一批全失败"才可信。
+    #: `live = ∅` 在撤销语义下是"取消整学期"，所以这里必须是**白名单**而不是默认放开。
+    exams_trusted = False
     if include_exams:
         # 只能在函数体内 import：exams.py 顶层 `from .exporter import UID_DOMAIN`，
         # 反向的模块级 import 会成环（计划的 Global Constraint；`load_raw` 同此写法）。
@@ -706,17 +751,48 @@ def build_ics_for_semester(
                 for line in report.warnings:  # 星期与日期不一致这类"保留但可疑"的提示
                     logger.warning("考试安排提醒：%s", line)
                 exam_events = build_exam_events(parsed, semester)
-                if not exam_events:
-                    # §7「确认无考试」/ 整批都解析不出来：说明一句，不算问题。
-                    logger.info("本学期暂无考试安排（考试快照为空或全部无法解析）")
+                # 撤销通路的可信判据（spec D18 + 终审 F1）：不是"读到了且没炸"就够，
+                # 而是"快照里的**每一行**都被产物代表"。`parse_exam_rows`（缺 KCM / 时间
+                # 文本解析不出 / 缺 KSRQ）与 `build_exam_events`（`date.fromisoformat` 抛）
+                # 都**逐行**跳过，所以"某一场考试的行本次坏了、其它场正常"时那一场会缺席
+                # `live_exam_uids` ⇒ 旧实现把它当成"消失"发撤销 ⇒ 从所有订阅者日历里删掉一条
+                # 仍然存在的考试，比这条特性要消除的 v0.5 ghost 更糟。判据：`report.skipped`
+                # 非空 或 产物考试事件数 < 原始行数 ⇒ 已解析的事件照发，但**本次关闭撤销通路**。
+                # NO_EXAMS（`total_candidates == 0`）不触发（0 < 0 = False、无 skip）仍可信。
+                exams_trusted = not report.skipped and len(exam_events) >= report.total_candidates
+                if not exams_trusted:
+                    # 只报计数，绝不带考试名/考场/座位（spec §8）。
+                    if not exam_events and report.total_candidates:
+                        logger.warning(
+                            "考试快照有 %d 行但一条都没解析出来，本次不启用撤销通路",
+                            report.total_candidates,
+                        )
+                    else:
+                        logger.warning(
+                            "考试快照有 %d 行、只构建了 %d 场考试（跳过 %d 行），"
+                            "本次不启用撤销通路",
+                            report.total_candidates,
+                            len(exam_events),
+                            len(report.skipped),
+                        )
+                elif not exam_events:
+                    logger.info("本学期暂无考试安排（考试快照为空）")
         except Exception as exc:  # 快照半截损坏、结构走样等一切意外
             # 计划稿只包 `load_raw`，与它自己「失败一律静默降级」的注释不符：
             # `load_raw` 里的 `json.loads` 抛 JSONDecodeError（ValueError 子类），
             # 不是 TimetableFetchError，照样能炸穿导出。整段兜住才对得上 §7:387。
-            logger.warning("考试快照无法处理，本次日历不含考试事件：%s", exc)
+            # 只记异常类名，不记 `str(exc)`：icalendar/`json.loads`/`UnicodeDecodeError` 的
+            # 消息会逐字引用坏字节或考试原文，属 §8 禁止进日志的来源数据（与台账各路径同口径）。
+            logger.warning("考试快照无法处理，本次日历不含考试事件（%s）", type(exc).__name__)
             exam_events = []
+            exams_trusted = False  # D18：炸了就收回撤销权
 
     # --- 可选日期过滤 ---
+    #: 撤销候选要用**未经日期过滤**的 live 集（spec D19）：下面的 `--from-date/--to-date`
+    #: 会连考试一起裁，用过滤后的集合就会把"窗口外"当成"已消失"而撤销并剪台账。
+    #: 台账回写也用同一份**未过滤**的事件列表，两处必须同源（Task 8 的 `live=` 参数）。
+    pre_filter_exam_events = list(exam_events)
+    live_exam_uids = {event.uid for event in exam_events}
     # 先把边界解析出来：它同时决定「事件过滤」与「unsupported 调课的范围判定」，
     # 两处必须用同一组边界，否则会出现「事件被裁掉、缺课告警却没报」。
     lower = date.fromisoformat(from_date) if from_date else None
@@ -786,7 +862,117 @@ def build_ics_for_semester(
             if baseline:
                 logger.info("SEQUENCE 基线：%s（%d 个事件）", baseline_path, len(baseline))
 
+    # DTSTAMP/LAST-MODIFIED 的来源 stamp 先算出来：撤销通路（下面的 try）里的
+    # `render_exam_ledger` 与产物渲染都吃同一个 stamp，两处必须同源。
     stamp = dtstamp or _stamp_from_snapshot(stamp_source or cfg.raw_timetable_path(semester))
+
+    # --- 撤销注入 + 台账文本（docs/design/2026-10-09-exam-cancellation.md §6.5）---
+    # 门槛（D18/F1）没过、或 `--no-exams`（D4/D21）时整段跳过：不读台账、不算撤销、
+    # 不产出台账文本。所有跨分支读取的标志先在块外初始化，保证之后的
+    # `ExportResult` / `info` 读它们时永远有值（评审 R4）。
+    # 整段（候选数学 + 台账文本序列化）都包在 try/except 里：读台账的 OSError/
+    # UnicodeDecodeError 早已就地兜住，但把一份手改/外来台账交给 icalendar 序列化时冒出的
+    # 意外（发不出的 DTSTART 时区、折不了的属性）会从这里冒出 `build_ics_for_semester`，
+    # 把一个考试侧问题变成 export/push 的非零退出——违反红线（spec §1、§7）。任何此类异常
+    # ⇒ 只记 `type(exc).__name__`、撤销条目与台账文本清空、`render_events` 退回撤销前（终审 F4）。
+    cancellation_events: list[CalendarEvent] = []
+    pending_entries: list[LedgerEntry] = []
+    ledger_exists = False
+    exam_ledger_text: str | None = None
+    if include_exams and exams_trusted:
+        pre_cancellation_render_events = render_events
+        try:
+            # 运行时 import 留在函数体内：exams.py 顶层 `from .exporter import ...`，反向成环
+            # （循环依赖规则）。类型注解用的 `LedgerEntry` 由文件顶部 TYPE_CHECKING 分支提供（R5）。
+            from .exams import build_cancellation_events, cancel_candidates, load_exam_ledger
+
+            ledger_path = cfg.exam_ledger_path(semester)
+            ledger_exists = ledger_path.is_file()
+            ledger: dict[str, LedgerEntry] = {}
+            if ledger_exists:
+                try:
+                    ledger = load_exam_ledger(ledger_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError) as exc:
+                    # 台账是二进制/坏编码字节时 `read_text` 抛 UnicodeDecodeError，目录权限问题时
+                    # 抛 OSError；这一段**不在**外层考试事件 try 的保护范围内，不就地兜住就会冒出
+                    # `build_ics_for_semester` ⇒ 一个考试侧问题把 export 变成非零退出（spec D15/§7
+                    # 红线）。就地降级成"当作没有台账"：`ledger` 留空 ⇒ 本次不撤销任何考试。但
+                    # `ledger_exists` 仍为 True，下面的空值口径照旧用本次 live 考试产出
+                    # `exam_ledger_text`，让调用方**覆盖这份读不出的坏台账**（§7：损坏 ⇒ warning +
+                    # 当作无台账、产物正常；覆盖正是期望的修复动作）。warning 只报学期与失败种类，
+                    # 绝不带台账内容（spec §8「日志不打印台账内容」，而异常原文会逐字引用坏字节）。
+                    logger.warning(
+                        "考试台账 %s 读不出（%s），本次当作无台账处理并用当前考试覆盖它",
+                        semester,
+                        type(exc).__name__,
+                    )
+            else:
+                logger.info("本地还没有 %s 的考试台账，本次不撤销任何已发布考试", semester)
+            if ledger:
+                deliverable, unresolvable = cancel_candidates(
+                    ledger=ledger,
+                    live_uids=live_exam_uids,
+                    baseline_uids=_cancellation_baseline_uids(baseline),
+                    now=cancel_expiry_at or now_local(),
+                )
+                # D20：留底/基线里没有该 UID ⇒ 客户端握着更高序号会忽略 `SEQUENCE:0` 的撤销，
+                # 发了等于没发；宁可不撤销。只报 UID，不带个人数据。文案说明**本次渲染**的决定，
+                # 且诚实交代两半：本次没发、但**留在台账里**等它自己时刻过去（终审 F3——判定
+                # "不可下发"的是这一次的调用方，一次没发布的渲染不该永久毁掉下次 push 撤销它的能力）。
+                for item in unresolvable:
+                    logger.warning(
+                        "考试 %s 无法安全下发撤销（发布留底里没有这个 UID，序号只能从 0 起，"
+                        "客户端会忽略更低的序号），本次不随产物下发这条撤销，"
+                        "留在台账里直到它原定时刻自然过去",
+                        item.uid,
+                    )
+                cancellation_events = build_cancellation_events(deliverable)
+                # 全局 UID 唯一性：撤销条目**不豁免**，处置与考试事件一致（丢弃后来者 + warning），
+                # 写法与本函数上面的 `kept_exam` 同形。
+                seen_uids = {event.uid for event in render_events}
+                kept_cancellations: list[CalendarEvent] = []
+                kept_pending: list[LedgerEntry] = []
+                # `build_cancellation_events` 保持调用方的全序、不重排（exams.build_cancellation_events），
+                # 所以事件与条目可以按位置配对；`strict=True` 给配对上锁。
+                for event, entry in zip(cancellation_events, deliverable, strict=True):
+                    if event.uid in seen_uids:
+                        logger.warning("撤销事件 UID 与已有事件冲突，已丢弃：%s", event.uid)
+                        continue
+                    seen_uids.add(event.uid)
+                    kept_cancellations.append(event)
+                    kept_pending.append(entry)
+                cancellation_events = kept_cancellations
+                # 台账 pending = **实际下发**的撤销 + **unresolvable**（终审 F3）：撞车被丢弃的撤销
+                # 随丢弃退场（撞车下轮照撞，留在台账是兑现不了的承诺）；但 unresolvable 要留着排队，
+                # 下一次有基线可对照的渲染就能真正撤销它。两类都自限：各自的 DTSTART 一过就被 D2 剪掉。
+                pending_entries = [*kept_pending, *unresolvable]
+                render_events = [*render_events, *cancellation_events]
+
+            #: 台账文本（§6.6 空值口径）：门槛过了（`exams_trusted` 蕴含 `include_exams`）**且**
+            #: 要么本地有台账文件、要么本次有 live 考试 —— 就要产出文本。全新订阅者（有 live 考试、
+            #: 还没有台账文件）也必须拿到文本，否则 Task 9/10 只在 `text is not None` 时落盘建文件，
+            #: 撤销通路对首屏用户直接死掉。反过来：门槛没过、`--no-exams`、既没读到台账又没 live 考试
+            #: ⇒ None，调用方不得建文件。live 侧用**未经日期过滤**的 `pre_filter_exam_events`
+            #: （D19，与候选同源），pending 侧用可下发候选 + unresolvable；本函数**不落盘**。
+            if ledger_exists or pre_filter_exam_events:
+                from .exams import render_exam_ledger
+
+                exam_ledger_text = render_exam_ledger(
+                    pre_filter_exam_events, pending_entries, dtstamp=stamp
+                )
+        except Exception as exc:
+            # 红线：撤销通路是考试侧增量，任何意外都降级成"没有撤销"，绝不改变 export/push 的
+            # 退出码。只记异常类名（`str(exc)` 可能逐字引用手改台账里的原文，spec §8 禁止台账
+            # 内容进日志）。撤销条目与台账文本一律清空、`render_events` 退回撤销前，产物照常。
+            logger.warning(
+                "考试撤销通路本次降级为不撤销（%s），撤销条目与台账文本都不产出，导出照常",
+                type(exc).__name__,
+            )
+            cancellation_events = []
+            pending_entries = []
+            exam_ledger_text = None
+            render_events = pre_cancellation_render_events
+
     if calendar_name is None:
         # 标题从课表数据推导；年级缺失/并列时 calendar_title 自己会退回基础名。
         calendar_name = calendar_title(semester, (m.grade_year for m in meetings))
@@ -801,10 +987,19 @@ def build_ics_for_semester(
     info["semester_name"] = academic.semester.name
     # 计数口径 = 真正进了产物的考试（既过了日期过滤，也过了上面的全局 UID 断言）。
     info["exam_events"] = len(kept_exam)
+    # 撤销数量单独报（§6.5 D23：撤销不进 sequence_stats，只在这个计数里体现）。
+    info["exam_cancellations"] = len(cancellation_events)
     stats: dict[str, int] | None = None
     if baseline is not None:
-        # 反过来 `sequence_stats` **必须**吃合并后的全集，否则考试的
-        # SEQUENCE/added 统计永远失真（新增的那条考试会被算成 0）。
-        stats = sequence_stats(render_events, baseline)
+        # stats 口径（spec D23）：必须含「课程 + live 考试」——否则考试的 SEQUENCE/新增
+        # 统计失真（`test_sequence_stats_see_exam_events` 看守）；但**不含**撤销条目：
+        # 它们的 UID 在基线里以 live 形态存在，指纹必变，混进来会凭空抬高 `updated`。
+        # 撤销数量单独走 `info["exam_cancellations"]`。
+        stats = sequence_stats([*events, *kept_exam], baseline)
 
-    return ExportResult(ics=ics, info=info, sequence_stats=stats)
+    return ExportResult(
+        ics=ics,
+        info=info,
+        sequence_stats=stats,
+        exam_ledger_text=exam_ledger_text,
+    )

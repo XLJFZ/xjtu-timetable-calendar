@@ -48,11 +48,13 @@ from .errors import (
     XjtuCalendarError,
 )
 from .exporter import build_ics_for_semester
+from .fileutil import atomic_write_text
 from .logging_setup import get_logger, setup_logging
 
 if TYPE_CHECKING:
     # cmd_subscribe 各分支内部惰性 `from . import subscribe`；这里只为类型标注。
     from . import subscribe
+    from .exporter import ExportResult
     from .fetcher import Endpoint
 
 __all__ = ["build_parser", "main"]
@@ -541,6 +543,12 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     # 若用默认 newline=None，Windows 会再翻译一次得到 \r\r\n。
     output.write_text(result.ics, encoding="utf-8", newline="")
 
+    # 考试台账：产物写成功之后才回写（spec D11），且 `None` 时**不创建文件**。
+    # 目录可能不存在（ensure_dirs 刻意不含 subscribe/，D24①），写入失败一律不许
+    # 影响 export 的退出码——课程是主功能。
+    if result.exam_ledger_text is not None:
+        _write_exam_ledger(cfg, semester, result.exam_ledger_text)
+
     # --- 汇总 ---
     info = result.info
     print()
@@ -569,6 +577,11 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     print("Output:")
     print(f"  {output}")
     print()
+    # 撤销数量（spec §6.8）：`N == 0` 时整行不打印，摘要与 v0.5 保持一致。
+    cancelled = int(str(result.info.get("exam_cancellations", 0)))
+    if cancelled:
+        print(f"撤销：{cancelled} 条（已发布考试事件在本次产物中标记为取消）")
+        print()
     logger.info("已生成 %s", output)
     return 0
 
@@ -605,6 +618,36 @@ def cmd_inspect(args: argparse.Namespace, cfg: Settings) -> int:
 # --------------------------------------------------------------------------- #
 # 辅助
 # --------------------------------------------------------------------------- #
+def _write_exam_ledger(cfg: Settings, semester: str, text: str) -> None:
+    """回写考试台账；失败只记 warning，不改调用方的成败。"""
+    path = cfg.exam_ledger_path(semester)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, text, private=True)
+    except OSError as exc:
+        logger.warning("考试台账没能写入 %s（%s），下次仍按原台账判断撤销", path, exc)
+        return
+    logger.debug("考试台账已更新：%s", path)
+
+
+def _print_publish_cancellation_summary(result_ics: ExportResult) -> None:
+    """发布成功后的撤销摘要（spec §6.8）：`N == 0` 时整行不打印。
+
+    push 与 rotate 两条发布路径**共用**这一份文案（评审统一口径：报数口径要一致，
+    不许各自发明措辞）。数量读 `info["exam_cancellations"]`——本次随产物真正
+    下发的撤销条数（被 D20 判为不可发的不在其中）；只在 publish 成功之后调用
+    （D11：没发出去就不许报"已撤销"）。
+
+    客户端删除行为按 spec §11/D5 尚未做真机演练，措辞一律用"通常会"，不把话说满。
+    """
+    cancelled = int(str(result_ics.info.get("exam_cancellations", 0)))
+    if cancelled:
+        print(
+            f"撤销：{cancelled} 条（已发布的考试事件在本次产物中标记为取消，"
+            "支持删除的客户端通常会移除它们；一次性导入的客户端仍需手动删除）"
+        )
+
+
 def _payload_size(payload: object) -> int:
     if isinstance(payload, list):
         return len(payload)
@@ -1091,11 +1134,30 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
             marker = exam_markers.get(exam_change.kind, "~")
             print(f"  {marker} {describe_exam_change(exam_change)}")
         print()
-        if any(exam_change.kind == EXAM_KIND_CANCELLED for exam_change in exam_diff.changes):
-            # §7.1：v1 不发布 STATUS:CANCELLED / METHOD:CANCEL，报出取消≠客户端删掉它。
+        cancelling = [
+            exam_change
+            for exam_change in exam_diff.changes
+            if exam_change.kind == EXAM_KIND_CANCELLED
+        ]
+        if cancelling:
+            # spec D13 后半句：摘要行预告下次发布将撤销的条数——只数取消类变更，
+            # 措辞用「将」：diff 是发布前的预览，此刻什么都没发生（§6.8）。这是**上界**：
+            # 渲染侧的门槛（终审 F1/D18）、D20 基线可发性、D2 时刻已过都可能把它减到更少
+            # 甚至 0，所以补一句「最多…以下次实际发布为准」，不把预览说成既定结果。
             print(
-                "注意：被取消的考试不会从已订阅的日历里自动消失（本工具不发布取消事件），"
-                "必要时请在日历中手动删除。"
+                f"本次将撤销：最多 {len(cancelling)} 条"
+                "（已发布考试事件将在下次产物中标记为取消，以下次实际发布为准）"
+            )
+            print()
+            # spec D13（docs/design/2026-10-09-exam-cancellation.md）：取消会以
+            # STATUS:CANCELLED 真的下发；但一次性导入型客户端不回源，那半句照旧要说。
+            # 术语与 README「已知边界」一致："不再回源"是一次性导入客户端的特征（它们
+            # 恰恰不会自动移除）；会自动移除的是会定期回源拉取的订阅客户端——实机表现
+            # 未验证（spec §11/D5），所以只说"通常会"，不把话说满。
+            print(
+                "注意：本次 diff 报出的取消会在下次 export/subscribe push 时以 "
+                "STATUS:CANCELLED 下发；会定期回源拉取的订阅客户端通常会随之移除，"
+                "而一次性导入后不再回源的客户端（部分国产 ROM 系统日历）仍需手动删除。"
             )
             print()
 
@@ -1252,7 +1314,13 @@ def _subscribe_push(
     # newline=""：留底必须与远端产物字节一致（CRLF 完整），否则下次把它当
     # SEQUENCE 基线读回、以及 status 的 sha 比对都会错位（同 cmd_export）。
     last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
+    # 台账与留底**同一时刻**更新（spec D11）：publish 失败或 NO_CHANGE 都在上面
+    # 提前离开，走不到这里；`None`（门槛没过 / --no-exams）不创建也不改写文件。
+    # 写失败只 warning（D24①），不改 push 的退出码。
+    if result_ics.exam_ledger_text is not None:
+        _write_exam_ledger(cfg, semester, result_ics.exam_ledger_text)
     print(f"已发布：{res.url}")
+    _print_publish_cancellation_summary(result_ics)
     return 0
 
 
@@ -1263,15 +1331,56 @@ def _subscribe_rotate(
 
     ``include_exams``：与 push 同口径透传给构建管线（spec §6.7）。rotate 若不接
     ``--no-exams``，用户明确关掉的考试会被悄悄塞回订阅 URL——正是本参数要防的缺陷。
+
+    行为（spec D12 / §6.8）：换 token **之前**先跑一次探针渲染，有已发布却尚未撤销的
+    考试时打印警告；探针只算不写（台账文本一律丢弃），且与随后的真实渲染读**同一份**
+    SEQUENCE 基线，所以警告条数就等于真正发出去的撤销条数。
     """
     from . import subscribe
 
     _validate_publish_branch(state.branch)
     old = state.token
+    # 留底既是真实渲染的 SEQUENCE 基线，也**必须**是探针的基线——两个分支读同一份证据，
+    # 量出来的撤销数才等于实际下发的撤销数。探针若不带基线就走 exporter
+    # `_cancellation_baseline_uids` 的"台账是唯一凭据"分支，把全部候选算成可下发：
+    # `push --no-exams` 之后（D21：留底里没有考试 UID、台账还记着）rotate 会警告 N 条，
+    # 真实渲染却把这 N 条全判成 D20 `unresolvable`——一条不发、还当场把它们永久移出台账，
+    # 报给用户的与实际发生的正相反（虚报只朝"多报"这一侧偏）。
+    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
+    # rotate 会换新 token = 换订阅 URL，旧地址此后永远收不到撤销（spec D12）。
+    # 这里是**探针渲染**：只取撤销数量，返回的台账文本必须丢弃（D24②——此刻产物
+    # 还没发布出去，落台账等于"假装撤销过"）。try **只罩探针**：撤销警告是增量，
+    # 探针失败（渲染异常，或 `info` 里的计数坏成非整数/非数字类型）降级为
+    # probe_cancel=0 + logger.warning（异常只报类型名，不带台账与考试个人数据，
+    # spec §8），不许拖崩 rotate 主功能；换 token 之后的真实渲染在下面的另一个 try 里，
+    # 其异常不受这一块影响（fail-closed 路径照旧）。
+    probe_cancel = 0
+    try:
+        probe = build_ics_for_semester(
+            cfg,
+            semester,
+            baseline_probe=str(last_local) if last_local.is_file() else None,
+            include_exams=include_exams,
+        )
+        probe_cancel = int(str(probe.info.get("exam_cancellations", 0)))
+    except (XjtuCalendarError, ValueError, TypeError) as exc:
+        probe_cancel = 0
+        logger.warning(
+            "subscribe rotate 的撤销探针渲染失败，本次跳过撤销警告（不影响换 token）：%s",
+            type(exc).__name__,
+        )
+    # 警告只对"旧 URL 确实挂过事件、且这次真会把撤销对照留底发出去"的订阅成立：
+    # 从没发布成功过就没有收到过考试的旧地址（D12 的措辞对其不成立）；留底缺失时下面
+    # 直接早退、一条也发不出去，报数字就成了虚警。文案不含"重新运行以确认"之类的闸门
+    # 承诺——这里没有停等确认的交互，也不许为了它新增 CLI 旗标。
+    if probe_cancel and state.last_push is not None and last_local.is_file():
+        print(
+            f"注意：本次有 {probe_cancel} 条考试事件尚未从旧订阅地址撤销，"
+            "rotate 后旧地址将永远收不到撤销。"
+        )
     subscribe.rotate_token(cfg, state)
     print(f"新订阅 URL：{state.subscription_url}（补发成功前旧 URL 仍可读取）")
     print(f"旧 token（{old[:4]}…）在本次补发成功后失效，请更新所有日历客户端的订阅地址。")
-    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
     if not last_local.is_file():
         if state.last_push is not None:
             # 已有成功推送却没留底：push 会拒绝重建（SEQUENCE 归零护栏），
@@ -1299,7 +1408,16 @@ def _subscribe_rotate(
         print(f"修复后运行 subscribe push --semester {semester} 完成发布。")
         return exc.exit_code
     last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
+    # 台账与留底**同一时刻**更新（D11 / spec §6.8：push 与 rotate 同口径）：能走到
+    # 这里说明 publish 已成功；`None`（门槛没过 / --no-exams）不创建也不改写文件。
+    # 探针渲染的那份文本在这里**不参与**——只有随产物真正发布出去的才算撤销过（D24②）。
+    # 写失败只 warning（D24①），不改 rotate 的退出码。
+    if result_ics.exam_ledger_text is not None:
+        _write_exam_ledger(cfg, semester, result_ics.exam_ledger_text)
     print("已用新文件名重新发布。")
+    # 与 push 同口径的撤销摘要（评审统一口径：两条发布路径报数一致）；同样只在
+    # publish 成功之后打印（D11），`N == 0` 时整行不打印。
+    _print_publish_cancellation_summary(result_ics)
     return 0
 
 

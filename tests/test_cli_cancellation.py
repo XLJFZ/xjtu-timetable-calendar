@@ -1,0 +1,580 @@
+"""台账的 CLI 侧行为：写盘时序（D11）、目录缺失与退出码（D24①）、rotate 探针（D24②）。"""
+
+from __future__ import annotations
+
+import dataclasses
+import logging
+from pathlib import Path
+
+import pytest
+from exam_support import (
+    SEMESTER,
+    captured_logs,
+    exam_home,
+    exam_payload,
+    exam_row,
+    exam_uids,
+    published_ledger,
+    write_ledger,
+)
+
+from xjtu_calendar import cli, fileutil, subscribe
+from xjtu_calendar.cli import main
+from xjtu_calendar.config import Settings
+from xjtu_calendar.errors import XjtuCalendarError
+from xjtu_calendar.fetcher import save_raw
+
+
+def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
+    """课表 + 台账（记着一场已发布的考试）+ 本次"确认本学期无考试" ⇒ 恰有 1 条待撤销。"""
+    monkeypatch.setenv("XJTU_CALENDAR_HOME", str(tmp_path))
+    monkeypatch.delenv("XJTU_SEMESTER", raising=False)
+    row = exam_row(WID="WID-A")
+    cfg = exam_home(tmp_path, row)
+    write_ledger(cfg, SEMESTER, published_ledger(cfg, row))
+    save_raw(exam_payload([]), cfg, SEMESTER, kind="exams")
+    return cfg
+
+
+def _export(cfg: Settings, *extra: str) -> int:
+    return main(["export", "--semester", SEMESTER, "-o", str(cfg.home / "out.ics"), *extra])
+
+
+def _register(cfg: Settings, *, last_push: bool = False) -> None:
+    """跳过 `subscribe init`（它要真远端），直接落一份订阅状态。
+
+    与 ``tests/test_cli_exams.py`` 的同名辅助同形；那两个文件刻意不互 import。
+
+    ``last_push``：rotate 的撤销警告只服务于**有过成功发布**的订阅——D12 说的是"旧订阅
+    地址此后收不到撤销"，而从没发布成功的地址上压根没有任何考试事件可收。默认关，
+    push 侧用例的现状不受影响（`cli.py` 的 SEQUENCE 归零护栏读的就是这个字段）。
+    """
+    state = subscribe.SubscriptionState(
+        semester=SEMESTER,
+        repo_url="https://example.invalid/calendar.git",
+        branch="main",
+        token="deadbeef",
+        url_base="https://me.github.io/timetable/",
+    )
+    if last_push:
+        state.last_push = subscribe.PushRecord(
+            pushed_at="2030-01-01T00:00:00+00:00", content_sha256="0" * 64, token="deadbeef"
+        )
+    subscribe.save_state(cfg, state)
+
+
+def _stub_publish(
+    monkeypatch: pytest.MonkeyPatch, outcome=None, shipped: list[str] | None = None
+) -> list[str]:
+    """真 publish 要动 git；这里换成 no-op，并把调用记进 order 以便断言时序。
+
+    R2 口径：台账这一侧**套壳并转调**——先记 ``"ledger-write"`` 再调真实的
+    ``cli._write_exam_ledger`` 让它真的落盘。这样 ``order == ["publish", "ledger-write"]``
+    描述的是一次真实发生过的写盘；把被测函数 stub 掉的话，两条时序/字节断言
+    都会变成空话（bytes 无论写在哪都不会变）。
+
+    ``shipped``：把**真正随产物发出去**的 ICS 文本收进列表，供「警告条数 == 实发条数」
+    这类跨分支不变式比对（默认不收集，现有调用点逐字不变）。
+    """
+    order: list[str] = []
+
+    def fake_publish(_cfg: Settings, _state: object, ics: str) -> subscribe.PublishResult:
+        order.append("publish")
+        if shipped is not None:
+            shipped.append(ics)
+        return subscribe.PublishResult(
+            outcome=outcome or subscribe.PublishOutcome.PUSHED,
+            url="https://e.invalid/x.ics",
+            content_sha256="0" * 64,
+        )
+
+    monkeypatch.setattr(subscribe, "publish", fake_publish)
+    real_write_ledger = cli._write_exam_ledger
+
+    def write_and_record(cfg, semester, text):
+        order.append("ledger-write")
+        real_write_ledger(cfg, semester, text)
+
+    monkeypatch.setattr(cli, "_write_exam_ledger", write_and_record)
+    return order
+
+
+def test_export_writes_ledger_after_the_output(tmp_path, monkeypatch):
+    cfg = _env(tmp_path, monkeypatch)
+    assert _export(cfg) == 0
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    assert ledger.is_file()
+    assert "SEQUENCE" not in ledger.read_text(encoding="utf-8")
+    assert (cfg.home / "out.ics").is_file()
+
+
+def test_export_creates_no_ledger_when_text_is_none(tmp_path, monkeypatch):
+    """`None` ⟺ 不得创建文件（spec §6.6）：这里制造"既没台账也没考试快照"。"""
+    cfg = _env(tmp_path, monkeypatch)
+    cfg.raw_exams_path(SEMESTER).unlink()
+    cfg.exam_ledger_path(SEMESTER).unlink()
+    assert _export(cfg) == 0
+    assert not cfg.exam_ledger_path(SEMESTER).exists()
+
+
+def test_export_with_no_exams_leaves_ledger_untouched(tmp_path, monkeypatch):
+    cfg = _env(tmp_path, monkeypatch)
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    before = ledger.read_bytes()
+    assert _export(cfg, "--no-exams") == 0
+    assert ledger.read_bytes() == before
+
+
+def test_export_survives_ledger_write_failure(tmp_path, monkeypatch):
+    """D24①：台账写不进去属于考试侧增量，**不得**让 export 非零退出。"""
+    cfg = _env(tmp_path, monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise OSError("disk is full")
+
+    monkeypatch.setattr("xjtu_calendar.cli.atomic_write_text", boom)
+    # `main()` 每次经 `setup_logging` 清空 `xjtu_calendar` logger 的 handler
+    # （`test_exams_fetch.py` 记录的已知坑），`captured_logs` 的收集器会一起被踢掉；
+    # 这里临时停用 `setup_logging`——它只搭日志流，与被测的退出码路径无关。
+    monkeypatch.setattr("xjtu_calendar.cli.setup_logging", lambda **_kw: None)
+    with captured_logs() as records:
+        assert _export(cfg) == 0
+    ledger_warnings = [
+        rec for rec in records if "台账" in rec.getMessage() and "没能写入" in rec.getMessage()
+    ]
+    assert ledger_warnings
+    # spec §6.8「写失败只 **warning**」：只匹配消息的话，降级成 info/debug 照样绿。
+    assert all(rec.levelno >= logging.WARNING for rec in ledger_warnings)
+    # spec §8「日志不打印台账内容」：台账里有考试原名/考场/座位，异常与告警都不许带上它。
+    assert not any("BEGIN:VCALENDAR" in rec.getMessage() for rec in records)
+    assert (cfg.home / "out.ics").is_file()  # 产物照写，主功能不受牵连
+
+
+def test_export_artifact_write_failure_leaves_ledger_untouched(tmp_path, monkeypatch):
+    """D11 的反证（export 半边）：产物没落地 ⇒ 台账一个字节都不能动，且 export 非零。
+
+    把 `cmd_export` 的 `_write_exam_ledger(...)` 挪到 `output.write_text(...)` **之前**，
+    这条立刻红：本次的台账文本会先落盘，可这份产物根本没写出去 ⇒ 台账记录的是一次**从未
+    发布出去**的渲染状态（D11 的时序不变式被破坏：没发出去就不算发布过）。
+
+    字节比对之所以有牙，是因为固件台账用 `exam_support.STAMP`（固定 2030-01-01）渲染，
+    而本次渲染的 DTSTAMP 跟着课表快照 mtime 走 ⇒ 真写一次字节必变。若哪天有人给 CLI
+    注入 `dtstamp=`，这条与两条 push 字节用例会一起变成空话。
+
+    产物这一侧的 `OSError` 不靠打桩：把输出路径本身做成目录，`write_text` 必抛
+    （Windows 是 `PermissionError`、POSIX 是 `IsADirectoryError`，同为 `OSError`）。
+    """
+    cfg = _env(tmp_path, monkeypatch)
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    before = ledger.read_bytes()
+    output = cfg.home / "out.ics"
+    output.mkdir()
+
+    assert _export(cfg) != 0  # 产物写失败就是真的导出失败，必须 fail-closed
+    assert ledger.read_bytes() == before
+    assert output.is_dir()  # 产物确实没落地
+
+
+def test_ledger_write_requests_private(tmp_path, monkeypatch):
+    """kwargs 捕获口径（照 ``tests/test_fetcher.py`` 的 private 用例）：只断 mode 证伪不了。"""
+    cfg = _env(tmp_path, monkeypatch)
+    seen: dict[str, object] = {}
+    real = fileutil.atomic_write_text
+
+    def spy(path, text, **kwargs):
+        seen[path.name] = kwargs.get("private")
+        return real(path, text, **kwargs)
+
+    monkeypatch.setattr("xjtu_calendar.cli.atomic_write_text", spy)
+    assert _export(cfg) == 0
+    assert seen[f"last-exams-{SEMESTER}.ics"] is True
+
+
+def test_export_summary_reports_cancellations(tmp_path, monkeypatch, capsys):
+    """评审统一口径：export 摘要行读 `info["exam_cancellations"]`（spec §6.8）。
+
+    两次 export：第一次把考试以 live 形态写进 out.ics 并建台账；第二次考试从快照
+    消失、基线（out.ics）里有该 UID ⇒ 恰有 1 条撤销进产物 ⇒ 摘要报数。
+    """
+    monkeypatch.setenv("XJTU_CALENDAR_HOME", str(tmp_path))
+    monkeypatch.delenv("XJTU_SEMESTER", raising=False)
+    row = exam_row(WID="WID-A")
+    cfg = exam_home(tmp_path, row)
+    assert _export(cfg) == 0
+    save_raw(exam_payload([]), cfg, SEMESTER, kind="exams")
+    assert _export(cfg) == 0
+    out = capsys.readouterr().out
+    assert "撤销：1 条" in out
+
+
+def test_export_summary_omits_zero_cancellations(tmp_path, monkeypatch, capsys):
+    cfg = _env(tmp_path, monkeypatch)
+    assert _export(cfg) == 0
+    assert "撤销" not in capsys.readouterr().out
+
+
+def test_push_writes_ledger_after_publish_succeeds(tmp_path, monkeypatch):
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg)
+    order = _stub_publish(monkeypatch)
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert order == ["publish", "ledger-write"]  # D11：先发布成功，再动留底与台账
+
+    # 写进去的必须是**台账文本**，不是产物文本：台账不是发布件，按 D10/D22 永远没有
+    # SEQUENCE（`render_ics` 无条件写 SEQUENCE，产物里必现），而待撤销那条考试的 UID
+    # 必须原样留在台账里排队。口径与 export 侧的 `test_export_writes_ledger_after_the_output`
+    # 一致——少了这两句，把 `result_ics.ics` 误当台账写入的话时序照样绿。
+    ledger_text = cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8")
+    assert "SEQUENCE" not in ledger_text
+    assert exam_uids(cfg, exam_row(WID="WID-A"))[0] in ledger_text
+
+
+def test_push_failure_leaves_ledger_untouched(tmp_path, monkeypatch):
+    """D11 的反证：把台账写入挪到 publish 之前，这条立刻红。
+
+    R2 裁决：不 stub `_write_exam_ledger`——让**真**函数在场。台账文本的 DTSTAMP
+    跟着课表快照 mtime 走、与固件的固定 2030-01-01（`exam_support.STAMP`）不同，真写
+    一次字节必变；若把函数打桩掉，bytes 无论写在哪都不会变，断言就成了空话。
+    ⇒ 反过来说：哪天有人给 CLI 注入 `dtstamp=`，这条与另外两条字节比对用例
+    （NO_CHANGE、export 产物失败）会一起悄悄变成永真，改固件时务必同步改这里。
+    """
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg)
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    before = ledger.read_bytes()
+
+    def blow_up(_cfg, _state, _ics):
+        raise XjtuCalendarError("远端拒绝")
+
+    monkeypatch.setattr(subscribe, "publish", blow_up)
+    # §7 fail-closed：发布失败必须是非零退出，不许悄悄当没事发生。
+    assert main(["subscribe", "push", "--semester", SEMESTER]) != 0
+    assert ledger.read_bytes() == before
+
+
+def test_no_change_push_leaves_ledger_untouched(tmp_path, monkeypatch):
+    """publish 的「NO_CHANGE 早退」块里台账同样不写：此时台账本来也未变。"""
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg)
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    _stub_publish(monkeypatch, outcome=subscribe.PublishOutcome.NO_CHANGE)
+    before = ledger.read_bytes()
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert ledger.read_bytes() == before
+
+
+def test_push_summary_reports_pending_cancellations(tmp_path, monkeypatch, capsys):
+    """push 有真实留底 ⇒ 撤销 1 条并打摘要（终审 F2 后需留底作可发性凭据）。"""
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg)
+    # F2：撤销可发性以真实留底为凭据。落一份含已发布考试的 `last-<学期>.ics`。
+    last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
+    last.parent.mkdir(parents=True, exist_ok=True)
+    last.write_text(_published_artifact(cfg), encoding="utf-8", newline="")
+    _stub_publish(monkeypatch)
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "撤销：1 条" in out
+    assert "一次性导入" in out  # 不许把话说满：这类客户端仍不会自动删
+
+
+def test_push_summary_omits_zero_cancellations(tmp_path, monkeypatch, capsys):
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg)
+    cfg.exam_ledger_path(SEMESTER).unlink()  # 没有台账 ⇒ 没什么可撤销
+    _stub_publish(monkeypatch)
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert "撤销" not in capsys.readouterr().out
+
+
+def _published_artifact(cfg: Settings, *, include_exam: bool = True) -> str:
+    """`last-<学期>.ics` 的**真实留底形态**：整条渲染管线走一遍取产物。
+
+    ``include_exam=True``：把台账里那场考试按 **live 形态**再渲染一次（`exams_payload`
+    只喂内存里的响应，不动盘上"本学期无考试"的快照），得到的产物就是"上次发布真的把这场
+    考试发出去了"的证据。UID 由真实管线推导，**绝不手抄 sha256**——配方一改这里跟着红，
+    正是看守该做的事（同 `exam_support.exam_uids` 的理由）。
+
+    ``include_exam=False``：`push --no-exams` 之后留在盘上的产物（spec D21）——合法 ICS、
+    课程事件齐全，但**没有**已发布考试的 UID。撤销判定以这份 UID 集为准（D20），所以它是
+    "探针与真实渲染基线不一致"那个 bug 的唯一可观测形态。
+    """
+    if not include_exam:
+        return cli.build_ics_for_semester(cfg, SEMESTER, include_exams=False).ics
+    return cli.build_ics_for_semester(
+        cfg, SEMESTER, exams_payload=exam_payload([exam_row(WID="WID-A")])
+    ).ics
+
+
+def _ready_for_rotate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, published: bool = True
+) -> Settings:
+    """rotate 的三个前置：订阅状态已注册 + 有过成功发布（警告的前提）+ 本地有发布留底
+    （无留底它会直接早退，跳过全部被测路径）。
+
+    留底**必须**是含已发布考试 UID 的真产物，不能是 `BEGIN:VCALENDAR` 空壳：空壳里
+    没有任何 VEVENT ⇒ 探针与真实渲染都算出 0 条撤销 ⇒ "警告条数 == 实发条数"这条核对
+    在空壳上恒成立，本轮 Important 修复（两者共用同一份 SEQUENCE 基线）就永远测不出来。
+    """
+    cfg = _env(tmp_path, monkeypatch)
+    _register(cfg, last_push=published)
+    last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
+    last.parent.mkdir(parents=True, exist_ok=True)
+    last.write_text(_published_artifact(cfg), encoding="utf-8", newline="")
+    return cfg
+
+
+def test_rotate_warns_before_changing_token(tmp_path, monkeypatch, capsys):
+    """D12 + D24②：警告必须在 `rotate_token` 之前，且探针**不许**抢先落台账。"""
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    shipped: list[str] = []
+    order = _stub_publish(monkeypatch, shipped=shipped)  # 已含 publish / _write_exam_ledger 埋点
+    real_rotate = subscribe.rotate_token
+    monkeypatch.setattr(
+        subscribe,
+        "rotate_token",
+        lambda *a, **k: (order.append("rotate"), real_rotate(*a, **k))[1],
+    )
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "永远收不到撤销" in out
+    # 「新订阅 URL」那行紧跟在 rotate_token **之后**打印：警告排在它前面，才是
+    # "警告先于换 token"的可观测证据——探针挪到 rotate_token 之后时，下面两条
+    # order 断言照样绿（探针不落 order 埋点），只有这句会红。
+    assert out.index("永远收不到撤销") < out.index("新订阅 URL")
+    # 探针只算不写：台账写入必须排在 rotate 与 publish 之后
+    assert order[order.index("rotate") + 1 :] == ["publish", "ledger-write"]
+    assert "ledger-write" not in order[: order.index("rotate")]
+    # 文案口径（spec §6.8:248-251）：只陈述"N 条尚未撤销 + 旧地址此后收不到"，
+    # **不许**承诺"重新运行 rotate 即可确认继续"——实现里没有停一下等确认的交互，
+    # 加了就是给用户假闸门。
+    assert "确认要继续" not in out
+    # 警告的条数 == **真正发出去**的撤销条数（探针与真实渲染读同一份留底证据）。
+    # 本场景留底认这个 UID，所以"摘掉探针的 baseline_probe"在本条上照绿——红的是
+    # `test_rotate_warning_tracks_the_retained_artifact`（留底不认 UID 的那一侧）。
+    # 本条守的是另一半：数字不许凭空出现、时序、以及台账写的是台账文本。
+    assert "本次有 1 条" in out
+    # 评审统一口径（Task 12 修复轮）：rotate 发布成功后与 push 同口径打撤销摘要，
+    # 「前置警告的条数 == 实发条数 == 摘要行报的条数」三个数字必须一致。
+    assert "撤销：1 条" in out
+    assert len(shipped) == 1
+    assert shipped[0].count("STATUS:CANCELLED") == 1
+    # rotate 写的台账：是**台账文本**而不是产物文本（D10/D22：台账永远没有 SEQUENCE），
+    # 且那条已下发的撤销仍留在台账里排队（口径与 push 侧同名断言一致）。
+    ledger_text = cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8")
+    assert "SEQUENCE" not in ledger_text
+    assert "STATUS:CANCELLED" not in ledger_text
+    assert exam_uids(cfg, exam_row(WID="WID-A"))[0] in ledger_text
+
+
+def test_rotate_warning_tracks_the_retained_artifact(tmp_path, monkeypatch, capsys):
+    """Important 回归：留底里没有该 UID（`push --no-exams` 之后，D21）⇒ 一条都不许虚报。
+
+    这份场景里台账还记着那场考试、快照确认本学期无考试 ⇒ 候选 1 条。但真实渲染以留底的
+    UID 集判可发性（D20）：留底是 `--no-exams` 产物、不含该 UID ⇒ 候选全进 `unresolvable`
+    ⇒ **实发 0 条**，并且这一条**留在台账里**排队（终审 F3：一次判不可发不该永久毁掉下次
+    撤销它的能力；到它自己的 DTSTART 才被 D2 剪掉）。
+    探针若不带同一份基线，就走"没有基线也全可下发"的分支把 1 条全算成可下发 ⇒ 用户听到
+    「有 1 条尚未撤销」，实际发生的却是"撤销一条没发"——报的与做的正相反。
+    """
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
+    last.write_text(_published_artifact(cfg, include_exam=False), encoding="utf-8", newline="")
+    shipped: list[str] = []
+    _stub_publish(monkeypatch, shipped=shipped)
+    uid = exam_uids(cfg, exam_row(WID="WID-A"))[0]
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "撤销" not in out, f"虚警：留底没这个 UID ⇒ 实发 0 条，却报了数\n{out}"
+    assert len(shipped) == 1
+    assert "STATUS:CANCELLED" not in shipped[0]  # 实发确实是 0 条
+    # 终审 F3（与旧断言相反）：unresolvable 条目**留在**台账里排队，等下一次有基线可对照的
+    # 渲染真正撤销它——旧版"就地剪账"会让一次判不可发永久毁掉撤销能力、ghost 永存。
+    assert uid in cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8")  # F3 保留
+
+
+def test_rotate_stays_silent_for_a_never_published_subscription(tmp_path, monkeypatch, capsys):
+    """Minor 3：只跑过 `export`（建了台账）、从没发布成功的用户不该被**换 token 前的警告**。
+
+    警告讲的是"旧订阅地址从此收不到撤销"，而这条地址上从没挂过任何事件。真实渲染照旧
+    把撤销发出去（留底在场、基线认这个 UID），所以"没警告"不是因为"没得撤销"。
+
+    Task 12 修复轮（评审统一口径）：rotate 发布成功后要与 push 同口径打撤销摘要——本场景
+    实发 1 条，摘要行**必须**出现；这条用例守的是 D12 前置警告（只识别有该警告的句子），
+    而不是"rotate 永远不提撤销"。
+    """
+    cfg = _ready_for_rotate(tmp_path, monkeypatch, published=False)
+    shipped: list[str] = []
+    _stub_publish(monkeypatch, shipped=shipped)
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "永远收不到撤销" not in out  # D12 前置警告被 last_push 闸门挡住
+    assert "撤销：1 条" in out  # 发布成功后的摘要与 push 同口径（实发 1 条）
+    assert len(shipped) == 1 and "STATUS:CANCELLED" in shipped[0]
+    # 撤销已下发、条目照旧在台账里排队 ⇒ "没警告"是闸门生效，不是"这条链路没跑"。
+    ledger = cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8")
+    assert exam_uids(cfg, exam_row(WID="WID-A"))[0] in ledger
+
+
+def test_rotate_stays_silent_without_a_retained_artifact(tmp_path, monkeypatch, capsys):
+    """Minor 3 + Important 的另一半：留底缺失 ⇒ rotate 早退、一条也发不出去 ⇒ 不许报数。
+
+    这条同时把"探针的基线表达式"钉在 `str(留底) if 留底存在 else None` 上：留底缺失时
+    探针走"台账是唯一凭据"的分支（与 push 首屏同形），量出 N>0 却没有任何真实渲染会读它
+    （`not last_local.is_file()` 直接 return）。把警告的闸门从"留底存在"上摘掉即红。
+    """
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    subscribe.subscribe_dir(cfg).joinpath(f"last-{SEMESTER}.ics").unlink()
+    shipped: list[str] = []
+    _stub_publish(monkeypatch, shipped=shipped)
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "撤销" not in out
+    assert shipped == []  # 真实渲染压根没跑
+    assert "本地留底缺失" in out  # 走的是 last_push 已存在的早退分支
+
+
+def test_rotate_stays_silent_when_nothing_to_cancel(tmp_path, monkeypatch, capsys):
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    cfg.exam_ledger_path(SEMESTER).unlink()
+    _stub_publish(monkeypatch)
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    assert "撤销" not in capsys.readouterr().out
+
+
+def test_rotate_publish_failure_leaves_ledger_untouched(tmp_path, monkeypatch):
+    """D11 的反证（rotate 半边）：token 已换但 publish 失败 ⇒ 台账一个字节都不许动。
+
+    R2 口径：这条的要点正是"`_write_exam_ledger` **没跑**"，所以真函数必须在场、不许
+    stub（打桩的话字节比对恒绿）。把 `_write_exam_ledger(...)` 挪到 `publish` 之前即红：
+    台账会记下一次从未发布出去的渲染状态（D11 时序不变式被破坏：没发出去就不算发布过）。
+    """
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    ledger = cfg.exam_ledger_path(SEMESTER)
+    before = ledger.read_bytes()
+
+    def blow_up(_cfg, _state, _ics):
+        raise XjtuCalendarError("远端拒绝")
+
+    monkeypatch.setattr(subscribe, "publish", blow_up)
+    # §7 fail-closed：token 已落盘换新、发布却失败必须是非零退出。
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) != 0
+    assert subscribe.load_state(cfg, SEMESTER).token != "deadbeef"  # 确实换了 token
+    assert ledger.read_bytes() == before
+
+
+def test_rotate_survives_a_failing_probe(tmp_path, monkeypatch, capsys):
+    """探针失败不许拖崩 rotate：撤销警告是增量，rotate 是主功能。
+
+    不用"损坏考试快照"触发探针异常——那会被 D18 可信门槛**静默降级**（门槛不过
+    ⇒ 撤销数为 0、不抛），探针根本抛不起来，这条用例什么也证明不了。改为给
+    ``cli.build_ics_for_semester`` 包一层计数器：**第一次**调用（即探针）抛
+    ``XjtuCalendarError``，其后委派真实实现（即换 token 后的真实渲染）。
+    """
+    _ready_for_rotate(tmp_path, monkeypatch)
+    _stub_publish(monkeypatch)
+    real_build = cli.build_ics_for_semester
+    seen: list[int] = []
+
+    def flaky_build(*args, **kwargs):
+        seen.append(1)
+        if len(seen) == 1:
+            raise XjtuCalendarError("模拟探针渲染失败")
+        return real_build(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "build_ics_for_semester", flaky_build)
+    # `main()` 里的 setup_logging 会清掉 captured_logs 的 handler（同
+    # `test_export_survives_ledger_write_failure` 记录的坑），临时停成 no-op。
+    monkeypatch.setattr("xjtu_calendar.cli.setup_logging", lambda **_kw: None)
+    with captured_logs() as records:
+        assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    assert len(seen) == 2  # 探针失败没拦住 rotate 自己的真实渲染
+    # 失败要留下 warning 痕迹，不许静默吞掉（级别不低于 WARNING）。
+    assert any("探针" in rec.getMessage() and rec.levelno >= logging.WARNING for rec in records)
+    # 本场景确实有 1 条待撤销（台账在场、考试确认空、可信门槛过）：警告缺席恰恰
+    # 是因为探针失败回落 probe_cancel=0。若把 except 改成放行异常或重试渲染，
+    # 上面两条先红——"断言警告不在"不是空话。
+    assert "永远收不到撤销" not in capsys.readouterr().out
+
+
+def test_rotate_survives_a_non_numeric_probe_count(tmp_path, monkeypatch, capsys):
+    """Minor 5：`info` 里的计数坏成非整数也不许改变 rotate 的退出码。
+
+    计数取自 `int(str(...))`，坏值是 `ValueError` 而不是 `XjtuCalendarError`；except 元组
+    少了它，异常就从探针冒到 `main` 顶层 handler ⇒ 退出码翻成 1（撤销警告这种增量绝不
+    能把换 token 的主功能带崩）。第一次调用（探针）返回坏计数，其后原样委派真实渲染。
+    """
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    shipped: list[str] = []
+    _stub_publish(monkeypatch, shipped=shipped)
+    real_build = cli.build_ics_for_semester
+    calls: list[int] = []
+
+    def junky_count_build(*args, **kwargs):
+        result = real_build(*args, **kwargs)
+        calls.append(1)
+        if len(calls) == 1:
+            return dataclasses.replace(
+                result, info={**result.info, "exam_cancellations": "not-a-number"}
+            )
+        return result
+
+    monkeypatch.setattr(cli, "build_ics_for_semester", junky_count_build)
+    monkeypatch.setattr("xjtu_calendar.cli.setup_logging", lambda **_kw: None)
+    with captured_logs() as records:
+        assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    assert len(calls) == 2
+    assert any("探针" in rec.getMessage() and rec.levelno >= logging.WARNING for rec in records)
+    assert "永远收不到撤销" not in capsys.readouterr().out
+    # 探针的降级不许碰到真实渲染：撤销照发（留底认这个 UID）。
+    assert shipped[0].count("STATUS:CANCELLED") == 1
+    assert cfg.exam_ledger_path(SEMESTER).is_file()
+
+
+def test_unresolvable_survives_export_then_push_cancels(tmp_path, monkeypatch):
+    """终审 F3（Important）：一次没发布的 export 不许永久毁掉下次 push 撤销它的能力。
+
+    场景：考试 A 曾发布（在台账里）→ A 从源消失 → 用户跑一次普通 `export -o 新路径`
+    （基线是那个还不存在的新文件 ⇒ A 判为 unresolvable）。旧实现把 unresolvable 从台账
+    **剪掉** ⇒ 下一次 push（本可对照自己的真实留底撤销 A）再也不知道 A 存在过 ⇒ ghost 永存。
+    修法：unresolvable **留在台账里**（自限：到自己的 DTSTART 就被 D2 剪掉，不会无限膨胀）。
+
+    这条就是该修法的可证伪形式：①export-only 这一步台账必须**原样留着** A；②随后 push
+    （有认得 A 的真实留底）必须真的把 A 撤销。把 F3 改回"剪掉 unresolvable"，第①步就把
+    A 抹了、第②步发不出撤销 ⇒ 两步皆红。
+    """
+    monkeypatch.setenv("XJTU_CALENDAR_HOME", str(tmp_path))
+    monkeypatch.delenv("XJTU_SEMESTER", raising=False)
+    row = exam_row(WID="WID-A")
+    cfg = exam_home(tmp_path, row)
+    uid = exam_uids(cfg, row)[0]
+    # 真实留底：A 曾以 live 形态发布过（push 侧据以判可发性的 SEQUENCE 基线）。
+    last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
+    last.parent.mkdir(parents=True, exist_ok=True)
+    last.write_text(_published_artifact(cfg), encoding="utf-8", newline="")
+    # 台账记着发布过的 A；随后 A 从源消失（确认本学期无考试）。
+    write_ledger(cfg, SEMESTER, published_ledger(cfg, row))
+    save_raw(exam_payload([]), cfg, SEMESTER, kind="exams")
+
+    # ① 普通 export 到一个新路径：基线是那个还不存在的新文件 ⇒ A 是 unresolvable。
+    assert _export(cfg) == 0
+    assert "STATUS:CANCELLED" not in (cfg.home / "out.ics").read_text(encoding="utf-8")
+    assert uid in cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8"), (
+        "F3：一次没发布的 export 不得把待撤销条目剪出台账"
+    )
+
+    # ② push：真实留底认这个 UID ⇒ 这次把 A 撤销并发出去。
+    _register(cfg)
+    shipped: list[str] = []
+    _stub_publish(monkeypatch, shipped=shipped)
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert len(shipped) == 1 and "STATUS:CANCELLED" in shipped[0]

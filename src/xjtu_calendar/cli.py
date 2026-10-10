@@ -633,16 +633,18 @@ def _write_exam_ledger(cfg: Settings, semester: str, text: str) -> None:
 def _print_publish_cancellation_summary(result_ics: ExportResult) -> None:
     """发布成功后的撤销摘要（spec §6.8）：`N == 0` 时整行不打印。
 
-    push 与 rotate 两条发布路径**共用**这一份文案（控制器裁决：报数口径要一致，
+    push 与 rotate 两条发布路径**共用**这一份文案（评审统一口径：报数口径要一致，
     不许各自发明措辞）。数量读 `info["exam_cancellations"]`——本次随产物真正
     下发的撤销条数（被 D20 判为不可发的不在其中）；只在 publish 成功之后调用
     （D11：没发出去就不许报"已撤销"）。
+
+    客户端删除行为按 spec §11/D5 尚未做真机演练，措辞一律用"通常会"，不把话说满。
     """
     cancelled = int(str(result_ics.info.get("exam_cancellations", 0)))
     if cancelled:
         print(
             f"撤销：{cancelled} 条（已发布的考试事件在本次产物中标记为取消，"
-            "支持删除的客户端会移除它们；一次性导入的客户端仍需手动删除）"
+            "支持删除的客户端通常会移除它们；一次性导入的客户端仍需手动删除）"
         )
 
 
@@ -1139,8 +1141,13 @@ def cmd_diff(args: argparse.Namespace, cfg: Settings) -> int:
         ]
         if cancelling:
             # spec D13 后半句：摘要行预告下次发布将撤销的条数——只数取消类变更，
-            # 措辞用「将」：diff 是发布前的预览，此刻什么都没发生（§6.8）。
-            print(f"本次将撤销：{len(cancelling)} 条（已发布考试事件将在下次产物中标记为取消）")
+            # 措辞用「将」：diff 是发布前的预览，此刻什么都没发生（§6.8）。这是**上界**：
+            # 渲染侧的门槛（终审 F1/D18）、D20 基线可发性、D2 时刻已过都可能把它减到更少
+            # 甚至 0，所以补一句「最多…以下次实际发布为准」，不把预览说成既定结果。
+            print(
+                f"本次将撤销：最多 {len(cancelling)} 条"
+                "（已发布考试事件将在下次产物中标记为取消，以下次实际发布为准）"
+            )
             print()
             # spec D13（docs/design/2026-10-09-exam-cancellation.md）：取消会以
             # STATUS:CANCELLED 真的下发；但一次性导入型客户端不回源，那半句照旧要说。
@@ -1408,7 +1415,7 @@ def _subscribe_rotate(
     if result_ics.exam_ledger_text is not None:
         _write_exam_ledger(cfg, semester, result_ics.exam_ledger_text)
     print("已用新文件名重新发布。")
-    # 与 push 同口径的撤销摘要（控制器裁决：两条发布路径报数一致）；同样只在
+    # 与 push 同口径的撤销摘要（评审统一口径：两条发布路径报数一致）；同样只在
     # publish 成功之后打印（D11），`N == 0` 时整行不打印。
     _print_publish_cancellation_summary(result_ics)
     return 0

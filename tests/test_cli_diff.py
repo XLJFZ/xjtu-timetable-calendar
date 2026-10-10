@@ -386,7 +386,7 @@ def test_diff_summary_line_previews_the_cancellation_count(
     assert main(["diff", "--semester", SEMESTER]) == 0
     out = capsys.readouterr().out
     assert "考试变更（2 项）" in out
-    assert "本次将撤销：1 条" in out, "摘要行缺失，或把 2 项变更全算成了撤销"
+    assert "本次将撤销：最多 1 条" in out, "摘要行缺失，或把 2 项变更全算成了撤销"
     assert "已撤销" not in out  # 这是预览：下次发布才会发生，不许说成已完成
 
 

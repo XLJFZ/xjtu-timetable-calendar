@@ -154,8 +154,8 @@ def test_export_artifact_write_failure_leaves_ledger_untouched(tmp_path, monkeyp
     """D11 的反证（export 半边）：产物没落地 ⇒ 台账一个字节都不能动，且 export 非零。
 
     把 `cmd_export` 的 `_write_exam_ledger(...)` 挪到 `output.write_text(...)` **之前**，
-    这条立刻红：本次的台账文本会先落盘，而 D20 会把"这次没能随产物发出去"的候选从台账里
-    剪掉 ⇒ 撤销记录被永久抹掉，客户端那边的幽灵考试再没人管了。
+    这条立刻红：本次的台账文本会先落盘，可这份产物根本没写出去 ⇒ 台账记录的是一次**从未
+    发布出去**的渲染状态（D11 的时序不变式被破坏：没发出去就不算发布过）。
 
     字节比对之所以有牙，是因为固件台账用 `exam_support.STAMP`（固定 2030-01-01）渲染，
     而本次渲染的 DTSTAMP 跟着课表快照 mtime 走 ⇒ 真写一次字节必变。若哪天有人给 CLI
@@ -191,7 +191,7 @@ def test_ledger_write_requests_private(tmp_path, monkeypatch):
 
 
 def test_export_summary_reports_cancellations(tmp_path, monkeypatch, capsys):
-    """控制器裁决：export 摘要行读 `info["exam_cancellations"]`（spec §6.8）。
+    """评审统一口径：export 摘要行读 `info["exam_cancellations"]`（spec §6.8）。
 
     两次 export：第一次把考试以 live 形态写进 out.ics 并建台账；第二次考试从快照
     消失、基线（out.ics）里有该 UID ⇒ 恰有 1 条撤销进产物 ⇒ 摘要报数。
@@ -266,8 +266,13 @@ def test_no_change_push_leaves_ledger_untouched(tmp_path, monkeypatch):
 
 
 def test_push_summary_reports_pending_cancellations(tmp_path, monkeypatch, capsys):
+    """push 有真实留底 ⇒ 撤销 1 条并打摘要（终审 F2 后需留底作可发性凭据）。"""
     cfg = _env(tmp_path, monkeypatch)
     _register(cfg)
+    # F2：撤销可发性以真实留底为凭据。落一份含已发布考试的 `last-<学期>.ics`。
+    last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
+    last.parent.mkdir(parents=True, exist_ok=True)
+    last.write_text(_published_artifact(cfg), encoding="utf-8", newline="")
     _stub_publish(monkeypatch)
 
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
@@ -354,7 +359,7 @@ def test_rotate_warns_before_changing_token(tmp_path, monkeypatch, capsys):
     # `test_rotate_warning_tracks_the_retained_artifact`（留底不认 UID 的那一侧）。
     # 本条守的是另一半：数字不许凭空出现、时序、以及台账写的是台账文本。
     assert "本次有 1 条" in out
-    # 控制器裁决（Task 12 修复轮）：rotate 发布成功后与 push 同口径打撤销摘要，
+    # 评审统一口径（Task 12 修复轮）：rotate 发布成功后与 push 同口径打撤销摘要，
     # 「前置警告的条数 == 实发条数 == 摘要行报的条数」三个数字必须一致。
     assert "撤销：1 条" in out
     assert len(shipped) == 1
@@ -372,9 +377,10 @@ def test_rotate_warning_tracks_the_retained_artifact(tmp_path, monkeypatch, caps
 
     这份场景里台账还记着那场考试、快照确认本学期无考试 ⇒ 候选 1 条。但真实渲染以留底的
     UID 集判可发性（D20）：留底是 `--no-exams` 产物、不含该 UID ⇒ 候选全进 `unresolvable`
-    ⇒ **实发 0 条**，并且这一条**当场被永久移出台账**（下次渲染再也看不到它）。
-    探针若不带同一份基线，就走"台账是唯一凭据"的分支把 1 条全算成可下发 ⇒ 用户听到
-    「有 1 条尚未撤销」，实际发生的是"撤销一条没发、记录还毁了"——报的与做的正相反。
+    ⇒ **实发 0 条**，并且这一条**留在台账里**排队（终审 F3：一次判不可发不该永久毁掉下次
+    撤销它的能力；到它自己的 DTSTART 才被 D2 剪掉）。
+    探针若不带同一份基线，就走"没有基线也全可下发"的分支把 1 条全算成可下发 ⇒ 用户听到
+    「有 1 条尚未撤销」，实际发生的却是"撤销一条没发"——报的与做的正相反。
     """
     cfg = _ready_for_rotate(tmp_path, monkeypatch)
     last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
@@ -388,7 +394,9 @@ def test_rotate_warning_tracks_the_retained_artifact(tmp_path, monkeypatch, caps
     assert "撤销" not in out, f"虚警：留底没这个 UID ⇒ 实发 0 条，却报了数\n{out}"
     assert len(shipped) == 1
     assert "STATUS:CANCELLED" not in shipped[0]  # 实发确实是 0 条
-    assert uid not in cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8")  # D20 就地剪账
+    # 终审 F3（与旧断言相反）：unresolvable 条目**留在**台账里排队，等下一次有基线可对照的
+    # 渲染真正撤销它——旧版"就地剪账"会让一次判不可发永久毁掉撤销能力、ghost 永存。
+    assert uid in cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8")  # F3 保留
 
 
 def test_rotate_stays_silent_for_a_never_published_subscription(tmp_path, monkeypatch, capsys):
@@ -397,7 +405,7 @@ def test_rotate_stays_silent_for_a_never_published_subscription(tmp_path, monkey
     警告讲的是"旧订阅地址从此收不到撤销"，而这条地址上从没挂过任何事件。真实渲染照旧
     把撤销发出去（留底在场、基线认这个 UID），所以"没警告"不是因为"没得撤销"。
 
-    Task 12 修复轮（控制器裁决）：rotate 发布成功后要与 push 同口径打撤销摘要——本场景
+    Task 12 修复轮（评审统一口径）：rotate 发布成功后要与 push 同口径打撤销摘要——本场景
     实发 1 条，摘要行**必须**出现；这条用例守的是 D12 前置警告（只识别有该警告的句子），
     而不是"rotate 永远不提撤销"。
     """
@@ -448,7 +456,7 @@ def test_rotate_publish_failure_leaves_ledger_untouched(tmp_path, monkeypatch):
 
     R2 口径：这条的要点正是"`_write_exam_ledger` **没跑**"，所以真函数必须在场、不许
     stub（打桩的话字节比对恒绿）。把 `_write_exam_ledger(...)` 挪到 `publish` 之前即红：
-    D20 会把"没随产物发出去"的候选剪出台账，撤销记录被永久抹掉。
+    台账会记下一次从未发布出去的渲染状态（D11 时序不变式被破坏：没发出去就不算发布过）。
     """
     cfg = _ready_for_rotate(tmp_path, monkeypatch)
     ledger = cfg.exam_ledger_path(SEMESTER)
@@ -530,3 +538,43 @@ def test_rotate_survives_a_non_numeric_probe_count(tmp_path, monkeypatch, capsys
     # 探针的降级不许碰到真实渲染：撤销照发（留底认这个 UID）。
     assert shipped[0].count("STATUS:CANCELLED") == 1
     assert cfg.exam_ledger_path(SEMESTER).is_file()
+
+
+def test_unresolvable_survives_export_then_push_cancels(tmp_path, monkeypatch):
+    """终审 F3（Important）：一次没发布的 export 不许永久毁掉下次 push 撤销它的能力。
+
+    场景：考试 A 曾发布（在台账里）→ A 从源消失 → 用户跑一次普通 `export -o 新路径`
+    （基线是那个还不存在的新文件 ⇒ A 判为 unresolvable）。旧实现把 unresolvable 从台账
+    **剪掉** ⇒ 下一次 push（本可对照自己的真实留底撤销 A）再也不知道 A 存在过 ⇒ ghost 永存。
+    修法：unresolvable **留在台账里**（自限：到自己的 DTSTART 就被 D2 剪掉，不会无限膨胀）。
+
+    这条就是该修法的可证伪形式：①export-only 这一步台账必须**原样留着** A；②随后 push
+    （有认得 A 的真实留底）必须真的把 A 撤销。把 F3 改回"剪掉 unresolvable"，第①步就把
+    A 抹了、第②步发不出撤销 ⇒ 两步皆红。
+    """
+    monkeypatch.setenv("XJTU_CALENDAR_HOME", str(tmp_path))
+    monkeypatch.delenv("XJTU_SEMESTER", raising=False)
+    row = exam_row(WID="WID-A")
+    cfg = exam_home(tmp_path, row)
+    uid = exam_uids(cfg, row)[0]
+    # 真实留底：A 曾以 live 形态发布过（push 侧据以判可发性的 SEQUENCE 基线）。
+    last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
+    last.parent.mkdir(parents=True, exist_ok=True)
+    last.write_text(_published_artifact(cfg), encoding="utf-8", newline="")
+    # 台账记着发布过的 A；随后 A 从源消失（确认本学期无考试）。
+    write_ledger(cfg, SEMESTER, published_ledger(cfg, row))
+    save_raw(exam_payload([]), cfg, SEMESTER, kind="exams")
+
+    # ① 普通 export 到一个新路径：基线是那个还不存在的新文件 ⇒ A 是 unresolvable。
+    assert _export(cfg) == 0
+    assert "STATUS:CANCELLED" not in (cfg.home / "out.ics").read_text(encoding="utf-8")
+    assert uid in cfg.exam_ledger_path(SEMESTER).read_text(encoding="utf-8"), (
+        "F3：一次没发布的 export 不得把待撤销条目剪出台账"
+    )
+
+    # ② push：真实留底认这个 UID ⇒ 这次把 A 撤销并发出去。
+    _register(cfg)
+    shipped: list[str] = []
+    _stub_publish(monkeypatch, shipped=shipped)
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert len(shipped) == 1 and "STATUS:CANCELLED" in shipped[0]

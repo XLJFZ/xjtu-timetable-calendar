@@ -26,7 +26,7 @@ golden 的确切来历（可复核）
   ``5a729a12576ee078f32cf5b1c9062e4167141adccfe8854fd960f45f1c164d1d``
   （2542 字节，4 个 VEVENT：2 课程 + 2 考试）。
 
-:red:`为什么还要那组 tripwire 断言` —— 未来的"重生成"若在主检出用**有台账**的新代码跑，
+**为什么还要那组 tripwire 断言** —— 未来的"重生成"若在主检出用**有台账**的新代码跑，
 产物会多出 ``STATUS:CANCELLED`` 的撤销事件、Vevent 数与属性名也会变；:func:`
 test_v050_golden_bears_only_v050_artifacts` 直接对着固件字节把这些情况变红，
 让"来历被动过"不再是无人认领的静默改动。

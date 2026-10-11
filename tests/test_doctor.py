@@ -156,9 +156,8 @@ def test_subscription_reads_the_ledger_without_newline_translation(
     `read_text` 的通用换行翻译会把 CRLF 折成 LF，于是内容 sha 永远对不上，
     doctor 会**永久误报**"有未发布变更"——真机上第一个跑出来的 bug 就是这个。
     """
-    from xjtu_calendar.subscribe import PushRecord, SubscriptionState
-
     import xjtu_calendar.doctor as doctor_module
+    from xjtu_calendar.subscribe import PushRecord, SubscriptionState
 
     cfg = make_home(tmp_path)
     _write_session(cfg)

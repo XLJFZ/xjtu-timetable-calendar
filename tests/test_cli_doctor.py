@@ -106,6 +106,8 @@ def _subscribe_state(cfg: Settings) -> None:
             branch="cal",
             token="t" * 32,
             url_base="https://example.invalid/cal",
-            last_push=PushRecord(pushed_at="2026-10-11T00:00:00Z", content_sha256="x", token="t" * 32),
+            last_push=PushRecord(
+                pushed_at="2026-10-11T00:00:00Z", content_sha256="x", token="t" * 32
+            ),
         ),
     )

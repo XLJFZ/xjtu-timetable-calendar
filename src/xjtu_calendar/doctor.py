@@ -127,8 +127,7 @@ def _check_semester_config(cfg: Settings, semester: str) -> Check:
         return Check(
             "semester_config",
             STATUS_FAIL,
-            f"学期校历缺失（{semester}）。这一项必须由你按官方校历填写，"
-            "工具刻意不内置猜测值。",
+            f"学期校历缺失（{semester}）。这一项必须由你按官方校历填写，工具刻意不内置猜测值。",
         )
     return Check("semester_config", STATUS_OK, f"已配置（{semester}）")
 
@@ -208,7 +207,8 @@ def _check_url(state: Any) -> Check:
     url = str(getattr(state, "subscription_url", ""))
     try:
         ok, msg = verify_url(url)
-    except Exception as exc:  # noqa: BLE001 —— 自检失败是"未通过"，不是 traceback
+    except Exception as exc:
+        # 自检失败是"未通过"，不是 traceback
         return Check("url", STATUS_FAIL, f"URL 自检异常：{type(exc).__name__}: {exc}")
     if not ok:
         return Check("url", STATUS_FAIL, f"URL 自检未通过：{msg}")
@@ -219,7 +219,8 @@ def _safe(name: str, probe: Callable[..., Check], *args: object) -> Check:
     """检查项的名字由调用方给：函数改名不该悄悄改变 CLI 的标签映射。"""
     try:
         return probe(*args)
-    except Exception as exc:  # noqa: BLE001 —— 体检仪本身不许炸
+    except Exception as exc:
+        # 体检仪本身不许炸：任何一条判据抛错都要降级成一条阻塞项
         return Check(name, STATUS_FAIL, f"检查内部异常：{type(exc).__name__}: {exc}")
 
 

@@ -29,7 +29,7 @@ from .errors import AuthenticationRequired
 from .fileutil import atomic_write_text
 from .logging_setup import get_logger
 
-__all__ = ["SessionInfo", "ensure_login", "has_session", "load_cookies"]
+__all__ = ["SessionInfo", "ensure_login", "has_session", "load_cookies", "login_instructions"]
 
 logger = get_logger()
 
@@ -115,6 +115,42 @@ def has_session(cfg: Settings | None = None) -> bool:
     return inspect_session(cfg).usable
 
 
+def login_instructions(cfg: Settings | None = None) -> list[str]:
+    """登录前打印给用户的操作说明（每个元素是一行）。
+
+    单独成函数有两个理由：一是让"窗口是不是独立实例"这类**必须传达**的信息可测
+    （2026-10-11 的排障里，用户在平时的浏览器里登录了 eHall，而工具用的是独立
+    用户数据目录，两边互不相通，白折腾了半小时）；二是 `ensure_login` 已经够长。
+    """
+    cfg = cfg or default_settings
+    return [
+        "",
+        "=" * 68,
+        "  需要先登录西安交通大学统一身份认证",
+        "=" * 68,
+        f"  入口：{cfg.select_role_url}",
+        "",
+        "  注意：即将打开的是一个【独立的浏览器实例】（专用用户数据目录）。",
+        "  你平时浏览器里已经登录的 eHall / 统一身份对它毫无作用——",
+        "  必须在【本窗口内】重新完成一次认证，否则工具抓不到会话。",
+        "",
+        "  请在打开的浏览器窗口里完成以下操作：",
+        "    1) 由你本人输入账号密码或扫码完成统一身份认证",
+        "       （本程序不读取、不记录、不上传任何凭据）",
+        "    2) 进入「我的课表」页面，并切换到你要导出的学期",
+        "    3) 确认页面已正常显示课表后，回到终端按 Enter",
+        "",
+        "  这一步要由真人完成：把本命令放进后台任务或管道里，",
+        "  那个 Enter 永远等不到，表现就是「卡住」。",
+        "",
+        "  会话将保存到本地：",
+        f"    {cfg.session_dir}",
+        "  该目录已在 .gitignore 中排除，不会被提交。",
+        "=" * 68,
+        "",
+    ]
+
+
 def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> SessionInfo:
     """确保本地存在会话；不存在时打开浏览器让用户手动登录。
 
@@ -135,7 +171,13 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
 
     info = inspect_session(cfg)
     if info.usable and not force:
-        logger.info("已检测到本地会话：%s", info.describe())
+        # 刻意不说"会话就绪"：这条分支一次网络请求都没发，无从知道会话是否还有效。
+        # 2026-10-11 的真实排障里，正是这句让所有人以为登录成功了，而 fetch 继续 401。
+        logger.info("沿用本地会话（未验证有效性）：%s", info.describe())
+        logger.info(
+            "本命令不判断会话是否过期。若 fetch 返回 401，请改用："
+            "python -m xjtu_calendar login --force"
+        )
         return info
 
     try:
@@ -150,23 +192,8 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
     if not executable:
         logger.warning("未探测到系统浏览器，将尝试使用 playwright 自带 Chromium")
 
-    print()
-    print("=" * 68)
-    print("  需要先登录西安交通大学统一身份认证")
-    print("=" * 68)
-    print(f"  入口：{cfg.select_role_url}")
-    print()
-    print("  请在打开的浏览器窗口里完成以下操作：")
-    print("    1) 由你本人输入账号密码完成统一身份认证")
-    print("       （本程序不读取、不记录、不上传任何凭据）")
-    print("    2) 进入「我的课表」页面，并切换到你要导出的学期")
-    print("    3) 确认页面已正常显示课表后，回到终端按 Enter")
-    print()
-    print("  会话将保存到本地：")
-    print(f"    {cfg.session_dir}")
-    print("  该目录已在 .gitignore 中排除，不会被提交。")
-    print("=" * 68)
-    print()
+    for line in login_instructions(cfg):
+        print(line)
 
     launch_kwargs: dict[str, Any] = {
         "user_data_dir": str(cfg.profile_dir()),
@@ -187,7 +214,10 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
             input(">>> 完成登录并确认课表已显示后，按 Enter 继续... ")
         except (EOFError, KeyboardInterrupt):
             context.close()
-            raise AuthenticationRequired("用户中止了登录流程") from None
+            raise AuthenticationRequired(
+                "用户中止了登录流程",
+                hint="会话未保存：本地会话文件没有被改动，可直接重跑 login。",
+            ) from None
 
         cookies = context.cookies()
         storage = context.storage_state()
@@ -197,7 +227,10 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
     if not cookies:
         raise AuthenticationRequired(
             "未获取到任何 cookie，登录可能未完成",
-            hint="请重新运行 login 子命令，并确保在浏览器里完成统一身份认证。",
+            hint=(
+                "请重新运行：python -m xjtu_calendar login --force，"
+                "并确保在【那个窗口里】完成统一身份认证。"
+            ),
         )
 
     state = {

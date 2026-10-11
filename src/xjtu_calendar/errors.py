@@ -64,7 +64,10 @@ class AuthenticationExpired(XjtuCalendarError):
     """会话存在但已失效（服务端返回 401）。"""
 
     exit_code = 3
-    hint = "登录状态已失效，请重新运行：python -m xjtu_calendar login"
+    hint = (
+        "登录状态已失效，请重新登录：python -m xjtu_calendar login --force"
+        "（不带 --force 时 login 看到本地会话就直接退出，等于什么都没做）"
+    )
 
 
 class PermissionDenied(XjtuCalendarError):

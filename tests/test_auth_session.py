@@ -9,8 +9,6 @@ auth 此前完全没有测试：登录流程依赖真实浏览器，但**落盘�
 from __future__ import annotations
 
 import json
-import sys
-import types
 from pathlib import Path
 from typing import Any
 
@@ -20,66 +18,8 @@ from xjtu_calendar.auth import ensure_login
 from xjtu_calendar.config import Settings
 from xjtu_calendar.fileutil import atomic_write_text
 
-_COOKIES = [{"name": "SESSIONID", "value": "v", "domain": ".xjtu.edu.cn", "path": "/"}]
-
-
-class _FakePage:
-    def goto(self, url: str, **kwargs: Any) -> None:
-        pass
-
-
-class _FakeContext:
-    def __init__(self) -> None:
-        self.pages: list[_FakePage] = []
-        self.closed = False
-
-    def new_page(self) -> _FakePage:
-        return _FakePage()
-
-    def cookies(self) -> list[dict[str, Any]]:
-        return list(_COOKIES)
-
-    def storage_state(self) -> dict[str, Any]:
-        return {"cookies": list(_COOKIES), "origins": []}
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class _FakePlaywright:
-    """用作 ``sync_playwright()`` 返回的上下文管理器。"""
-
-    def __init__(self, context: _FakeContext) -> None:
-        self._context = context
-
-    class _Chromium:
-        def __init__(self, context: _FakeContext) -> None:
-            self._context = context
-
-        def launch_persistent_context(self, **kwargs: Any) -> _FakeContext:
-            return self._context
-
-    def __enter__(self) -> _FakePlaywright:
-        return self
-
-    def __exit__(self, *exc: object) -> bool:
-        return False
-
-    @property
-    def chromium(self) -> _FakePlaywright._Chromium:
-        return self._Chromium(self._context)
-
-
-@pytest.fixture
-def fake_playwright(monkeypatch: pytest.MonkeyPatch) -> _FakeContext:
-    context = _FakeContext()
-    module = types.ModuleType("playwright.sync_api")
-    module.sync_playwright = lambda: _FakePlaywright(context)  # type: ignore[attr-defined]
-    package = types.ModuleType("playwright")
-    package.sync_api = module  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "playwright", package)
-    monkeypatch.setitem(sys.modules, "playwright.sync_api", module)
-    return context
+# 假 Playwright（`fake_playwright` fixture）在 tests/conftest.py：多个文件都要测
+# 登录交互与落盘，重复一份迟早漂移。
 
 
 def test_load_cookies_scopes_to_target_host(
@@ -142,7 +82,7 @@ def test_load_cookies_keeps_legacy_entries_without_domain(
 def test_ensure_login_writes_session_privately(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    fake_playwright: _FakeContext,
+    fake_playwright: Any,
 ) -> None:
     monkeypatch.setenv("XJTU_CALENDAR_HOME", str(tmp_path))
     monkeypatch.setattr("builtins.input", lambda *args: "")

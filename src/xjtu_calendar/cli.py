@@ -241,7 +241,7 @@ def cmd_login(args: argparse.Namespace, cfg: Settings) -> int:
     from .auth import ensure_login
 
     info = ensure_login(cfg, force=args.force)
-    logger.info("会话就绪：%s", info.describe())
+    logger.info("本地会话：%s", info.describe())
     return 0
 
 

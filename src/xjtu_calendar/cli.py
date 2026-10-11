@@ -223,6 +223,16 @@ def build_parser() -> argparse.ArgumentParser:
     st_p.add_argument("--semester")
     st_p.add_argument("--verify", action="store_true", help="匿名 GET 自检 URL 可达性")
 
+    # --- doctor ---
+    doctor = sub.add_parser(
+        "doctor",
+        help="只读体检：会话 / 配置 / 快照 / 渲染 / 订阅通道一次看全（不写任何文件）",
+    )
+    doctor.add_argument("--semester", help="学期标识，例如 2026-2027-1")
+    doctor.add_argument(
+        "--verify", action="store_true", help="额外对订阅 URL 发一次匿名 GET（默认不联网）"
+    )
+
     # --- inspect ---
     inspect = sub.add_parser("inspect", help="对原始课表 JSON 做脱敏结构分析")
     inspect.add_argument("--input", help="课表 JSON 路径（默认用本地缓存）")
@@ -274,6 +284,43 @@ def cmd_status(args: argparse.Namespace, cfg: Settings) -> int:
     schedule_cfg = cfg.schedule_config_path()
     print(f"  作息表      : {'已配置' if schedule_cfg.is_file() else '缺失'}（{schedule_cfg}）")
     return 0
+
+
+#: `doctor` 判据的内部名 → 面向用户的中文标签。名字由 `doctor.run_checks` 显式给出，
+#: 这里只做展示映射；新增判据必须同时加一行，否则用户会看到英文 name。
+_DOCTOR_LABELS = {
+    "version": "版本",
+    "session": "会话",
+    "semester_config": "学期校历",
+    "schedule_config": "作息表",
+    "snapshot": "课表快照",
+    "exam_snapshot": "考试快照",
+    "render": "渲染",
+    "subscription": "订阅",
+    "url": "URL 自检",
+}
+
+_DOCTOR_MARKS = {"ok": "[通过]", "warn": "[警告]", "fail": "[阻塞]"}
+
+
+def cmd_doctor(args: argparse.Namespace, cfg: Settings) -> int:
+    from . import doctor as doctor_module
+
+    semester = args.semester or cfg.semester_key
+    if not semester:
+        raise SemesterNotConfigured(
+            "未指定学期", hint="用 --semester 指定，或设置环境变量 XJTU_SEMESTER。"
+        )
+
+    checks = doctor_module.run_checks(cfg, semester, verify=args.verify)
+    print(f"体检（学期 {semester}）")
+    for check in checks:
+        label = _DOCTOR_LABELS.get(check.name, check.name)
+        mark = _DOCTOR_MARKS.get(check.status, check.status)
+        print(f"  {mark} {label}：{check.detail}")
+    blocked = sum(1 for c in checks if c.status == doctor_module.STATUS_FAIL)
+    print(f"\n结论：{blocked} 项阻塞 / {len(checks)} 项检查。")
+    return doctor_module.doctor_exit_code(checks)
 
 
 def cmd_fetch(args: argparse.Namespace, cfg: Settings) -> int:
@@ -1469,6 +1516,7 @@ _HANDLERS = {
     "notice": cmd_notice,
     "schedule": cmd_schedule,
     "diff": cmd_diff,
+    "doctor": cmd_doctor,
     "subscribe": cmd_subscribe,
 }
 

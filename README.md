@@ -297,6 +297,12 @@ Output:
 
 把 `timetable.ics` 导入日历应用即可（Apple 日历可直接双击打开）。
 
+> **想让编码 Agent 代你走这套流程**：仓库根 `skills/` 下有两个技能——
+> `xjtu-timetable-setup`（部署向导：登录交回真人、校历必须由你提供、每步带完成证据，
+> 收尾用 `doctor` 的退出码判定成败）与 `timetable-api-archaeology`（给陌生学校的
+> 接口考古方法论，含"什么时候该停下来"）。把整个目录复制进你所用 Agent 的
+> skills 目录即可，内容不假设任何特定产品。
+
 ---
 
 ## URL 订阅（subscribe）
@@ -838,6 +844,7 @@ python -m xjtu_calendar schedule --semester 2026-2027-1 --apply
 | `schedule [--url U \| --from-file F] [--semester S] [--apply]` | 解析官方「学生作息时间表」页，预览或合并进作息表配置 |
 | `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F] [--no-exams]` \| `subscribe rotate [--no-exams]` \| `subscribe status [--verify]`（均可带 `--semester S`） | 把 .ics 发布到自己的 GitHub Pages，日历客户端按 URL 订阅（见上文「URL 订阅」；push/rotate 默认并入考试，`--no-exams` 同样生效） |
 | `inspect [--input F] [-o OUT]` | 对原始 JSON 做**脱敏**结构分析 |
+| `doctor [--semester S] [--verify]` | **只读体检**：版本 / 会话 / 校历 / 作息 / 快照 / 渲染 / 订阅留底一次看全。不写任何文件、默认不发请求（`--verify` 才对订阅 URL 做一次匿名 GET）。有阻塞项时退出码为 `5` |
 
 全局参数：`--debug`（详细异常）、`-q`（静默）、`--version`
 
@@ -848,8 +855,9 @@ python -m xjtu_calendar schedule --semester 2026-2027-1 --apply
 | `0` | 成功 |
 | `1` | 一般错误（网络、解析、导出） |
 | `2` | 未登录，需要先跑 `login` |
-| `3` | 登录态已失效，需要重新 `login` |
+| `3` | 登录态已失效，需要重新 `login --force`（不带 `--force` 会直接沿用这份已失效的会话） |
 | `4` | 当前账号无权限访问该资源 |
+| `5` | `doctor` 检出阻塞项（警告不算，仍 `0`） |
 | `130` | 用户中断 |
 
 ### 环境变量

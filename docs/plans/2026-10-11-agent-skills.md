@@ -736,8 +736,15 @@ URL 200）。**把实际输出贴进提交信息**——这是"能验的那部�
 
 - [ ] **Step 2: 隐私 grep**
 
-Run: `grep -rniE "lenovo|C:\\\\|xljfz|b792eaf0|qoder|workbuddy" skills/ src/xjtu_calendar/doctor.py docs/plans/`
-Expected: 无匹配。
+黑名单**不写进这份计划**（写了就等于把用户名与产品名放进跟踪内容，正是本步要防的事）。
+把待搜的真实标识放在仓库外一份文件里（`_notes/` 已 gitignore），一行一个：
+
+```bash
+grep -rniF -f _notes/privacy-patterns.txt skills/ src/xjtu_calendar/doctor.py docs/ README.md
+```
+
+Expected: 无匹配。命中的判据是"该行属于跟踪内容且含真实标识"；
+命中后改正**当前检出**即可，历史对象里的残留由发布前的整树清理另行处理。
 
 - [ ] **Step 3: 四条门禁全量跑一次**
 

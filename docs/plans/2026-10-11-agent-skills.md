@@ -74,7 +74,7 @@
   `MIN_DOC_VERSION: tuple[int, int, int]`、`run_checks(cfg, semester, *, verify=False) -> list[Check]`、
   `worst_status(checks) -> str`、`doctor_exit_code(checks) -> int`、`DOCTOR_EXIT_BLOCKED: int = 5`。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 创建 `tests/test_doctor.py`。夹具：临时 home（`XJTU_CALENDAR_HOME`）+ 一份会话文件 +
 一份学期校历 + 一份作息表 + 一份 raw 快照，用"逐项拆掉"的方式驱动三态。
@@ -268,12 +268,12 @@ def test_exit_code_and_worst_status_are_pure() -> None:
     assert worst_status([]) == STATUS_OK  # 空清单不报错，按无阻塞处理
 ```
 
-- [ ] **Step 2: 跑测试，确认它因"模块不存在"而失败**
+- [x] **Step 2: 跑测试，确认它因"模块不存在"而失败**
 
 Run: `pytest tests/test_doctor.py -q --basetemp=_notes/pytest-tmp`
 Expected: FAIL / ERROR，`ModuleNotFoundError: No module named 'xjtu_calendar.doctor'`
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 创建 `src/xjtu_calendar/doctor.py`。要点：每条判据一个函数、返回 `Check`；任何内部异常
 都在 `run_checks` 里兜成一条 `fail`，**doctor 自己不抛异常**（它是最后一步的体检仪，
@@ -427,12 +427,12 @@ def doctor_exit_code(checks: list[Check]) -> int:
 `worst_status` 按 `fail > warn > ok` 取最差；`doctor_exit_code` 在
 `worst_status == STATUS_FAIL` 时返回 `DOCTOR_EXIT_BLOCKED`，否则 0。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `pytest tests/test_doctor.py -q --basetemp=_notes/pytest-tmp`
 Expected: PASS（若个别夹具与真实配置校验器不兼容，改**夹具**去满足校验器，不许放宽判据）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add src/xjtu_calendar/doctor.py tests/test_doctor.py
@@ -453,7 +453,7 @@ git commit -m "feat(doctor): 新增只读判据核心，把部署到位与否变
 - Produces: 命令行 `xjtu-calendar doctor [--semester K] [--verify]`；
   退出码 0（无阻塞）/ 5（有阻塞）。skill 的每一步都靠这个退出码判定，**签名不可改**。
 
-- [ ] **Step 1: 写失败的测试**
+- [x] **Step 1: 写失败的测试**
 
 ```python
 """CLI 层：doctor 的输出形状与退出码。判据本身在 tests/test_doctor.py。"""
@@ -514,12 +514,12 @@ def test_doctor_does_not_touch_the_network_without_verify(
     main(["doctor"])
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `pytest tests/test_cli_doctor.py -q --basetemp=_notes/pytest-tmp`
 Expected: FAIL ——`argument <命令>: invalid choice: 'doctor'`（`main` 返回 argparse 退出码 2）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 在 `build_parser` 里 `inspect` 之前插入：
 
@@ -571,18 +571,18 @@ def cmd_doctor(args: argparse.Namespace, cfg: Settings) -> int:
 
 `_HANDLERS` 里加 `"doctor": cmd_doctor,`。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `pytest tests/test_cli_doctor.py tests/test_doctor.py -q --basetemp=_notes/pytest-tmp`
 Expected: PASS
 
-- [ ] **Step 5: 更新 README**
+- [x] **Step 5: 更新 README**
 
 命令参考表加一行 `doctor`；退出码表补 `5 —— doctor 检出阻塞项`；「快速开始」末尾加一句：
 "想让编码 Agent 代你走这套流程，见仓库根 `skills/`。"
 **不要**在 README 里写任何 Agent 产品的名字或安装路径。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add src/xjtu_calendar/cli.py tests/test_cli_doctor.py README.md
@@ -603,7 +603,7 @@ git commit -m "feat(cli): 新增只读子命令 doctor，把部署判据收敛�
   `schedule` / `subscribe …` / `doctor`（Task 2 的退出码 0 与 5）。
 - Produces: 一个可被任意兼容 Agent 加载的 skill 目录；`name` 必须与目录名一致。
 
-- [ ] **Step 1: 写 `SKILL.md` 的 frontmatter（逐字用这段）**
+- [x] **Step 1: 写 `SKILL.md` 的 frontmatter（逐字用这段）**
 
 ```markdown
 ---
@@ -612,7 +612,7 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 ---
 ```
 
-- [ ] **Step 2: 写正文的八步，每步固定三段：`动作` / `证据` / `不满足时`**
+- [x] **Step 2: 写正文的八步，每步固定三段：`动作` / `证据` / `不满足时`**
 
 正文用祈使句，控制在 200 行内（上限 500，但八步 × 三段不该超）。必须包含的内容，
 逐条对应规格 §3：
@@ -637,14 +637,14 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 结尾一节 **`## 收尾：一条命令定成败`**：跑 `xjtu-calendar doctor`，
 退出码 0 才算交付完成；5 就回到对应步骤，**不许在阻塞项未清时说"应该没问题了"**。
 
-- [ ] **Step 3: 写 `references/troubleshooting.md`**
+- [x] **Step 3: 写 `references/troubleshooting.md`**
 
 按症状组织，每条给"判据 → 处置"：`fetch` 401；`login` 看起来成功其实没动（不带 `--force`）；
 后台跑 `login` 卡住且 profile 被占；灰页 `?browser=no`；`JSESSIONID` 同名 cookie 警告
 （不影响取数，只在伴随 401 时才要处理）；考试没进日历的三查；撤销残条不消失；
 日历名不更新；"导入"与"订阅"怎么分辨（订阅型带上次同步时间）。
 
-- [ ] **Step 4: 写 `references/client-matrix.md`（决策版 + 同步标记）**
+- [x] **Step 4: 写 `references/client-matrix.md`（决策版 + 同步标记）**
 
 文件头第一行必须是：
 
@@ -656,7 +656,7 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 正文不抄全表，只写"遇到这个诉求就选哪条路 + 为什么"，并保留实测日期与
 "单账户单样本，别当厂商承诺"的限定语。
 
-- [ ] **Step 5: 自检并提交**
+- [x] **Step 5: 自检并提交**
 
 对照规格 §6 的清单逐项检查（frontmatter 合法、`name` 与目录名一致、description 单行
 ≤1024 字符、正文 <500 行、无 TODO、无多余文件、python 围栏只在必要处）。
@@ -679,7 +679,7 @@ git commit -m "feat(skills): 新增西交大课表部署向导 skill"
 - Consumes: 无代码依赖（纯方法论）。
 - Produces: 一个明确声明"不产出可用订阅"的 skill。
 
-- [ ] **Step 1: frontmatter（逐字）**
+- [x] **Step 1: frontmatter（逐字）**
 
 ```markdown
 ---
@@ -688,32 +688,32 @@ description: 为编码 Agent 提供接入陌生学校教务系统的接口考古
 ---
 ```
 
-- [ ] **Step 2: 正文第一节就是停止条件**
+- [x] **Step 2: 正文第一节就是停止条件**
 
 `## 第 0 步：先停下来问清楚` — 目标学校条款是否允许程序化访问？用户是否本人账号？
 任一不清楚就**停**，并输出"我停在哪、需要什么才继续"。写死一条：
 凭据永远由用户本人输入，agent 不代填、不读取、不保存、不截图。
 
-- [ ] **Step 3: 正文第二节：观测四问（每问要 payload 证据）**
+- [x] **Step 3: 正文第二节：观测四问（每问要 payload 证据）**
 
 字段与语义键能否一一对上；周次是位掩码 / 文本 / 日期区间；学期如何发现、代码格式；
 **"没有数据"与"查询失败"能否区分**。第四问写成 **go/no-go**，并给出理由：
 区分不了则撤销通路**不可用**而非稍差——"空"既可能真没有也可能抓取失败，
 任一侧误判都会撤销用户已发布的整学期。
 
-- [ ] **Step 4: 正文第三、四节：身份字段与对照探针**
+- [x] **Step 4: 正文第三、四节：身份字段与对照探针**
 
 身份字段决定"改期"是原地更新还是删了重建（选错 ⇒ 旧事件永远留在客户端）；
 每个待判信号必须配一个必然可见的对照变化，否则"什么都没变"无法解释——
 写明这条是 2026-10 一整晚演练换来的。
 
-- [ ] **Step 5: `references/probe-checklist.md` 与 `references/red-lines.md`**
+- [x] **Step 5: `references/probe-checklist.md` 与 `references/red-lines.md`**
 
 前者是可勾选的观测清单（含"样本必须先脱敏才允许进仓库"）；后者是红线：
 不并发、不重试轰炸、不枚举学号/课程、不绕过权限、不提交真实数据、
 未验证的客户端表现一律写"通常会"并注明未验证。
 
-- [ ] **Step 6: 自检并提交**
+- [x] **Step 6: 自检并提交**
 
 ```bash
 git add skills/timetable-api-archaeology
@@ -728,13 +728,13 @@ git commit -m "feat(skills): 新增教务接口考古方法论 skill（含 go/no
 - Modify: `CHANGELOG.md`
 - Modify: `docs/design/2026-10-11-agent-skills.md`（把"计划见 docs/plans/…"补上；矩阵同步 sha 落地）
 
-- [ ] **Step 1: 真实环境跑一次 `doctor`**
+- [x] **Step 1: 真实环境跑一次 `doctor`**
 
 Run: `"$PY" -m xjtu_calendar doctor --verify`
 Expected: 本机应全绿或仅剩警告（会话今天刚重登、校历作息已配、快照 0 天、订阅留底一致、
 URL 200）。**把实际输出贴进提交信息**——这是"能验的那部分"的证据，不是猜测。
 
-- [ ] **Step 2: 隐私 grep**
+- [x] **Step 2: 隐私 grep**
 
 黑名单**不写进这份计划**（写了就等于把用户名与产品名放进跟踪内容，正是本步要防的事）。
 把待搜的真实标识放在仓库外一份文件里（`_notes/` 已 gitignore），一行一个：
@@ -746,7 +746,7 @@ grep -rniF -f _notes/privacy-patterns.txt skills/ src/xjtu_calendar/doctor.py do
 Expected: 无匹配。命中的判据是"该行属于跟踪内容且含真实标识"；
 命中后改正**当前检出**即可，历史对象里的残留由发布前的整树清理另行处理。
 
-- [ ] **Step 3: 四条门禁全量跑一次**
+- [x] **Step 3: 四条门禁全量跑一次**
 
 ```bash
 "$PY" -m ruff format . && "$PY" -m ruff check . && "$PY" -m mypy && "$PY" -m pytest -q --basetemp=_notes/pytest-tmp
@@ -755,11 +755,11 @@ Expected: 无匹配。命中的判据是"该行属于跟踪内容且含真实标
 （先 `ruff format .` 是因为它会格式化 Markdown 里的 python 围栏；跑完若它改动了
 本计划或 skill 文件，把改动一起提交。）
 
-- [ ] **Step 4: 回写 CHANGELOG 与规格指针，提交**
+- [x] **Step 4: 回写 CHANGELOG 与规格指针，提交**
 
 `[未发布] → Added`：`doctor` 子命令、两个 skill。版本含义提醒照旧：下一个版本应为 0.7.0。
 
-- [ ] **Step 5: 报告验收边界**
+- [x] **Step 5: 报告验收边界**
 
 向用户明确：已验 = 判据单测、CLI 退出码、真实环境 `doctor`、格式自检清单；
 **未验 = 新用户旅程**（本机环境是热的，从零安装的人会不会卡住测不到）。
@@ -775,3 +775,35 @@ Expected: 无匹配。命中的判据是"该行属于跟踪内容且含真实标
 - 规格 §4 的四项 → Task 4 的 Step 2–4 是否覆盖，go/no-go 是否写清理由？
 - 规格 §5 的同步标记 → Task 3 Step 4 是否要求真实 sha？
 - 规格 §7 的"未验旅程" → Task 3 与 Task 5 Step 5 是否都写了？
+
+---
+
+## 执行记录（2026-10-11，全部任务已完成）
+
+| 任务 | 提交 |
+|---|---|
+| Task 1 `doctor` 判据核心 | `f1ada85` |
+| Task 2 CLI 接线 | `2a7e3b4` |
+| Task 3 部署向导 skill | `015a39e` |
+| Task 4 接口考古 skill | `a78e883` |
+| Task 5 门禁修正与文档回写 | `983a663`、`f16c9b1` |
+| 收尾追加（见下 ③） | `82526a3` |
+
+与计划的差异，都是**跑出来的**而不是选出来的：
+
+1. **隐私 grep 的黑名单不能写在计划里**（Step 2）。原计划把待搜的真实标识（用户名、
+   发布仓库属主、token 前缀、本机路径前缀、Agent 产品名）直接写进那条 `grep` 命令，
+   于是那行本身就成了跟踪内容里的违规——正是这一步要防的事。改为黑名单放在仓库外的
+   一份文件里（一行一个），命令用 `grep -rniF -f` 读它。
+2. **`ruff format` 会改已提交的代码**（Task 5 Step 3）。真跑下来动了三处：
+   `doctor.py` 里被折成两行的 f-string、`tests/test_cli_doctor.py` 的超长构造调用，
+   以及两个 `# noqa: BLE001`——该规则在本仓库并未启用，RUF100 会把整行注释删掉。
+   处置是保留注释内容、丢掉 `noqa` 指令本身（写成 except 分支内的普通注释）。
+   计划里"迭代只跑定向测试、门禁收尾跑一次"的纪律没问题，但**门禁第一次全量跑之前
+   不该认为任务已完成**。
+3. **`doctor` 不指定学期时退出码是 1，不是 5**（Step 1 真机首跑暴露）。它抛
+   `SemesterNotConfigured`，连一行检查项都不打印。照计划写下的收尾命令
+   `doctor --verify` 会让执行者把这个 1 误读成"体检没过"而回头折腾登录。
+   skill 的收尾命令与排查各补一条，明确 0/1/5 三种码分别是什么意思。
+
+未验的仍然是同一件：**新用户旅程**（本机环境是热的）。要验得找干净环境或没装过的同学。

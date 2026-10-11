@@ -50,7 +50,11 @@ STATUS_FAIL = "fail"
 DOCTOR_EXIT_BLOCKED = 5
 
 #: 本模块与 skill 的判据按哪个版本的行为编写；低于它就警告"文档可能不适用"。
-MIN_DOC_VERSION: tuple[int, int, int] = (0, 6, 1)
+#:
+#: 下限必须是 **0.7.0**：`doctor` 子命令自 0.7.0 才存在。写 0.6.x 的话，一份没刷新的
+#: 旧安装记录（可编辑安装在本项目真踩过）会一路绿灯通过版本检查，而它其实跑不出
+#: 这份判据所描述的那套检查。
+MIN_DOC_VERSION: tuple[int, int, int] = (0, 7, 0)
 
 #: 会话保存多久只触发警告。**旧 ≠ 失效**——真正的判据是 fetch 是否返回 401。
 SESSION_AGE_WARN_DAYS = 14

@@ -16,6 +16,7 @@ from subscribe_support import SEMESTER, make_home
 from xjtu_calendar.config import Settings
 from xjtu_calendar.doctor import (
     DOCTOR_EXIT_BLOCKED,
+    MIN_DOC_VERSION,
     STATUS_FAIL,
     STATUS_OK,
     STATUS_WARN,
@@ -78,6 +79,25 @@ def test_every_check_name_appears_once(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 # 逐项三态
 # --------------------------------------------------------------------------- #
+
+
+def test_version_floor_is_the_release_that_shipped_doctor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """判据下限必须等于 `doctor` 问世的版本（0.7.0），不能更低。
+
+    写 0.6.x 的话，一份没刷新的旧安装记录（可编辑安装在本项目真踩过）会被判成
+    "版本够新"，而它其实跑不出这份判据描述的那套检查——体检仪拿着对不上号的产物
+    继续往下走，比直接报错更糟。
+    """
+    import xjtu_calendar.doctor as doctor_module
+
+    assert MIN_DOC_VERSION == (0, 7, 0)
+
+    monkeypatch.setattr(doctor_module, "__version__", "0.6.1")
+    check = doctor_module._check_version()
+    assert check.status == STATUS_WARN
+    assert "0.7.0" in check.detail
 
 
 def test_missing_session_is_fail(tmp_path: Path) -> None:

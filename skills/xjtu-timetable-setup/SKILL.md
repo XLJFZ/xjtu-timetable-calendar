@@ -21,9 +21,10 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 ## 第 1 步 环境
 
 - 动作：`xjtu-calendar --version`（或 `python -m xjtu_calendar --version`）。
-- 证据：版本 ≥ **0.6.1**。低于它时先升级再回来，并告诉用户"本向导的判据按 0.6.1 编写，
-  旧版本可能没有 `doctor` 子命令"。
-- 不满足：按 README「安装」装；装不上先解决 Python 版本（要求 ≥ 3.11）。
+- 证据：版本 ≥ **0.7.0**。`doctor` 子命令自 0.7.0 才存在，低于它本向导的收尾判据根本跑不出来。
+- 不满足：`pip install -U xjtu-timetable-calendar` 后重新验证；装不上先解决 Python 版本
+  （要求 ≥ 3.11）。若版本显示为 0.6.x 而你确定装过更新的包，那是**可编辑安装的元数据没刷新**
+  （重跑 `pip install -e . --no-deps --no-build-isolation`），不是 doctor 坏了。
 
 ## 第 2 步 登录（必须交回真人）
 

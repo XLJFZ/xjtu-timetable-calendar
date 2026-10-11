@@ -33,7 +33,7 @@ v0.5.0 把考试事件并进了同一份 `.ics`，但**只能新增、不能撤�
 | --- | --- | --- | --- | --- |
 | D1 | 撤销信号怎么下发 | 同一份 `method:PUBLISH` 文件里给该事件加 `STATUS:CANCELLED` | 用户 | 保住"一份日历一个 URL"；`METHOD:CANCEL` 独立产物要用户手动多订一条链接，等于把负担还给用户 |
 | D2 | 保留多久 | 到该事件**原定开始时刻过去**为止 | 用户 | 错过几次刷新的订阅者仍能在真正需要前收到；时刻一过条目无意义，个人信息不再占位 |
-| D3 | 撤销条目在发布产物里带哪些字段 | **最小字段**：UID + DTSTART/DTEND + STATUS + SEQUENCE + DTSTAMP，且**不写 SUMMARY 行** | 用户 | 座位号/考场/主考教师不在保留期内继续公开。实测（icalendar 7.3.0）`add("summary","")` 会写出字面 `SUMMARY:` 空值行，所以"没有标题"必须靠**不调用 `add`** 实现，见 §6.2 |
+| D3 | 撤销条目在发布产物里带哪些字段 | **最小字段**：UID + DTSTART/DTEND + STATUS + SEQUENCE + DTSTAMP + **固定标题「已取消的活动」**（v0.6.1 修订；v0.6.0 原口径是「**不写 SUMMARY 行**」） | 用户（v0.6.0 原口径）／演练读数 + 用户（修订） | 座位号/考场/主考教师/课程名不在保留期内继续公开——固定文案里一项都不含，不引用台账原文。**为什么改**：忽略 `STATUS:CANCELLED` 的两家（Outlook.com、ColorOS，§11 实测）会把撤销条目当普通事件导入，无标题就只剩一条「无主题」，用户既认不出是废弃条目也不知该不该删；ColorOS 是**整体替换字段**（旧标题会被清掉），所以补标题在手机端直接生效。**标题必须恒定**：内容指纹的输入不变 ⇒ 重渲染 SEQUENCE 不漂移（D8）。另留一条实现事实：实测（icalendar 7.3.0）`add("summary","")` 会写出字面 `SUMMARY:` 空值行，所以"不写行"只能靠**不调用 `add`**，见 §6.2 |
 | D4 | `--no-exams` 要不要触发撤销 | **不触发，且完全不碰台账** | 用户 | 旗标语义定为"这次的渲染口径"，不是"这些考试不存在"。原稿写的理由（"不会出现删了又重建"）**不成立并已更正**：关开关时 live 考试本来就从产物里缺席（v0.5 既有行为），重新打开会以同 UID 回来 —— 那是 v0.5 就有的语义，本文不改变它，只承诺**撤销分支也不被触发**（D18、D21） |
 | D5 | 真机验证 | 要，在**隔离 token / 专用 URL** 上做，与手机端自动刷新演练合并 | 用户 | 不碰日常在用的真实订阅；把"客户端到底删不删"从推测变成证据 |
 | D6 | 撤销候选从哪来 | 新增**考试台账**文件，撤销候选 = 台账 UID − 本次 live 考试 UID | 代理 | 考试的 UID（`exams.py:288`）与课程的 UID（`exporter.py:72`）同域同配方，从 UID 串分不出彼此；现算差集会在课表快照缺失时把整个学期课程误判成消失的考试并逐条撤销——不可接受的失败模式 |
@@ -86,7 +86,7 @@ v0.5.0 把考试事件并进了同一份 `.ics`，但**只能新增、不能撤�
 | `ExportResult` 是**非 frozen** 三字段 dataclass，构造点全用关键字 | `exporter.py:524-535`、`:810` | 新字段追加在 `sequence_stats` 之后即可，测试构造点不破（m2） |
 | `CalendarEvent` 是 frozen dataclass，最后一个字段 `meeting` 已带默认值；四个构造点全用关键字 | `models.py:280-296`；`exporter.py:274,337`、`exams.py:530`、`tests/test_sequence.py:46` | `status` 追加在末尾且带默认值是安全的；无 `dataclasses.replace/asdict/astuple` 用在 `CalendarEvent` 上 |
 | `render_ics` 无条件写 DTSTAMP/SEQUENCE/LAST-MODIFIED 与 `X-WR-CALNAME` | `exporter.py:476-487` | D22：台账不能由它生成 |
-| 实测：icalendar 7.3.0 下 `add("summary","")` 输出 `SUMMARY:` 空值行；不调用 `add` 才没有该行 | 本地脚本实测（v0.6 实现时由 §9 的用例钉住） | D3 的"无标题"必须靠不写该行 |
+| 实测：icalendar 7.3.0 下 `add("summary","")` 输出 `SUMMARY:` 空值行；不调用 `add` 才没有该行 | 本地脚本实测（v0.6 实现时由 §9 的用例钉住） | 任何空标题都只能靠不写该行规避。（v0.6.0 时 D3 的"无标题"正是靠它；v0.6.1 起撤销条目带固定标题，本行退化为一条纯粹的空值守卫） |
 | `ensure_dirs()` **不创建** `subscribe/`；`subscribe_dir` 的字面量只在 `subscribe.py:114` | `config.py:118-127` | D24①；也说明 §6.1 的新 helper 是收敛而非重复 |
 | 默认 home 在用户主目录下（`Path.home()/DEFAULT_HOME_NAME`），`.gitignore:40` 另有同名条目 | `config.py:62` | §8 的口径要写准：台账默认**在仓库之外**，不是"靠 .gitignore 排除" |
 | `rotate_token` 在 `cli.py:1271` **先于**渲染执行 | 同左 | D24② |
@@ -142,6 +142,11 @@ status: str | None = None  # 只在撤销事件上非空；课程与 live 考试
 `render_ics` 仅在 `item.status` 非空时 `component.add("status", item.status)`；
 `SUMMARY` 改为**仅当 `item.summary` 非空才写**（否则 `SUMMARY:` 空值行照旧出现，见 §4 的实测行）。
 这两处条件对课程与 live 考试都不成立（它们的 summary/status 一直是非空/空），故字节不变。
+
+> **v0.6.1 注**：撤销条目自 v0.6.1 起带固定标题（`exams.CANCELLATION_SUMMARY` = 「已取消的活动」），
+> 走的是 `item.summary` 为真那一支。上面这个条件化因此与撤销无关，只剩"挡住任何空标题"这一个
+> 职责——它仍然要有，因为 parser 允许纯空白 KCM 被 strip 成 `""`（终审 F5a 的结构性守卫）。
+> 课程与 live 考试的字节影响依旧为零。
 `__post_init__` 的 `end > start` 约束对撤销事件同样成立（起止取自台账原值）。
 
 ### 6.3 `exams` 模块（新增四个函数，全部纯函数）
@@ -175,8 +180,9 @@ def cancel_candidates(
 
 
 def build_cancellation_events(entries: Collection[LedgerEntry]) -> list[CalendarEvent]:
-    """撤销事件：UID/DTSTART/DTEND 照抄，status=CANCELLED，summary=""（配合 §6.2 即不写
-    SUMMARY 行）、location=None、description=None。UID 一律不重算——撤销的前提就是
+    """撤销事件：UID/DTSTART/DTEND 照抄，status=CANCELLED，summary 取固定文案
+    CANCELLATION_SUMMARY（v0.6.1；此前是 ""，配合 §6.2 即不写 SUMMARY 行）、
+    location=None、description=None。UID 一律不重算——撤销的前提就是
     "复用已经发布出去的那个 UID"。
     """
 
@@ -289,7 +295,8 @@ LAST-MODIFIED。**撤销条目不会每次发布都涨一个序号**，这是既
 - **发布件里的个人信息净变化**：新增的只有"撤销条目的 UID + 起止时刻"（无考场、无座位、
   无教师、无课程名，D3）。这些时刻此前已随 live 形态公开过，本特性不引入新的可识别字段，
   只把它们的存活期延长到原定时刻过去。§9 有用例钉住"撤销条目不含 `LOCATION`/`DESCRIPTION`
-  且没有 `SUMMARY` 行"。
+  且没有 `SUMMARY` 空值行"。v0.6.1 起撤销条目多一个 `SUMMARY`，其值是常量「已取消的活动」，
+  **不引用台账原文**——§9 的泄漏用例逐条比对 `LOCATION`/`DESCRIPTION`/课程名不得出现。
 - **一条新出现的残余**：台账按学期 key 分文件；若用户改过学期写法（`2026-fall` → `2026-2027-1`）
   或弃用某个 key，那个旧台账文件再也不会被读到，也就永远不会被剪掉，直到用户自己删除。
   本文**不做自动清理**（Non-goals），README 的换设备/换学期段落里给出手动删除指引。
@@ -329,6 +336,9 @@ docstring 里不要放 `>>>` 例子**。`ruff format --check .` 会连带格式�
 - 首次转撤销的序号 = 上次发布 + 1（用真实基线文件，不许手工拼 `EventBaseline`）。
 - 最小字段：撤销事件含 `STATUS:CANCELLED`，不含 `LOCATION` / `DESCRIPTION`，
   **且产物里不出现 `SUMMARY:` 空值行**（§4 实测：`add("summary","")` 会写出该行）。
+- 固定标题（v0.6.1，D3 修订）：撤销条目的 `summary` 恒为「已取消的活动」；渲染出的产物里
+  有 `SUMMARY:已取消的活动` 且**不含台账原文**（课程名 / 考场 / 座位逐条断言）；
+  多条撤销的标题两两相同 ⇒ 内容指纹恒定，SEQUENCE 不因此漂移。
 - 全序：同日两场考试都进入撤销时，产物字节稳定（`(start, uid)` 排序；只按 start 会抖）。
 - naive 台账条目：读取时丢弃并 warning，不 `TypeError`（D22）。
 - `--no-exams` 与 golden：产物等于 v0.5.0 golden；台账文件未被创建或修改（mtime 断言）。
@@ -380,6 +390,11 @@ docstring 里不要放 `>>>` 例子**。`ruff format --check .` 会连带格式�
   机制上区分不了 Google 是"认 STATUS"还是"解析时过滤掉 CANCELLED 再按 UID 缺席清理"——
   要区分得推一条连 `STATUS` 都不给的事件，而 D2 的设计永远不会那样做，所以对本特性无意义。
   **对用户而言的三种结局**：删干净 / 变成无主题残条 / 一次性导入根本不更新。README 已按这三档改写。
+
+  **这条读数直接产出了 v0.6.1**：D3 由"不写 `SUMMARY` 行"修订为"带固定标题「已取消的活动」"。
+  上表里的「无主题」描述的是 **v0.6.0 的产物**；修订后那两家忽略取消字段的客户端会显示这条
+  固定文案（ColorOS 的"整体替换字段"保证手机端直接生效，无需退订重加）。"忽略 `STATUS`"这一
+  判定本身不变。
 
   **问题 2（网页端与手机端是否一致）——在 Google 这条链上「手机端不可观测」**：
   Google 日历 App **不显示** URL 导入型日历（App 内无订阅入口是官方文档；实测连勾选

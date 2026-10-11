@@ -84,10 +84,12 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 ## 收尾：一条命令定成败
 
 ```bash
-xjtu-calendar doctor --verify
+xjtu-calendar doctor --verify --semester <学期标识>
 ```
 
 退出码 **0** 才算交付完成；**5** 表示还有阻塞项，回到对应步骤解决。
+**1** 是另一回事：多半没指定学期（`--semester` 或环境变量 `XJTU_SEMESTER` 二选一），
+不是"体检没过"。
 警告（`[警告]`）不阻塞，但要向用户逐条解释它意味着什么。
 **不许在阻塞项未清时说"应该没问题了"。**
 

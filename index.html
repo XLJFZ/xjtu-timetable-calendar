@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="description" content="将西安交通大学 eHall「我的课表」导出为标准 iCalendar（.ics），可导入 Apple / Google / Outlook 日历。正确处理冬夏季作息切换、单双周、停课调课；非官方工具，不碰凭据。">
+<meta name="description" content="将西安交通大学 eHall「我的课表」与「我的考试安排」导出为标准 iCalendar（.ics）：可导入 Apple / Google / Outlook 日历，也可发布成订阅 URL 自动更新。正确处理冬夏季作息切换、单双周、停课调课与考试改期；非官方工具，不碰凭据。">
 <meta name="theme-color" content="#00418e">
 <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
-<meta property="og:title" content="XJTU 课表日历 · eHall 课表 → 手机日历">
-<meta property="og:description" content="正确处理冬夏季作息切换与停课调课的课表导出工具。重新导出即原地更新，绝不静默缺课。">
+<meta property="og:title" content="XJTU 课表日历 · eHall 课表 + 考试 → 手机日历">
+<meta property="og:description" content="课程与考试并入同一份 .ics。可订阅 URL 自动更新，改期与取消会自动下发。">
 <meta property="og:type" content="website">
 <meta property="og:locale" content="zh_CN">
 <meta property="og:url" content="https://xljfz.github.io/xjtu-timetable-calendar/">
@@ -15,10 +15,10 @@
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="XJTU 课表日历 · eHall 课表 → 手机日历">
-<meta name="twitter:description" content="正确处理冬夏季作息切换与停课调课的课表导出工具。">
+<meta name="twitter:title" content="XJTU 课表日历 · eHall 课表 + 考试 → 手机日历">
+<meta name="twitter:description" content="课程与考试并入同一份 .ics，支持 URL 订阅与自动撤销下发。">
 <meta name="twitter:image" content="https://xljfz.github.io/xjtu-timetable-calendar/assets/og-cover.jpg">
-<title>XJTU 课表日历 · eHall 课表 → 手机日历</title>
+<title>XJTU 课表日历 · eHall 课表 + 考试 → 手机日历</title>
 <style>
 :root{
   --blue:#00418e; --blue2:#1a56b0; --ink:#16212e; --sub:#5a6a7d;
@@ -71,6 +71,7 @@ h1 .accent{color:var(--blue)}
 section{max-width:1060px;margin:0 auto;padding:2.9rem 1.25rem}
 .sec-kicker{font-size:.8rem;font-weight:700;letter-spacing:.14em;color:var(--blue2);text-transform:uppercase}
 h2{font-size:1.75rem;margin:.35rem 0 1.35rem;letter-spacing:-.01em}
+section>h3{font-size:1.12rem;margin:2rem 0 .8rem}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1.1rem}
 .feature{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:1.25rem 1.3rem}
 .feature .ico{width:38px;height:38px;border-radius:10px;background:#eef3fb;display:flex;align-items:center;justify-content:center;font-size:1.15rem;margin-bottom:.75rem}
@@ -102,6 +103,11 @@ th,td{text-align:left;padding:.62rem .9rem;border-bottom:1px solid var(--line)}
 th{background:#f0f4fa;color:var(--blue);font-size:.84rem}
 tr:last-child td{border-bottom:none}
 td code{font-size:.84rem;color:var(--ink);background:none;padding:0}
+.tablewrap{overflow-x:auto}
+td small{display:block;color:var(--sub);font-size:.79rem;line-height:1.5;margin-top:.15rem}
+td .yes{color:var(--ok);font-weight:600}
+td .no{color:var(--warn);font-weight:600}
+.note{color:var(--sub);font-size:.85rem;margin-top:.75rem}
 
 ul.checks{list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:.6rem 1.4rem}
 ul.checks li{padding-left:1.6rem;position:relative;color:var(--sub);font-size:.94rem}
@@ -123,9 +129,11 @@ footer{border-top:1px solid var(--line);background:#fff;margin-top:2rem}
   <div class="nav-in">
     <span class="logo"><span class="logo-mark">交</span>XJTU 课表日历</span>
     <div class="nav-links">
-      <a href="#why">为什么不是简单转换</a>
+      <a href="#why">设计核心</a>
       <a href="#quickstart">快速开始</a>
-      <a href="#automate">自动化配置</a>
+      <a href="#exams">考试与撤销</a>
+      <a href="#subscribe">订阅 · 客户端</a>
+      <a href="#automate">体检 · 配置</a>
       <a href="#commands">命令参考</a>
       <a href="#privacy">隐私与安全</a>
     </div>
@@ -135,26 +143,31 @@ footer{border-top:1px solid var(--line);background:#fff;margin-top:2rem}
 
 <header class="hero">
   <div>
-    <h1>把 eHall 课表，<span class="accent">准时装进你的手机日历</span></h1>
-    <p class="lead">将西安交通大学 eHall「我的课表」导出为标准 <strong>iCalendar（.ics）</strong>，
-      直接导入 Apple、iPhone、Google、Outlook 日历。
-      正确处理<strong>冬/夏季作息切换</strong>、单双周、停课调课——重新导出时同一节课原地更新，不会长出一堆重复事件。</p>
+    <h1>把 eHall 课表和考试，<span class="accent">准时装进你的手机日历</span></h1>
+    <p class="lead">将西安交通大学 eHall「我的课表」与「我的考试安排」导出为标准 <strong>iCalendar（.ics）</strong>，
+      导入 Apple、iPhone、Google、Outlook 日历，或发布成<strong>订阅 URL</strong> 让客户端自动更新。
+      正确处理<strong>冬/夏季作息切换</strong>、单双周、停课调课与考试改期——重新导出时同一节课原地更新，
+      不会长出一堆重复事件。</p>
     <div class="hero-ctas">
       <a class="btn btn-primary" href="#quickstart">三步跑通 →</a>
+      <a class="btn btn-ghost" href="#subscribe">手机到底订哪个客户端</a>
       <a class="btn btn-ghost" href="https://github.com/XLJFZ/xjtu-timetable-calendar#readme">完整文档</a>
     </div>
     <div class="badges">
       <span class="badge">Python 3.11+</span>
       <span class="badge">MIT 许可</span>
-      <span class="badge">421 项测试守卫</span>
+      <span class="badge">700+ 项测试守卫</span>
+      <span class="badge plain">课程 + 考试，同一份 .ics</span>
       <span class="badge plain">非官方工具 · 与学校无隶属关系</span>
     </div>
   </div>
   <aside class="card-demo" aria-label="日历效果示意">
-    <h3>导出效果（示意）<span>换教室也原地更新</span></h3>
+    <h3>导出效果（示意）<span>课程与考试同一份文件</span></h3>
     <div class="ev"><span class="ev-time">09/11 周五<br>08:00</span><div><div class="ev-title">示例课程甲</div><div class="ev-meta">创新港校区 A-1001 · 教师甲</div></div></div>
     <div class="ev"><span class="ev-time">10/16 周五<br>08:00</span><div><div class="ev-title">示例课程甲</div><div class="ev-meta">已切换冬季作息 · 同一事件的新版本</div></div></div>
     <div class="ev"><span class="ev-time">10/10 周六<br>按周二课表</span><div><div class="ev-title">调课日</div><div class="ev-meta">notice 解析通知自动合并</div></div></div>
+    <div class="ev"><span class="ev-time">12/28 周一<br>14:00</span><div><div class="ev-title">示例课程甲（期末考试）</div><div class="ev-meta">单场绝对时刻 · 考场在 LOCATION，座位号在说明里</div></div></div>
+    <div class="ev"><span class="ev-time">01/04 周一<br>09:00</span><div><div class="ev-title">已取消的活动</div><div class="ev-meta">改期后旧条目以 STATUS:CANCELLED 自动下发</div></div></div>
   </aside>
 </header>
 
@@ -175,6 +188,7 @@ footer{border-top:1px solid var(--line);background:#fff;margin-top:2rem}
     <div class="step"><b>校历 + 作息表</b><small>换算成真实日期钟点</small></div><span class="arrow">→</span>
     <div class="step"><b>.ics</b><small>逐次上课一个事件</small></div>
   </div>
+  <p class="note" style="text-align:center">考试走的是同一套尾部管线：独立的考试快照 + 独立的 UID 配方，撤销条目则对照本地台账（<code class="inline-code">last-exams-&lt;学期&gt;.ics</code>）生成，因此需要上一次发布的留底作 SEQUENCE 基线。</p>
 
   <div class="callout" style="margin-top:1.4rem">
     <b>⚠️ 这不是时区 DST。</b>中国全年恒为 <code class="inline-code">Asia/Shanghai</code>。真正变化的是「第 N 节课对应的钟点」——学校的作息规则问题，本项目把两者彻底解耦，导出的 ICS 还按 RFC 5545 内嵌了 VTIMEZONE。
@@ -187,47 +201,139 @@ footer{border-top:1px solid var(--line);background:#fff;margin-top:2rem}
   <div class="steps">
     <div class="stepcard">
       <span class="num">1</span>
-      <h3>登录（只需一次）</h3>
-      <p>弹出浏览器，由你本人完成统一身份认证。程序不读取、不记录、不上传任何凭据。</p>
+      <h3>登录（由真人完成）</h3>
+      <p>弹出的是一次<strong>独立的浏览器实例</strong>（专用用户数据目录）。请在那个窗口里完成统一身份认证，
+        确认课表正常显示后回终端按 Enter。程序不读取、不记录、不上传任何凭据。</p>
       <pre><span class="c"># 安装（PyPI）</span>
 pip install xjtu-timetable-calendar
 
 <span class="c"># 登录</span>
 python -m xjtu_calendar <span class="p">login</span></pre>
-      <p style="margin:.6rem 0 0">或 <code class="inline-code">subscribe</code> 发布到 GitHub Pages 后按 URL 订阅，自动刷新。</p>
+      <p style="margin:.6rem 0 0">会话过期后重登要带 <code class="inline-code">login --force</code>；
+        这一步也别丢给后台任务或管道——终端那句「按 Enter」它们永远等不到，表现就是「看起来成功、其实什么都没做」。</p>
     </div>
     <div class="stepcard">
       <span class="num">2</span>
       <h3>获取课表</h3>
-      <p>学期代码自动探测；每次获取都会把上一份快照留作 <code class="inline-code">diff</code> 基线。</p>
+      <p>学期代码自动探测；每次获取都会把上一份快照留作 <code class="inline-code">diff</code> 基线。
+        HTTP 路径会顺手把「我的考试安排」一起抓进本地快照。</p>
       <pre>python -m xjtu_calendar <span class="p">fetch</span> \
   --semester 2026-2027-1</pre>
     </div>
     <div class="stepcard">
       <span class="num">3</span>
       <h3>导出并导入</h3>
-      <p>双击 <code class="inline-code">timetable.ics</code> 即可进 Apple 日历；之后调课了，重导出重导入即可原地更新。</p>
+      <p>双击 <code class="inline-code">timetable.ics</code> 即可进 Apple 日历；之后调课了，重导出重导入即可原地更新。
+        产物默认<strong>同时含本学期考试事件</strong>（<code class="inline-code">--no-exams</code> 可关）。</p>
       <pre>python -m xjtu_calendar <span class="p">export</span> \
   --semester 2026-2027-1 -o timetable.ics</pre>
     </div>
+  </div>
+  <div class="callout" style="margin-top:1.2rem">
+    <b>想让它自己更新，就再走第四步（可选）：</b>把同一份 .ics 发布成订阅 URL，之后每次课表变化只需
+    <code class="inline-code">fetch</code> → <code class="inline-code">subscribe push</code>，客户端按 URL 回源，不必再导入。
+    <pre style="margin-top:.7rem">python -m xjtu_calendar <span class="p">subscribe init</span> --repo https://github.com/&lt;用户名&gt;/&lt;仓库&gt;.git --semester 2026-2027-1
+python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-2027-1</pre>
+    入口在哪、各家客户端会有什么不同，见 <a href="#subscribe">订阅与客户端选择</a>。
   </div>
   <div class="callout warnbox" style="margin-top:1.2rem">
     <b>还差一份你自己的校历：</b>「第 1 教学周的星期一是哪天」必须从官方校历确认后填入
     <code class="inline-code">~/.xjtu-timetable-calendar/semesters/&lt;学期&gt;.json</code>——本项目刻意不内置猜测值，填错会整体偏移。模板见仓库 <code class="inline-code">examples/</code>。
   </div>
+  <div class="callout" style="margin-top:1.2rem">
+    <b>卡住了先跑体检：</b><code class="inline-code">doctor</code> 只读地把版本 / 会话 / 校历 / 作息 / 课表快照 /
+    考试快照 / 渲染 / 订阅留底一次看全，不写任何文件、默认一个请求都不发；有阻塞项时退出码为
+    <code class="inline-code">5</code>。
+    <pre style="margin-top:.7rem">python -m xjtu_calendar <span class="p">doctor</span> --semester 2026-2027-1 --verify</pre>
+  </div>
+</section>
+
+<section id="exams">
+  <div class="sec-kicker">v0.5 / v0.6</div>
+  <h2>考试安排也进同一份日历</h2>
+  <div class="grid">
+    <div class="feature"><div class="ico">📝</div><h3>不必再手抄期末</h3><p><code class="inline-code">fetch</code> 的 HTTP 路径在抓课表的同时抓「我的考试安排」，<code class="inline-code">export</code> / <code class="inline-code">subscribe push</code> 把考试并进<strong>同一份 .ics、同一个订阅 URL</strong>。考试是单场绝对时刻的 VEVENT：不用 RRULE、不写 VALARM，提醒交给客户端设置。</p></div>
+    <div class="feature"><div class="ico">🎫</div><h3>类型词原样带出</h3><p>标题形如「示例课程甲（期末考试）」，类型词取自接口原文——期中考、结课考，以及「补考」「缓考」都原样呈现，不做白名单。考场在 <code class="inline-code">LOCATION</code>，座位号与课程号、学分、主考教师写在 <code class="inline-code">DESCRIPTION</code>。</p></div>
+    <div class="feature"><div class="ico">🚦</div><h3>三态判定：状态未知绝不覆盖</h3><p>「本学期没有考试」和「查询没成功」返回的行数<strong>都是空</strong>，所以判定落在响应的 <code class="inline-code">extParams.code</code> 上：有考试 / 确认无考试 / 状态未知。未知时宁可沿用旧快照（warning 里报出它是哪一天的）也不覆盖——课程是主功能，考试侧任何失败都不会让 <code class="inline-code">fetch</code>、<code class="inline-code">export</code> 非零退出。</p></div>
+    <div class="feature"><div class="ico">🔻</div><h3>撤销自动下发（v0.6）</h3><p>已发布到订阅端的考试若在本次数据里消失（改期、取消、或确认无考试），下一份产物把那条旧事件标上 <code class="inline-code">STATUS:CANCELLED</code> 再发一次，保留到它的原定时刻自然过去。撤销条目只带最小字段——<strong>没有考场、座位、教师，也没有课程名</strong>。</p></div>
+  </div>
+  <div class="callout warnbox" style="margin-top:1.4rem">
+    <b>⚠️ 但「取消」在手机上不一定表现为消失。</b>2026-10 真机演练：Google 日历（网页版）会据此移除日程；
+    <strong>Outlook.com 与 ColorOS 系统日历实测忽略 <code class="inline-code">STATUS:CANCELLED</code></strong>，把撤销条目当普通事件导入。
+    自 v0.6.1 起那条日程带一个固定标题「<strong>已取消的活动</strong>」（此前是不带标题的「无主题」残条），
+    一眼能认出是废弃条目，但<strong>不会自动消失</strong>，要等原定时刻过去后由下一次发布收掉。
+    一次性导入型客户端不回源，撤销对它完全无从生效——仍需手动删除。
+  </div>
+</section>
+
+<section id="subscribe">
+  <div class="sec-kicker">交付方式</div>
+  <h2>导入一次，还是订阅一条 URL</h2>
+  <div class="grid">
+    <div class="feature"><div class="ico">📥</div><h3>手工导入</h3><p>拿到 .ics → 双击导入。简单、零公网暴露，但课表一变就要重新导出、重新导入，多端各来一遍。导入型入口把事件一次性写进本机，<strong>此后不再回源</strong>，<code class="inline-code">subscribe push</code> 对它无效。</p></div>
+    <div class="feature"><div class="ico">🔗</div><h3>URL 订阅（subscribe）</h3><p>把同一份 .ics 发布到<strong>你自己的 GitHub Pages</strong>（公开仓库 + 不可猜的 token 文件名），客户端按 URL 定期回源。日常更新只有两条命令：<code class="inline-code">fetch</code> → <code class="inline-code">subscribe push</code>，未变动的事件在客户端保持安静，变动的事件原地更新。</p></div>
+    <div class="feature"><div class="ico">🔁</div><h3>换链接（rotate）</h3><p>转发给了不该给的人、或有任何泄露疑虑时跑 <code class="inline-code">subscribe rotate</code>：新文件挂上分支、旧文件名从 tip 消失，<strong>旧 URL 自此 404</strong>。代价是所有客户端都要重新粘贴新 URL。</p></div>
+    <div class="feature"><div class="ico">🏷</div><h3>日历名从产物里来</h3><p>不指定 <code class="inline-code">--name</code> 时，标题按课表自动推导成「西安交通大学课表 · 大三-上」；凡是不敢定的情况（自定义学期 key、课表里没有入学年级字段、年级出现并列）一律退回基础名，<strong>宁可少信息也不给一个错的年级</strong>。年级只影响标题，<strong>不参与 UID、不写进事件</strong>，所以订阅端不会因为换了名字而重收整学期课程。</p></div>
+  </div>
+
+  <h3>客户端行为矩阵（2026-10 真机演练；单账户单样本，别当厂商承诺）</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>客户端</th><th>订阅入口</th><th>收到 <code>STATUS:CANCELLED</code></th><th>自动回源</th><th>用 <code>X-WR-CALNAME</code> 命名</th></tr></thead>
+    <tbody>
+      <tr><td>Google 日历（网页）</td><td>其他日历 → 通过 URL 创建</td><td><span class="yes">移除条目</span></td><td>是<small>两次实测延迟分别 ≤3h31m、≤10h05m</small></td><td>是（添加那一刻取名）</td></tr>
+      <tr><td>Google 日历（手机 App）</td><td><span class="no">无此入口</span></td><td>不适用</td><td colspan="2">实测 App 不显示「从 URL 添加」的日历，勾 syncselect、强制同步、走代理都不行</td></tr>
+      <tr><td>Outlook.com（网页）</td><td>添加日历 → 订阅日历</td><td><span class="no">忽略</span>，当普通事件导入<small>v0.6.1 起显示为「已取消的活动」，此前是「无主题」</small></td><td>添加时立刻拉一次<small>此后实测 14 小时以上未再回源（官方口径约每 3 小时）</small></td><td>否，对话框强制手填</td></tr>
+      <tr><td>ColorOS 系统日历</td><td>我的 → 添加日历 → URL 日历</td><td><span class="no">忽略</span>，同上<small>且它整体替换字段，旧标题会被清掉</small></td><td><span class="yes">是</span><small>实测延迟 ≤2h35m，能原地更新已存在的事件</small></td><td>是</td></tr>
+      <tr><td>各类「导入日历」</td><td>选本地 .ics 文件</td><td colspan="2">不适用——不再回源，一次性快照</td><td>不适用</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="note">分辨自己走的是哪条路：订阅型入口带「上次同步时间」，导入型只有显示开关。
+    另外，客户端通常在<strong>添加那一刻</strong>取一次日历名就不再更新：产物后来改了名，已加好的日历未必跟着改——
+    退订再重新添加一定有效，「不重加会不会自己改名」本仓库未在真机上验证，别当承诺。</p>
+
+  <h3>所以手机侧到底订哪个</h3>
+  <ul class="checks">
+    <li><strong>iPhone / Apple 日历</strong>：原生「添加日历 → 订阅」，直接贴 URL。</li>
+    <li><strong>ColorOS</strong>：系统日历里的「URL 日历」就是手机侧正解——认新增、会自动原地更新、并用产物给的日历名。</li>
+    <li><strong>MIUI / 鸿蒙</strong>：若系统日历只给「导入日历」，那是一次性快照、永不自动更新；改用 <strong>ICSx⁵</strong>（<code class="inline-code">at.bitfire.icsdroid</code>）做 URL 订阅。<strong>注意不是 DAVx⁵</strong>——它只做 CalDAV 双向同步，官方 FAQ 明确把 URL 订阅指向 ICSx⁵。</li>
+    <li><strong>Google 日历</strong>：订阅只能在网页版建立，手机端要上课表请走系统日历那条腿，别把希望放在 Google App 上。</li>
+    <li><strong>给同步器关掉电池优化并允许自启动</strong>，否则后台查杀会伪装成「装了但从不更新」。</li>
+    <li><strong>订阅型日历通常是只读的</strong>：没有「删除单条事件」的入口，忽略取消字段时唯一的补救是退订整本再重新添加。</li>
+  </ul>
+
+  <div class="callout warnbox" style="margin-top:1.3rem">
+    <b>用之前先把口径读明白：</b>
+    ① 刷新是<strong>纯手动</strong>的——本工具不做定时任务、不常驻进程，也不会替你 <code class="inline-code">fetch</code>；
+    ② 发布仓库是<strong>公开</strong>的，匿名浏览分支就能看到 <code class="inline-code">&lt;token&gt;.ics</code> 的文件名，
+    所以「知道 URL 才能读」这层保护在公开仓库上<strong>并不成立</strong>——转发 URL 等于授权，任何能浏览该仓库的人都能读到你的课表；
+    ③ 含考试发布时，考试名称、时间、考场以及 <code class="inline-code">DESCRIPTION</code> 里的座位号会进入那份公开产物，
+    不愿意公开就用 <code class="inline-code">--no-exams</code>；
+    ④ 课程改名会表现为<strong>新事件</strong>（UID 配方含课程名，是 v0.1.x 起冻结的兼容契约），
+    订阅端与手工导入的表现一致；
+    ⑤ 发布分支永远是「无父孤儿单提交 + 强推」，课表旧版本不进 git 历史。
+  </div>
 </section>
 
 <section id="automate">
-  <div class="sec-kicker">自动化</div>
-  <h2>配置也不用手抄</h2>
+  <div class="sec-kicker">自动化 · 体检</div>
+  <h2>配置不用手抄，状态不用猜</h2>
   <div class="grid">
     <div class="feature"><div class="ico">📰</div><h3>notice · 停课/调课通知</h3><p>解析教务处通知页的调课表格，与校历周次交叉校验后合并进配置——只新增、识别不了的行拒绝写盘。</p></div>
     <div class="feature"><div class="ico">⏰</div><h3>schedule · 作息表</h3><p>从教务处公开「学生作息时间表」页直接读第 1~10 节课两季钟点，切换点取自页面原文，幂等合并。</p></div>
-    <div class="feature"><div class="ico">🔍</div><h3>diff · 调课检测</h3><p>纯本地比对两次 fetch 的快照：哪门课新增删除、哪个时段改了周次/教室/教师，一目了然。</p></div>
+    <div class="feature"><div class="ico">🔍</div><h3>diff · 调课检测</h3><p>纯本地比对两次 fetch 的快照：哪门课新增删除、哪个时段改了周次/教室/教师，并列出「考试变更」（新增 / 取消 / 时间 / 教室 / 座位）。</p></div>
+    <div class="feature"><div class="ico">🩺</div><h3>doctor · 只读体检</h3><p>版本 / 会话 / 校历 / 作息 / 课表快照 / 考试快照 / 渲染 / 订阅留底一次看全。不写任何文件、不触发 <code class="inline-code">fetch</code>，默认一个 HTTP 请求都不发（只有 <code class="inline-code">--verify</code> 才对订阅 URL 做一次匿名 GET）。<strong>0 = 无阻塞（警告不阻塞）、5 = 有阻塞项</strong>，脚本与 Agent 可以直接判定成败。</p></div>
+    <div class="feature"><div class="ico">🧩</div><h3>skills/ · 交给编码 Agent</h3><p>仓库根两个技能：<code class="inline-code">xjtu-timetable-setup</code>（八步部署向导，登录一步显式禁止后台执行器与管道，收尾以 <code class="inline-code">doctor</code> 退出码定成败）与 <code class="inline-code">timetable-api-archaeology</code>（给陌生学校的接口考古方法论，含「什么时候该停下来」）。整个目录复制进你所用 Agent 的 skills 目录即可，内容不假设任何特定产品。</p></div>
   </div>
   <pre style="margin-top:1.2rem">python -m xjtu_calendar <span class="p">notice</span>   --url &lt;通知页地址&gt; --semester 2026-2027-1 --apply
 python -m xjtu_calendar <span class="p">schedule</span> --semester 2026-2027-1 --apply
-python -m xjtu_calendar <span class="p">diff</span>     --semester 2026-2027-1</pre>
+python -m xjtu_calendar <span class="p">diff</span>     --semester 2026-2027-1
+python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 --verify</pre>
+  <div class="callout" style="margin-top:1.2rem">
+    <b>如实说明一处未验证：</b>两个 skill 在<strong>已装好</strong>的环境上跑过，但「从零安装的人会不会卡住」
+    这一条<strong>新用户旅程尚未在干净机器上验证</strong>——技能文档里也写着这条边界。
+  </div>
 </section>
 
 <section id="commands">
@@ -236,16 +342,18 @@ python -m xjtu_calendar <span class="p">diff</span>     --semester 2026-2027-1</
   <table>
     <thead><tr><th>命令</th><th>作用</th><th>联网？</th></tr></thead>
     <tbody>
-      <tr><td><code>login</code></td><td>浏览器本人登录，会话仅存本地</td><td>认证页</td></tr>
+      <tr><td><code>login [--force]</code></td><td>浏览器本人登录，会话仅存本地；会话过期后必须带 <code>--force</code></td><td>认证页</td></tr>
       <tr><td><code>status</code></td><td>查看会话与配置状态</td><td>否</td></tr>
-      <tr><td><code>fetch</code></td><td>获取课表 JSON（自动轮转上一份快照）</td><td>是</td></tr>
-      <tr><td><code>export</code></td><td>解析并生成 .ics（支持日期范围 / SEQUENCE 基线）</td><td>否</td></tr>
+      <tr><td><code>fetch</code></td><td>获取课表 JSON（HTTP 路径同时抓考试安排；自动轮转上一份快照作 diff 基线）</td><td>是</td></tr>
+      <tr><td><code>export</code></td><td>解析并生成 .ics（默认并入考试事件；支持日期范围 / SEQUENCE 基线 / <code>--no-exams</code>）</td><td>否</td></tr>
       <tr><td><code>notice</code> / <code>schedule</code></td><td>解析停课调课通知 / 官方作息页，预览或合并配置</td><td>匿名 GET</td></tr>
-      <tr><td><code>diff</code></td><td>比对新旧快照，列出课表变化</td><td>否</td></tr>
+      <tr><td><code>diff</code></td><td>比对新旧快照，列出课表变化与「考试变更」</td><td>否</td></tr>
+      <tr><td><code>subscribe init/push/rotate/status</code></td><td>发布到 GitHub Pages 的订阅 URL；push 与 export 共用同一条构建管线</td><td>仅 push / <code>status --verify</code></td></tr>
+      <tr><td><code>doctor</code></td><td>只读体检，退出码 0 / 5 可直接判定「部署到位没有」</td><td>默认否</td></tr>
       <tr><td><code>inspect</code></td><td>对原始 JSON 做脱敏结构分析</td><td>否</td></tr>
     </tbody>
   </table>
-  <p style="color:var(--sub);font-size:.9rem;margin-top:.8rem">退出码有语义（2=未登录、3=登录失效、4=无权限），方便脚本串联。完整参数见 <a href="https://github.com/XLJFZ/xjtu-timetable-calendar#命令参考">README · 命令参考</a>。</p>
+  <p style="color:var(--sub);font-size:.9rem;margin-top:.8rem">退出码有语义（2=未登录、3=登录失效、4=无权限、5=<code>doctor</code> 检出阻塞项），方便脚本串联。完整参数与客户端订阅入口见 <a href="https://github.com/XLJFZ/xjtu-timetable-calendar#命令参考">README · 命令参考</a>。</p>
 </section>
 
 <section id="privacy">
@@ -255,10 +363,22 @@ python -m xjtu_calendar <span class="p">diff</span>     --semester 2026-2027-1</
     <li>不绕过统一身份认证，不访问他人有权限范围之外的数据</li>
     <li>不读取、不记录、不上传任何账号密码</li>
     <li>会话与课表只存本地 <code class="inline-code">~/.xjtu-timetable-calendar/</code>，文件权限收紧到属主可读</li>
-    <li>日志递归脱敏：cookie、token、学号、姓名绝不输出</li>
+    <li>日志递归脱敏：cookie、token、学号、姓名绝不输出，订阅 URL / token 也不落日志</li>
     <li>所有请求串行、401/403 立即终止不暴力重试</li>
     <li>仓库不含任何真实课表数据，测试固件全部脱敏</li>
+    <li>撤销条目只带最小字段与一个固定标题，<strong>没有</strong>考场、座位、教师与课程名</li>
+    <li>考试快照与本地台账含个人信息：只落本地、收紧权限原子写盘、<strong>永不发布</strong></li>
+    <li>课程改名等用户可见的变化会在 <code class="inline-code">diff</code> 里先报出来，再决定要不要发布</li>
   </ul>
+  <div class="callout warnbox" style="margin-top:1.3rem">
+    <b>订阅通路的例外通道要说实话：</b><code class="inline-code">subscribe</code> 的风险模型与上面几条不同——
+    它把课表放到一个<strong>匿名可读</strong>的公开地址上，而发布仓库本身是公开的，
+    匿名浏览分支就能看到 <code class="inline-code">&lt;token&gt;.ics</code> 的文件名。
+    所以随机 token 挡不住「会看分支列表的人」，<strong>转发 URL 等于授权</strong>。
+    配套约束是：发布分支恒为无父孤儿单提交（旧版本不进 git 历史）、强推前有 tree 护栏、
+    状态文件收紧权限写盘、泄露疑虑时 <code class="inline-code">subscribe rotate</code> 换链接。
+    不愿意把考试名称、考场与座位号放进那份公开产物，就带 <code class="inline-code">--no-exams</code>。
+  </div>
   <div class="callout" style="margin-top:1.3rem">
     <b>非官方声明：</b>本项目为个人开发的开源工具，与西安交通大学无隶属关系；课表数据归学校与本人所有，导出行为仅限当前登录账号本人正常可访问的范围。
   </div>
@@ -267,6 +387,7 @@ python -m xjtu_calendar <span class="p">diff</span>     --semester 2026-2027-1</
 <footer>
   <div class="foot-in">
     <span>XJTU 课表日历 · MIT License · 开源免费</span>
+    <span>本页对应 v0.7.0 · 客户端读数来自 2026-10 真机演练（单账户单样本）</span>
     <span><a href="https://github.com/XLJFZ/xjtu-timetable-calendar">GitHub 仓库</a> · <a href="https://github.com/XLJFZ/xjtu-timetable-calendar/issues">问题反馈</a></span>
   </div>
 </footer>

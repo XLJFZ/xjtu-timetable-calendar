@@ -699,19 +699,29 @@ def cancel_candidates(
 #: 撤销事件的 ``STATUS`` 值。台账里**不**写这个字段（spec D10）。
 EXAM_STATUS_CANCELLED = "CANCELLED"
 
+#: 撤销条目的固定标题（v0.6.1，spec D3 的修订）。
+#:
+#: 为什么要有标题：忽略 ``STATUS:CANCELLED`` 的客户端（Outlook.com、ColorOS 系统日历，
+#: 2026-10 真机实测）会把撤销条目当普通事件显示，没有 ``SUMMARY`` 就只剩一条「无主题」
+#: 日程——用户既认不出它是废弃条目，也不知道该不该删。
+#: 为什么是**固定文案**：标题恒定 ⇒ :func:`xjtu_calendar.sequence.event_fingerprint`
+#: 的输入恒定 ⇒ 同一份产物重渲染时 SEQUENCE 不漂移（D8）；同时这个字符串里不含课程名、
+#: 考场、座位、教师中的任何一项，保留期内不会重新公开它们。
+CANCELLATION_SUMMARY = "已取消的活动"
+
 
 def build_cancellation_events(entries: Sequence[LedgerEntry]) -> list[CalendarEvent]:
     """台账条目 → 待发布的撤销事件（最小字段，spec D3）。
 
     UID **照抄不重算**：撤销的全部前提就是复用已发布出去的那个 UID，客户端按 UID 匹配
-    才谈得上删除。``summary=""`` 配合 :func:`xjtu_calendar.exporter.render_ics` 的条件化
-    即"不写 SUMMARY 行"（实测 ``add("summary", "")`` 会写出空值行）。
+    才谈得上删除。``summary`` 取 :data:`CANCELLATION_SUMMARY` 那个固定文案，**不引用**
+    台账里的任何原文；``location`` / ``description`` 一律置空。
     顺序保持调用方给的全序，本函数不重排。
     """
     return [
         CalendarEvent(
             uid=item.uid,
-            summary="",
+            summary=CANCELLATION_SUMMARY,
             start=item.start,
             end=item.end,
             location=None,

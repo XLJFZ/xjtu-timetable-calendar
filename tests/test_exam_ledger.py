@@ -284,10 +284,37 @@ def test_cancellation_event_copies_uid_and_times_verbatim():
     assert event.uid == src.uid
     assert event.start == src.start and event.end == src.end
     assert event.status == EXAM_STATUS_CANCELLED
-    # spec D3：最小字段。考场/座位/教师都不再公开。
-    assert event.summary == ""
+    # v0.6.1：标题是一个固定的、不含任何个人信息的文案（spec D3 的修订）。
+    assert event.summary == "已取消的活动"
+    # 考场/座位/教师仍然一律不公开。
     assert event.location is None
     assert event.description is None
+
+
+def test_cancellation_render_shows_fixed_title_and_leaks_no_ledger_text():
+    """撤销条目在产物里必须"看得出是废弃条目"，且一个字都不引用台账原文。
+
+    忽略 `STATUS:CANCELLED` 的客户端（Outlook.com、ColorOS，均 2026-10 实测）会把撤销条目
+    当普通事件显示：没有标题就只剩一条「无主题」，用户无从判断该不该删。固定标题同时
+    满足两个方向——给得出可读文案，且**绝不**把台账里的课程名/考场/座位重新公开。
+    """
+    src = entry("a", date(2030, 6, 17))
+    (event,) = build_cancellation_events([src])
+    out = render_ics([event], calendar_name="课表", dtstamp=STAMP)
+    assert "SUMMARY:已取消的活动" in out
+    assert "STATUS:CANCELLED" in out
+    for private in (src.summary, src.location, src.description):
+        assert private not in out
+
+
+def test_cancellation_title_is_identical_across_entries():
+    """标题恒定 ⇒ 内容指纹恒定 ⇒ SEQUENCE 不漂移（spec D8）。
+
+    若将来有人把标题拼上课程名或日期，本用例先红。
+    """
+    entries = [entry("a", date(2030, 6, 17)), entry("b", date(2030, 6, 20))]
+    events = build_cancellation_events(entries)
+    assert [e.summary for e in events] == ["已取消的活动", "已取消的活动"]
 
 
 def test_cancellation_events_keep_input_order():

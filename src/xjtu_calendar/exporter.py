@@ -483,11 +483,13 @@ def render_ics(
         component.add("dtstart", item.start)
         component.add("dtend", item.end)
         if item.summary or item.status is None:
-            # 撤销事件（`status` 非空且 `summary` 为空）刻意不带 SUMMARY（spec D3 的最小
-            # 字段）：实测 ``add("summary", "")`` 会写出 ``SUMMARY:`` 空值行，所以只能不调用
-            # add。判据是结构性的"是不是撤销条目"（终审 F5a），不是"summary 恰好为空"——
-            # parser 允许纯空白 KCM 被 strip 成 ``""``、CLI 也存 ``course_name.strip()``，
-            # 若只按 truthiness 判，课程侧"永远有 SUMMARY"就只是数据假设而非代码保证。
+            # 守卫的是「空值行」而不是「撤销条目」：实测 `add("summary", "")` 会写出字面
+            # `SUMMARY:` 空值行，所以只能不调用 add。判据是结构性的（终审 F5a），不是
+            # "summary 恰好为空"——parser 允许纯空白 KCM 被 strip 成 ``""``、CLI 也存
+            # ``course_name.strip()``，若只按 truthiness 判，课程侧"永远有 SUMMARY"就只是
+            # 数据假设而非代码保证。
+            # v0.6.1 之后撤销条目自带固定标题（`exams.CANCELLATION_SUMMARY`），走的是
+            # `item.summary` 为真这一支；本条件因此与撤销无关，纯粹挡住任何空标题。
             component.add("summary", item.summary)
         if item.location:
             component.add("location", item.location)

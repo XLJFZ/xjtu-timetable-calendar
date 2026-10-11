@@ -1,6 +1,6 @@
 # Agent Skill 交付：部署向导 + 接口考古方法论
 
-日期：2026-10-11　状态：**设计文档（待审阅）**
+日期：2026-10-11　状态：**设计已批准**（§10 三件事项已由用户拍板）
 受众：本仓库的维护者与想在编码 Agent 上部署这套流程的其他人。
 关联：`docs/design/2026-10-11-multi-school-portability.md`（可移植性议题，本文第 4 节是它的执行版）、
 `docs/design/2026-10-11-subscription-followups.md` §6（`login` 可操作性，已落地）、
@@ -32,14 +32,16 @@ skill 的价值就是把这四类东西变成**带证据的检查点**，而不�
 skills/
   xjtu-timetable-setup/          # 部署向导（有承诺：能走到"手机上看到课表"）
     SKILL.md
-    scripts/check_setup.py       # 确定性体检，输出给 agent 读
     references/troubleshooting.md
     references/client-matrix.md  # 见 §5 的权威关系
-  timetable-source-onboarding/   # 接口考古方法论（不承诺接入成功）
+  timetable-api-archaeology/     # 接口考古方法论（不承诺接入成功）
     SKILL.md
     references/probe-checklist.md
     references/red-lines.md
 ```
+
+**skill 里不放脚本。** 体检逻辑做成 CLI 子命令 `xjtu-calendar doctor`（§3 末），
+skill 只是调用它——同一份判据只存在一处，且所有人都能用，不只 agent 用户。
 
 **安装**：把 `skills/<name>/` 整个目录复制进使用者所用 Agent 的 skills 目录
 （项目级与用户级均可，不同产品的目录名不同，以对方文档为准）。本文**不写死某个
@@ -48,7 +50,7 @@ Agent 产品的路径与名称**——既是仓库既有的隐私红线（跟踪
 
 **版本偏斜**是这套形态的固有代价：skill 随仓库走，CLI 随 PyPI 走，两者版本会不一致。
 处理方式是**让 skill 自己去查**，而不是靠"请保持版本一致"这种祈使句：
-`SKILL.md` 第一步就要求跑 `xjtu-calendar --version` 与 `check_setup.py`，
+`SKILL.md` 第一步就要求跑 `xjtu-calendar --version` 与 `xjtu-calendar doctor`，
 并在文中显式写出"本文按 0.6.1 的行为编写；若检测到的版本低于此，某些判据不适用"。
 
 ## 3. Skill 1：`xjtu-timetable-setup`（部署向导）
@@ -75,12 +77,29 @@ Agent 产品的路径与名称**——既是仓库既有的隐私红线（跟踪
 8. **选客户端** — 按矩阵给建议，并说明为什么：一次性导入不回源、部分客户端忽略取消字段、
    各家回源周期都是小时级且不可强制刷新。
 
-`scripts/check_setup.py` 承担"agent 每次都要重写一遍的那段代码"：一条命令跑完
-版本 / 会话新鲜度 / 快照年龄 / 产物事件数 / URL 可达性，输出紧凑的成功失败清单
-（不打 traceback，不打印任何个人信息）。它把第 5–7 步的证据收集从"agent 自由发挥"
-降级成确定性动作。
+### 3.1 `doctor` 子命令（与 skill 同期落地的 CLI 能力）
 
-## 4. Skill 2：`timetable-source-onboarding`（接口考古方法论）
+第 1–7 步的证据收集不该让 agent 每次手写，也不该只活在 skill 目录里。做成
+`xjtu-calendar doctor`：**一条命令跑完版本 / 会话新鲜度 / 快照年龄 / 产物事件数 /
+订阅留底一致性 / URL 可达性**，输出紧凑的成功失败清单，不打 traceback，
+不打印任何个人信息（姓名、学号、课程名、token、本机绝对路径）。
+
+三条设计约束：
+
+- **只读**。`doctor` 不写任何文件、不触发 `fetch`、不 push；它最多发一次匿名 GET 探 URL
+  （`subscribe status --verify` 已有这个动作，复用同一实现）。
+- **退出码可判定**：全绿 0，有警告 0 并在清单里列出，有阻塞项非零。agent 靠退出码决定
+  往下走还是回到对应步骤，不靠读自然语言。
+- **`--json` 留给后续**，v1 先给人看的文本清单——agent 读文本没问题，而 JSON 一旦发布
+  就是长期契约。
+
+它是**新增 CLI 能力**，因此按正常流程走：TDD 写用例 → 四条门禁 → 随版本发布。
+**版本含义要提前知道**：加子命令是 feature，按语义化版本该进 **0.7.0**，
+于是原本预留给「课程侧撤销」的 0.7.0 要么让位（`doctor`+skills 先发 0.7.0，课程撤销推到
+0.8.0），要么并版（0.7.0 同时含两者，patch 说明会变长）。**这个取舍留给排期时拍，
+本文不替它决定**，但计划里必须显式带上，别到发版那天才发现。
+
+## 4. Skill 2：`timetable-api-archaeology`（接口考古方法论）
 
 **自由度定级：高。** 面对的是未知的系统，能给的只有启发式与停止条件。
 开头一句边界声明：**本 skill 不产出能用的订阅**，它承诺的是"别把已知的坑重新踩一遍"。
@@ -121,8 +140,10 @@ DAVx⁵/ICSx⁵ 写反）。skill 与 README 分家之后一定会漂移，所�
 
 ## 7. 验收：能验什么，不能验什么
 
-- **能验**：`check_setup.py` 必须真跑通（它属于"必须实测的脚本"）；两个 skill 过一遍
-  格式自检清单；在一个**已装好**的环境上走一遍第 1–8 步，确认每一步的证据确实取得到。
+- **能验**：`doctor` 按 CLI 的正常标准验——单测覆盖每条判据的成功/警告/阻塞三态，
+  并在真实环境里跑一次确认输出与 `subscribe status`、`diff` 的既有口径一致；两个 skill
+  过一遍格式自检清单；在一个**已装好**的环境上走一遍第 1–8 步，确认证据确实取得到。
+  另外 `doctor` 的输出要过一次隐私 grep（不得出现姓名/学号/课程名/token/绝对路径）。
 - **不能验**：**新用户旅程**。我这台机器环境是热的——登录已完成、校历与作息已配好、
   订阅已发布，所以"从零开始的人会不会卡住"验证不到。这一条必须写进 skill 文档的
   已知边界，而不是靠"步骤看起来对"糊过去。真要验，得找一个没装过的同学或干净环境。
@@ -145,10 +166,11 @@ ICSx⁵ **0 次**、年级后缀 **0 次**，`subscribe` 只在"三步上手"里
 - 不在 skill 里内置任何真实姓名、学号、路径、订阅 token。
 - 不改 CLI 的行为来迁就 skill（如果 skill 写不下去，那是 CLI 的接口问题，另立议题）。
 
-## 10. 需要拍板的三件事
+## 10. 已拍板的三件事（2026-10-11，用户）
 
-1. `skills/` 放仓库根，还是放 `.agents/skills/` 之类更"约定俗成"的位置？（本文按仓库根写）
-2. `check_setup.py` 要不要同时作为 CLI 子命令发布（例如 `xjtu-calendar doctor`）？
-   放进 skill 只帮到 agent 用户，做成子命令则所有人都能用，但要过版本发布流程。
-3. 第二个 skill 的名字：`timetable-source-onboarding` 还是更直白的
-   `timetable-api-archaeology`？命名会出现在别人 Agent 的技能列表里。
+1. **目录位置**：仓库根 `skills/`。
+2. **体检逻辑**：升级为 CLI 子命令 `xjtu-calendar doctor`，skill 里不放脚本
+   （判据只存一处，且非 agent 用户同样受益）。代价已写明：它是 feature，
+   牵动下一个版本号，取舍见 §3.1 末。
+3. **第二个 skill 命名**：`timetable-api-archaeology`——直白，出现在别人的技能列表里
+   也能一眼看懂它是干什么的。

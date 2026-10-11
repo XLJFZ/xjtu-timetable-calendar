@@ -11,10 +11,12 @@
 ### Added
 
 - 设计文档 `docs/design/2026-10-11-agent-skills.md`：把这套流程交付成两个 Agent skill 的
-  设计——`xjtu-timetable-setup`（低自由度的部署向导，八步各带"完成的证据"）与
-  `timetable-source-onboarding`（高自由度的接口考古方法论，以"没有数据 vs 查询失败能否区分"
-  为 go/no-go）。含版本偏斜的处理、矩阵的单一权威与同步标记纪律、验收的诚实边界
-  （**新用户旅程在本机验证不到**），以及三件待拍板的事。
+  设计（已批准）——`xjtu-timetable-setup`（低自由度的部署向导，八步各带"完成的证据"）与
+  `timetable-api-archaeology`（高自由度的接口考古方法论，以"没有数据 vs 查询失败能否区分"
+  为 go/no-go）。体检逻辑不做成 skill 内脚本，而是升级为 CLI 子命令 `xjtu-calendar doctor`
+  （只读、退出码可判定、输出过隐私 grep），判据因此只存一处。含版本偏斜的处理、矩阵的
+  单一权威与同步标记纪律、验收的诚实边界（**新用户旅程在本机验证不到**），
+  以及 `doctor` 是 feature、牵动下一个版本号这一显式提醒。
 
 ---
 

@@ -13,7 +13,7 @@
 
 golden 的确切来历（可复核）
 --------------------------
-"v0.6 无台账" 与 v0.5.0 逐字节相同**正是本用例要证的东西**，所以**光靠那条字节比较，
+"v0.6 无台账" 与 v0.5.0 逐字节相同**正是本用例要证的东西**，所以**光靠那条逐行比较，
 仓库内无法分辨**一份来自 tag ``v0.5.0`` 的 golden 与一份在主检出里被新代码"顺手重生成"
 的 golden。为此把来历钉在**代码里**（不再只留在 gitignore 的报告文件里）：
 
@@ -50,7 +50,8 @@ test_v050_golden_bears_only_v050_artifacts` 直接对着固件字节把这些情
 :func:`test_render_is_reproducible_without_a_ledger` 比的是**同一进程内**连跑两次的自洽性，
 只能抓住这两次之间越过 1 秒墙钟边界的漂移、或事件排序的非确定性；若挂钟被烤进产物但两次
 调用恰落在同一秒，它会**保持绿**——把"产物里有挂钟"与"产物与 v0.5.0 不同"这两件事分开，
-后一件事交给字节比较和上面的 tripwire 断言看守（与课程侧模块 :func:`
+后一件事交给 :func:`test_upgrade_first_render_matches_v050_except_course_uids` 那条
+逐行用例和上面的 tripwire 断言看守（与课程侧模块 :func:`
 test_course_side_rendering_is_reproducible` 的自述限制一致）。
 """
 
@@ -246,7 +247,7 @@ def test_upgrade_first_render_matches_v050_except_course_uids(tmp_path: Path) ->
 def test_v050_golden_bears_only_v050_artifacts() -> None:
     """直接对着固件字节跑 tripwire：让「在主检出用新代码/有台账重生成」的 golden 立即红。
 
-    字节比较那条只在**渲染==固件**时给答案，分辨不了固件本身是被谁渲染的（这正是 D14 的
+    逐行那条只在**渲染==固件**时给答案，分辨不了固件本身是被谁渲染的（这正是 D14 的
     自指困境）。这里不看渲染、只审固件：v0.5.0 从没写过 ``STATUS``，撤销事件带
     ``STATUS:CANCELLED``；撤销还会多塞 VEVENT、引入 VEVENT 级新属性。任一条被破坏，本用例
     先红，而不用等到有人肉去比对来历。全部断言路径无关、对「v0.5.0 代码合法重生成」恒绿。
@@ -278,7 +279,7 @@ def test_pinned_stamp_is_derived_from_snapshot_mtime() -> None:
     """:data:`PINNED_STAMP` 必须由固件的 ``snapshot_mtime`` 推出——把「来历」写进断言而非注释。
 
     课程侧 golden 的 DTSTAMP 同源同值；若哪天有人改了固件的 mtime 却没重生成 golden，
-    这条会先于字节比较说出「推导对不上」，而不是让 golden 红成一场莫名差异。
+    这条会先于上面那条逐行用例说出「推导对不上」，而不是让 golden 红成一场莫名差异。
     """
     bundle = json.loads(INPUTS.read_text(encoding="utf-8"))
     mtime = int(bundle["snapshot_mtime"])
@@ -290,7 +291,8 @@ def test_pinned_stamp_is_derived_from_snapshot_mtime() -> None:
 def test_render_is_reproducible_without_a_ledger(tmp_path: Path) -> None:
     """同一输入连跑两次字节必须相同——撤销通路不许把挂钟带进产物。
 
-    这条是上面那条的前提：`cancel_expiry_at` 默认取墙钟，若实现时让它影响了
+    这条是逐行用例 :func:`test_upgrade_first_render_matches_v050_except_course_uids`
+    的前提：`cancel_expiry_at` 默认取墙钟，若实现时让它影响了
     保留期**之外**的东西（比如每次都重排事件），两次就会分叉，本用例先红，
     而不是让 golden 以"莫名其妙变了"的形式红。
     """

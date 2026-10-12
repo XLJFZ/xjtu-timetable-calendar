@@ -130,7 +130,10 @@ def test_v2_golden_matches_v1_except_uids() -> None:
 
     原用例守的是「课程侧不许被无声改坏」。UID v2 是一次**有声**的、经规格批准的改动，
     所以字节相等不再是判据；但"除 UID 之外一切不变"必须钉住：事件数、SUMMARY、
-    DTSTART/DTEND、SEQUENCE、VTIMEZONE、X-WR-CALNAME 任何一项跟着变，都是越界。
+    DTSTART/DTEND、SEQUENCE 任何一项跟着变，都是越界。本用例按 VEVENT 逐字段比对，
+    **不**直接断言 VTIMEZONE 与 X-WR-CALNAME——这两块跨代际的守卫在逐字节那条
+    (:func:`test_default_path_without_exam_snapshot_keeps_course_bytes`)：它拿当前渲染
+    比 v2 留底的整体字节，日历头与时区块的任何漂移都会先在那里红。
 
     这不是「为了让测试变绿而松手」：本文件另有一条**逐字节**用例
     (:func:`test_default_path_without_exam_snapshot_keeps_course_bytes`) 拿当前代码的
@@ -185,7 +188,7 @@ def test_course_side_rendering_is_reproducible(tmp_path: Path) -> None:
     这条是 golden 用例成立的前提，也是它自己的钉：`DTSTAMP` 走快照 mtime
     （见 :func:`xjtu_calendar.exporter._stamp_from_snapshot` 的说明），若将来有人
     把 ``now_local()`` 之类塞回渲染路径，两次跑就会分叉，本用例先红，
-    而不会让上面两条以「golden 莫名其妙变了」的形式红。
+    而不会让上面那条逐字节用例以「golden 莫名其妙变了」的形式红。
     """
     cfg, semester = lay_out_home(tmp_path)
     first = build_ics_for_semester(cfg, semester, include_exams=False).ics
@@ -196,8 +199,9 @@ def test_course_side_rendering_is_reproducible(tmp_path: Path) -> None:
 def test_golden_fixture_keeps_its_crlf_bytes() -> None:
     """golden 固件在**仓库里**仍是 CRLF：`.gitattributes` 的免归一化规则不许被删。
 
-    本仓库的全局行尾契约是 ``* text=auto eol=lf``，而 RFC 5545 要求 CRLF。上面两条
-    字节用例比的是「渲染字符串」与「固件字节」，一旦 Git 把固件压成 LF，两边就永远
+    本仓库的全局行尾契约是 ``* text=auto eol=lf``，而 RFC 5545 要求 CRLF。上面那条
+    逐字节用例 (:func:`test_default_path_without_exam_snapshot_keeps_course_bytes`)
+    比的是「渲染字符串」与「固件字节」，一旦 Git 把固件压成 LF，两边就永远
     对不上——而且是新克隆、CI、本机工作树**同时**红，红成一个 2000 行的字节差异，
     看上去像课程侧回归，实际只是行尾被"顺手转换"了。
 

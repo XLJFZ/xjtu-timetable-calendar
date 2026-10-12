@@ -51,7 +51,7 @@ v0.6 当时判定"不做"的理由（课程消失多半是选课/学期变化，
 | CD9 | 通用撤销机制放哪 | **纯搬迁**到新模块 `cancellation.py`（`LedgerEntry` / `cancel_candidates` / `build_cancellation_events` / `CANCELLATION_SUMMARY` / 台账 render+load 的通用部分），`exams.py` 保留 re-export | 代理 | 既让"权威在哪"说得清，又不动 v0.6 已发布代码的调用点与测试 import——零回归面。参数化台账文件名（`last-exams-*` / `last-courses-*`），逻辑一份都不复制 |
 | CD10 | 迁移候选要不要过 D2 过期筛 | **要**：留底里 `DTSTART` 已过的 UID 不进迁移候选 | 代理（复核新增） | 留底里也含**上一次已撤销**的条目，而它们不在任何台账里（台账只存 live 形态，D10），迁移分支若不过期筛会把上学期的旧事件反复撤销、无限续命。本学期课程的时刻都在未来 ⇒ 全量撤销不受影响 |
 | CD11 | 迁移分支与门 2 的关系 | 迁移分支**豁免**熔断，但 push 前必须打印一行预告（N 条 + 原因） | 代理 | 迁移是配方切换，不是数据缺失，用整学期撤销的规模去判熔断会永远卡死升级。"自动但不静默"：不要求用户额外操作，但绝不让它悄悄发生 |
-| CD12 | 熔断判据 | `候选数 ≥ 10` **且** `候选数 ÷ 台账课程事件总数 ≥ 0.30` ⇒ 触发。两个常量写死在模块顶部，**不新增配置项**；出口是旗标 `--allow-mass-cancellation` 与新退出码 `6` | 代理 | 双条件是为了不误伤两种形状：小日历（台账 30 条里撤 12 条是正常调整）与大日历的局部异常（台账 500 条里撤 20 条 ≈ 4%，不触发）。阈值 0.30 拍的是"一学期最多几门课变动"的量级 |
+| CD12 | 熔断判据 | `候选数 ≥ 10` **且** `候选数 ÷ 课程台账条目数 ≥ 0.30` ⇒ 触发。两个常量写死在模块顶部（`MASS_CANCELLATION_MIN_EVENTS = 10`、`MASS_CANCELLATION_RATIO = 0.30`），**不新增配置项**；出口是旗标 `--allow-mass-cancellation` 与新退出码 `6` | 代理 | 双条件的分工：数量下限保证**候选不足 10 条时熔断永不介入**——不论比例多高，任何日历上的正常逐学期加减课调整都不会被拦（小台账"30 条里撤 12 条"因 12 ≥ 10 且 12/30 = 40% ≥ 30%，**是会触发的**，出口正是旗标 + 退出码 6，这符合 fail-closed 的本意）；比例条件则放行大日历的局部异常（台账 500 条里撤 20 条 ≈ 4%，不触发）。阈值 0.30 拍的是"一学期最多几门课变动"的量级 |
 | CD13 | 门 1 的判据 | `courses_trusted =` 快照读到了 **且** 解析没有任何 skipped/unresolved 行 **且** 课程门数 ≥ 1。不满足 ⇒ 不读台账、不撤销、`course_ledger_text=None`（照 D18/D21） | 代理 | `--from-file` 本身**不**取消信任——离线导入是常态操作，判据是"这份数据里有没有课、有没有读不懂的行"，不是它从哪来。课程侧现有行为已经 fail-closed（解析不了的行拒绝写盘），所以门 1 主要防的是"接口返回了半份课表" |
 | CD14 | 日期裁剪与撤销 | live 集与台账回写都取**未经 `--from-date/--to-date` 过滤**的课程事件 | 代理 | D19 的对应物。裁剪是课程侧的**常态操作**（考试侧只是偶尔），若候选在过滤之后算，一次局部导出就会把窗口外的课当成"消失"并撤销、还从台账剪掉——局部导出动了全局订阅状态 |
 | CD15 | v1 配方代码去留 | **删**。迁移从留底读旧 UID，不需要重算 v1；v1 golden 文件保留作历史证据，新增 v2 golden，并把 v1 payload 形状写进 docstring | 代理 | 不留死分支。但两年后必须有人能解释旧产物里那批 UID 是怎么来的——所以形状进文档不进代码 |
@@ -134,6 +134,7 @@ raw 快照 ──▶ 解析课程 ──▶ v2 UID 展开 live 事件（过滤�
              │ 是
    状态文件有 uid_recipe?
      ├─ 否（升级后第一次）──▶ 迁移分支：候选 = 留底 UID − live − 本次常态撤销
+     │                        （留底 = 上份发布产物**整体**，课程 ∪ 考试）
      │                        再过 D2 过期筛（CD10）；豁免门 2；打印预告
      └─ 是 ────────────────▶ 常态分支：候选 = 课程台账 UID − live UID
                               → cancel_candidates 三道筛
@@ -151,6 +152,13 @@ publish 成功 → 写 last-<学期>.ics + last-courses-<学期>.ics
 2. **撤销条目永远不进台账**（台账只存 live 形态，D10），所以不会有"撤销的撤销"。
 3. **回写一律在发布成功之后**（D11），迁移标记也一样——publish 失败时 `uid_recipe`
    保持缺失，下次 push 仍走迁移分支。
+
+迁移候选的覆盖面要如实写明：留底是**上份发布产物的整体**，所以清扫范围覆盖其中每一条
+留底 UID（课程 ∪ 考试），**包括考试台账没接住的过期考试 UID**——带 `--no-exams` 发布过、
+或考试在 v0.6 通路之外残留的旧事件，迁移那一次也会被一并撤销。这是刻意的设计而非泄漏：
+过期考试 UID 通常由考试台账负责，多撤一次的代价可证明无害——撤销条目标题固定
+（「已取消的活动」）、起止逐字复制，同一 UID 的两条撤销内容指纹相同 ⇒ `SEQUENCE` 不漂移、
+产物形状不变（D8 的幂等论证在这里同样成立），客户端收到的仍是同一条 CANCELLED。
 
 ---
 
@@ -171,12 +179,16 @@ publish 成功 → 写 last-<学期>.ics + last-courses-<学期>.ics
 
 ### 6.2 新模块 `src/xjtu_calendar/courses.py`（课程侧独有）
 
-- `CoursesTrust(trusted: bool, reason: str | None)` / `assess_courses(report, courses)`：门 1（CD13）。
-  `reason` 只允许是"无快照 / 解析有跳过行 / 零门课"这类**类别词**，进日志时不得携带课程名。
-- `mass_cancellation_check(*, candidates, ledger_total) -> MassCancellation | None`：门 2（CD12），
-  常量 `MASS_CANCELLATION_MIN_EVENTS = 10`、`MASS_CANCELLATION_RATIO = 0.30`。
-- `migration_candidates(*, baseline_uids_and_starts, live_uids, normal_cancel_uids, now)`：
-  CD10 的集合运算，输出按 `(start, uid)` 全序。
+- `CoursesTrust(trusted: bool, reason: str | None)` /
+  `assess_courses(*, total_candidates: int, skipped: Sequence[str], meetings: Sequence[CourseMeeting]) -> CoursesTrust`：
+  门 1（CD13）。输入是解析报告的行数与跳过项、加上解析出的课程安排——不接收报告对象本身，
+  保持纯函数。`reason` 只允许是"无快照 / 解析有跳过行 / 零门课"这类**类别词**，
+  进日志时不得携带课程名。
+- `mass_cancellation_check(*, candidates: int, ledger_total: int) -> MassCancellation | None`：
+  门 2（CD12），常量 `MASS_CANCELLATION_MIN_EVENTS = 10`、`MASS_CANCELLATION_RATIO = 0.30`。
+- `migration_candidates(published: Mapping[str, LedgerEntry], live_uids: Collection[str], normal_cancel_uids: Collection[str], now: datetime) -> list[LedgerEntry]`：
+  CD10 的集合运算（留底解析出的 `{UID: LedgerEntry}` − 本次 live − 本次常态撤销，再过期筛），
+  输出按 `(start, uid)` 全序。
 - 台账格式与考试侧共用 `cancellation.render_ledger` / `load_ledger`。
 
 ### 6.3 `config.Settings`
@@ -205,7 +217,11 @@ payload 去掉 `course_name`（CD2），docstring 改写：删掉"刻意兼容"�
 - `subscribe push` / `subscribe rotate`：迁移分支触发前打印一行
   「检测到上次发布使用 v1 UID 配方，本次将一次性撤销 N 条旧事件并原地重建——这是升级的预期行为」。
 - 门 2 触发 ⇒ 抛 `MassCancellationBlocked` ⇒ 退出码 **6**，且**不产生任何写盘**
-  （留底/台账/状态文件字节不变）。
+  （留底/台账/状态文件字节不变）。用户可见文案为「本次将撤销 N 条课程事件，占已发布事件的
+  P%——疑似课表没抓全」：这里的**分母就是课程台账条目数**（判据 `候选数 ÷ 台账条目数` 不变），
+  文案取「已发布事件」这个面向用户的通俗口径——台账只记本机上次成功发布过的 live 课程事件，
+  两者是同一口的两种说法。现有用例只钉退出码 6 与零写盘，**不逐字断言**这句文案，
+  措辞以本节为准。
 - 新旗标 `--allow-mass-cancellation`：`export` / `subscribe push` / `subscribe rotate` 三处接受，
   放行时日志里给出候选数与占比。
 - `doctor` 新增检查项「UID 配方与迁移状态」：`uid_recipe` 有无、课程台账条数、
@@ -228,7 +244,7 @@ payload 去掉 `course_name`（CD2），docstring 改写：删掉"刻意兼容"�
 | 缺 `uid_recipe` 但**没有留底**（v0.7 时代 init 过、从未成功发布） | 迁移候选空集 ⇒ 直接写 `uid_recipe: 2`，无撤销 | CD7 |
 | 升级后第一次 `push`（课程台账尚不存在） | 走迁移分支；常态分支因台账空集自然无候选 | CD8 |
 | `publish` 失败 | 留底、两份台账、状态文件**全部不动** ⇒ 下次 push 重算 | D11/CD7 |
-| 迁移分支 | 豁免熔断，但必须打印预告 | CD11 |
+| 迁移分支 | 豁免熔断，但必须打印预告；清扫覆盖留底整体（课程 ∪ 考试，含过期考试 UID），重复撤销幂等无害（§5 末注） | CD11 |
 | `NO_CHANGE`（内容未变） | 跳过推送 ⇒ 同样不回写 | 现状 |
 | 带 `--no-exams` | 考试侧维持 D4/D21；**课程侧撤销照常**（不受该开关影响） | 本文 |
 | 带 `--from-date/--to-date` | 对课程撤销与台账**零影响** | CD14 |
@@ -262,8 +278,9 @@ payload 去掉 `course_name`（CD2），docstring 改写：删掉"刻意兼容"�
 5. 迁移 + publish 失败 ⇒ 字段仍缺失、留底与台账字节不变。
 6. 迁移候选与常态候选不重复产出同一 UID（`subscribe push` 端到端）。
 7. CD10：留底里 `DTSTART` 已过的 UID 不进迁移候选。
-8. CD17：写一份带 `uid_recipe` 的状态文件，用"忽略未知键"的旧式 `from_dict`→`to_dict`
-   往返一次 ⇒ 字段丢失 ⇒ 下次 push 走迁移分支且候选为空集。
+8. CD17：写出带 `uid_recipe` 的状态文件后，**按旧二进制会留下的样子改写它**（从 JSON 里
+   移除 `uid_recipe` 键，等价于旧版 `from_dict` 忽略未知键再 `to_dict` 回写）⇒ 载入后字段
+   缺失 ⇒ 下次 push 重走迁移分支且候选为空集（留底此刻已是 v2 产物）。
 
 **两道门**
 

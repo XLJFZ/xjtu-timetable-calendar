@@ -72,12 +72,31 @@ UID_DOMAIN = "xjtu-timetable-calendar"
 _WEEKDAY_NAMES = ("一", "二", "三", "四", "五", "六", "日")
 
 
+#: 课程 UID 的配方版本。v2（0.8.0）去掉了 `course_name`；v1 的形状只保留在文档里，
+#: 代码不再能产出它——迁移读的是发布留底，不需要重算旧 UID（CD15）。
+#: `subscribe` 状态文件的 `uid_recipe` 字段与 `doctor` 都读这个常量，别写第二处字面量。
+UID_RECIPE_VERSION = 2
+
+
 def make_uid(
     semester_key: str,
     meeting: CourseMeeting,
     day: str,
 ) -> str:
-    """为「某学期、某课程的某一次实际上课」生成稳定 UID。
+    """为「某学期、某课程的某一次实际上课」生成稳定 UID（配方 v2）。
+
+    payload = ``semester_key | stable_course_key | day | periods_token``。
+    刻意**不纳入**时间、地点与课程名：作息调整、换教室、**改名**都应当被视作
+    「同一事件的新版本」由客户端原地更新（v0.8.0 起改名不再产生新事件，CD2）。
+
+    v1 配方（≤ 0.7.x，形状存档于此，代码里已无对应实现）在 ``stable_course_key``
+    之后多了一项 ``course_name.strip()``，即
+    ``semester | key | name | day | periods``。v1→v2 的一次性迁移见
+    docs/design/2026-10-12-course-cancellation-uid-v2.md §6.4：旧 UID 从发布留底
+    里读，不重算。
+
+    已知边界（CD16）：``course_id`` 缺失时 ``stable_course_key`` 退回
+    ``f"name:{course_name}"``（models.py:263），那种行**仍**对改名敏感。
 
     Parameters
     ----------
@@ -87,17 +106,6 @@ def make_uid(
         课程安排。
     day:
         实际上课日期（ISO 字符串）。
-
-    Notes
-    -----
-    刻意**不把时间和地点纳入哈希**：作息调整或换教室时，同一节课应当被视为
-    「同一事件的新版本」，由日历客户端原地更新，而不是产生重复事件。
-
-    **``course_name`` 参与身份是刻意的向后兼容选择**（legacy UID contract）：
-    ``course_id`` 已稳定时重复包含课程名在模型上并不理想，但 UID 算法自
-    v0.1.0 起已随正式版发布，改动会让已导入用户的整个学期被识别成新事件。
-    已知边界：同一 ``course_id`` 的课程被改名时，其事件会被视为新事件。
-    未来若做 UID v2，必须配显式迁移方案，不在普通 minor release 里直接改。
 
     Examples
     --------
@@ -113,7 +121,6 @@ def make_uid(
         [
             semester_key.strip(),
             meeting.stable_course_key.strip(),
-            meeting.course_name.strip(),
             day.strip(),
             periods_token,
         ]

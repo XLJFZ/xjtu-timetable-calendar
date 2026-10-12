@@ -1,4 +1,9 @@
-"""升级安全钉：新代码在**没有台账**时必须逐字节复现 v0.5.0 的考试侧产物（spec D14）。
+"""升级安全钉：新代码在**没有台账**时必须复现 v0.5.0 的考试侧产物（spec D14）。
+
+0.8.0 起有一处**规格批准**的例外（CD15）：课程 UID 配方升到 v2，留底里那两条**课程**
+事件的 UID 必然改变。所以判据从「全文件字节相等」收成「除课程 UID 行外逐行全等，
+且考试事件的 UID 一字不动」（见 :func:`test_upgrade_first_render_matches_v050_except_course_uids`
+的自述）。留底本身**不重生成**——它是 v0.5.0 的历史证据。
 
 基线来历：由 tag ``v0.5.0`` 的 ``src/`` 对 ``legacy_exam_inputs.json`` 渲染而成，
 两次独立运行逐字节一致。本机的 venv 是 editable 安装、指向主检出的 ``src/``，
@@ -164,13 +169,75 @@ def lay_out_home(tmp_path: Path) -> tuple[Settings, str]:
     return cfg, semester
 
 
-def test_upgrade_first_render_matches_v050_bytes(tmp_path: Path) -> None:
+def _uids_by_summary(ics: str) -> list[tuple[str, str]]:
+    """按事件顺序给出 ``(SUMMARY, UID)`` 对，用来分辨「变的是哪一支的 UID」。"""
+    pairs: list[tuple[str, str]] = []
+    summary, uid, in_event = "", "", False
+    for line in _logical_lines(ics):
+        head, _, value = line.partition(":")
+        name = head.split(";", 1)[0].strip().upper()
+        if name == "BEGIN" and value.strip().upper() == "VEVENT":
+            in_event, summary, uid = True, "", ""
+        elif name == "END" and value.strip().upper() == "VEVENT":
+            in_event = False
+            pairs.append((summary, uid))
+        elif in_event and name == "SUMMARY":
+            summary = value.strip()
+        elif in_event and name == "UID":
+            uid = value.strip()
+    return pairs
+
+
+def test_upgrade_first_render_matches_v050_except_course_uids(tmp_path: Path) -> None:
+    """除两条**课程**事件的 UID 外，与 v0.5.0 留底逐行逐字节全等（CD15 在考试侧的延伸）。
+
+    v0.5.0 的留底里 4 个 VEVENT 是 2 课程 + 2 考试。0.8.0 把课程 UID 配方升到 v2
+    （payload 去掉 ``course_name``，CD2），那两条课程事件的 UID 必然跟着换。这是规格
+    批准、有声有色的改动，**不是为了让用例变绿而松手**：判据从「全文件字节相等」收成
+    「只有 UID 行可以不同，而且必须恰好是课程那两条」，同时新增一条更硬的钉——
+    **考试事件的 UID 必须与 v0.5.0 一模一样**（考试配方不许被牵连）。
+
+    所以本用例同时拒绝三种越界：
+    ① 课程侧别的东西跟着变（SUMMARY / DTSTART / DTEND / SEQUENCE / VTIMEZONE / 行尾）——
+    任何非 UID 行的差异都在这里红；
+    ② 考试侧 UID 变了——考试配方被顺手改了；
+    ③ 课程 UID 一个都没变——v2 配方根本没生效（那时 :data:`GOLDEN` 与渲染仍全等，
+    单看字节比较反而会绿，所以这条要显式断言）。
+    """
     cfg, semester = lay_out_home(tmp_path)
     assert not cfg.exam_ledger_path(semester).exists()  # 前置：测的就是"升级后第一次渲染"
 
     ics = build_ics_for_semester(cfg, semester).ics
-    assert ics.encode("utf-8") == GOLDEN.read_bytes()
-    # 下面几条紧挨字节比较，是「红了以后一眼看懂红在哪」的前置断言，不参与字节比较（同课程侧）。
+    golden = GOLDEN.read_bytes().decode("utf-8")
+
+    # ① 物理行级比对：留底与渲染同为 CRLF，差异只允许落在 UID 行上。
+    old_lines, new_lines = golden.split("\r\n"), ics.split("\r\n")
+    assert len(old_lines) == len(new_lines), "行数都变了，不是「只换 UID」这一件事"
+    changed = [(a, b) for a, b in zip(old_lines, new_lines, strict=True) if a != b]
+    assert all(a.startswith("UID:") and b.startswith("UID:") for a, b in changed), (
+        f"出现了 UID 行以外的差异（课程侧越界）：{changed}"
+    )
+
+    # ③ + ②：按事件分辨变化的到底是哪一支。
+    old, new = _uids_by_summary(golden), _uids_by_summary(ics)
+    assert [s for s, _ in old] == [s for s, _ in new], "事件顺序或 SUMMARY 变了"
+    exam_old = {u for s, u in old if s.endswith(_EXAM_SUMMARY_SUFFIX)}
+    exam_new = {u for s, u in new if s.endswith(_EXAM_SUMMARY_SUFFIX)}
+    assert exam_old == exam_new, "考试事件的 UID 变了：考试配方不许被牵连"
+    course_old = {u for s, u in old if not s.endswith(_EXAM_SUMMARY_SUFFIX)}
+    course_new = {u for s, u in new if not s.endswith(_EXAM_SUMMARY_SUFFIX)}
+    assert changed, "课程 UID 一个都没变——v2 配方没生效"
+    assert course_old.isdisjoint(course_new), "课程 UID 集合与 v1 有交集：配方没换干净"
+    assert (
+        len(changed)
+        == len(course_old)
+        == len(course_new)
+        == (EXPECTED_TOTAL_EVENTS - EXPECTED_EXAM_EVENTS)
+    )
+    # 全局唯一性：去掉 course_name 后若发生碰撞，这里先红（规格级问题，见 Task 2 简报 Step 5）。
+    assert len({u for _, u in new}) == len(new) == EXPECTED_TOTAL_EVENTS
+
+    # 下面几条是「红了以后一眼看懂红在哪」的前置断言，不参与比对（同课程侧）。
     assert ics.count("BEGIN:VEVENT") == EXPECTED_TOTAL_EVENTS
     assert _exam_event_count(ics) == EXPECTED_EXAM_EVENTS
     assert f"DTSTAMP:{PINNED_STAMP}" in ics

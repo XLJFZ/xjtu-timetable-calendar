@@ -193,40 +193,64 @@ def test_uid_stable_when_course_id_missing() -> None:
     assert make_uid("2026-fall", m, "2026-09-16") == make_uid("2026-fall", m, "2026-09-16")
 
 
-def test_uid_legacy_identity_includes_course_name_for_backward_compatibility(
-    sample_meeting: CourseMeeting,
-) -> None:
-    """**legacy UID compatibility contract**：课程名参与 UID 身份，刻意保留。
+# v0.8.0 起 UID 配方升到 v2（CD2、CD15）：``course_name`` 不再参与身份。
+# 原先守卫 v1 契约的用例
+# ``test_uid_legacy_identity_includes_course_name_for_backward_compatibility``
+# 断言的正是「改名必须换 UID」，与 CD2 直接冲突，已随配方一起撤下；
+# 它的两段论证（v1 payload 形状、迁移必须显式）搬到了
+# :func:`xjtu_calendar.exporter.make_uid` 的 docstring 与
+# ``tests/test_legacy_course_export_golden.py`` 的 v1/v2 比对用例里。
+# 下面两条一正一反，是新的守卫：改名免疫（有课程号）与仍然敏感（无课程号，CD16）。
+def test_uid_v2_ignores_course_rename() -> None:
+    """CD2 的核心卖点：同一 course_id 改名，UID 必须一模一样。"""
+    from xjtu_calendar.exporter import make_uid
+    from xjtu_calendar.models import CourseMeeting
 
-    现状（契约）：``course_id`` 相同、学期/日期/节次相同，仅课程名被修订
-    （例如「大学英语（2）」->「大学英语Ⅱ」，教务系统更正常见）时，
-    ``payload`` 里的 ``course_name`` 不同 -> **UID 不同**。
-
-    这不是「理想设计」，而是**向后兼容的选择**：UID 算法自 v0.1.0 起已随
-    正式版发布，若现在删掉 ``course_name``，即便 ``course_id`` 稳定的课程
-    也会整体换 UID，已导入的用户重新导入时会把整个学期识别成新事件，
-    造成大规模重复。v0.2.0 优先保持向后兼容。
-
-    已知边界（可接受）：同一 ``course_id`` 的课程若被改名，该课程的事件会
-    被视为新事件，而不是原事件的新版本。
-
-    .. note::
-        TODO / design note：未来若引入 **UID v2**，必须设计**显式迁移**
-        （例如一次性 mapping 或新的 UID 命名空间），
-        不要在普通 minor release 中直接改变历史 UID。
-
-    本测试是契约守卫：一旦有人改动 UID 算法，它会立刻变红，
-    强迫改动者正视这次 migration，而不是当作无副作用的细节。
-    """
-    renamed_same_id = CourseMeeting(
-        course_id=sample_meeting.course_id,
-        course_name="示例课程甲（修订名）",
-        weekday=sample_meeting.weekday,
-        periods=sample_meeting.periods,
-        weeks=sample_meeting.weeks,
+    before = CourseMeeting("DEMO-1001", "大学英语（2）", 5, [1, 2], [1, 2, 3])
+    after = CourseMeeting("DEMO-1001", "大学英语Ⅱ", 5, [1, 2], [1, 2, 3])
+    assert make_uid("2026-2027-1", before, "2026-09-11") == make_uid(
+        "2026-2027-1", after, "2026-09-11"
     )
-    base = make_uid("2026-fall", sample_meeting, "2026-09-11")
-    assert base != make_uid("2026-fall", renamed_same_id, "2026-09-11")
+
+
+def test_uid_v2_still_namesensitive_without_course_id() -> None:
+    """CD16：没有 course_id 时 stable_course_key 退回 `name:课程名`，
+    改名**仍**产生新 UID。这条不许被"改名问题已解决"的说法顺手删掉。"""
+    from xjtu_calendar.exporter import make_uid
+    from xjtu_calendar.models import CourseMeeting
+
+    a = CourseMeeting(None, "示例课程甲", 5, [1, 2], [1, 2, 3])
+    b = CourseMeeting(None, "示例课程乙", 5, [1, 2], [1, 2, 3])
+    assert make_uid("2026-2027-1", a, "2026-09-11") != make_uid("2026-2027-1", b, "2026-09-11")
+
+
+def test_uid_collision_between_different_course_names_is_detected(
+    calendar: AcademicCalendar, schedules: ScheduleTable
+) -> None:
+    """v2 配方去掉课程名的代价：同课程号+同星期+同节次、异名的两行撞同一个 UID。
+
+    `collision_sink` 是唯一能看见这次碰撞的出口——去重循环照旧**保留首个、丢弃后者**
+    （产物字节不变），但异名碰撞必须冒出来；同名纯重复导入仍静默去重、不算碰撞。
+    """
+    first = CourseMeeting("DEMO-1001", "分层教学甲班", 5, [1, 2], [1])
+    second = CourseMeeting("DEMO-1001", "分层教学乙班", 5, [1, 2], [1])
+    uid = make_uid("2026-fall", first, "2026-09-11")
+    assert make_uid("2026-fall", second, "2026-09-11") == uid
+
+    sink: set[str] = set()
+    events = build_events([first, second], calendar, schedules, collision_sink=sink)
+    assert sink == {uid}
+    assert len(events) == 1, "行为与今天一致：保留首个、丢弃后者"
+    assert events[0].summary == "分层教学甲班"
+
+    # 对照：纯重复导入（同 UID 同课程名）不算碰撞，sink 保持空。
+    dup_sink: set[str] = set()
+    dup_events = build_events([first, first], calendar, schedules, collision_sink=dup_sink)
+    assert dup_sink == set()
+    assert len(dup_events) == 1
+
+    # 不传出参时行为与旧签名一致（向后兼容看守）。
+    assert len(build_events([first, second], calendar, schedules)) == 1
 
 
 # --------------------------------------------------------------------------- #

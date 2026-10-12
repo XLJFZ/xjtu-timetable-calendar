@@ -1,4 +1,8 @@
-"""G1：把「课程侧字节与接入考试安排之前完全一致」这条承诺从人肉比对变成机器钉。
+"""G1：把「课程侧除了 UID 配方那一处，其余与接入考试安排之前完全一致」这条承诺从人肉比对变成机器钉。
+
+0.8.0 起了两代留底（CD15）：:data:`GOLDEN_V1` 是配方 v1（≤ 0.7.x）时代的产物，
+**只作历史证据**，判据从「字节相等」变成「除 UID 外全等」；:data:`GOLDEN_V2` 是
+当前代码（配方 v2）对同一份 :data:`INPUTS` 的产物，由本文件的逐字节用例钉住。
 
 为什么现有的断言不够
 --------------------
@@ -36,24 +40,35 @@ golden 的确切来历（可复核）
 3. 逐行检查新产物不含真实个人信息（``LOCATION`` / ``DESCRIPTION`` / ``X-WR-CALNAME``
    是真实数据会落进去的三个位置），再连同用例一起提交。
 
+:data:`GOLDEN_V2` 的重新生成只需**当前代码**：同一份 :data:`INPUTS`、同一个
+``snapshot_mtime``（1913025600）钉桩、``include_exams=False``、以 ``newline=""`` 写出，
+再按同样的隐私逐行检查。它不需要旧检出——v2 配方就是现在的配方。
+
 ``icalendar`` / ``tzdata`` 升级可能让这条用例红
 ----------------------------------------------
 ``pyproject.toml`` 的约束是 ``icalendar>=6.1.0``（无上界），CI 又是 ``pip install -e .[dev]``
 而不带 lockfile，所以依赖升级后 VTIMEZONE 块可能整体变化。那**不是**课程侧回归：红了先按
 上面的流程用旧代码重跑一次，比对「只有 VTIMEZONE 变了」还是「VEVENT 也变了」，再决定是
-重新生成 golden 还是修代码。本文件第一条用例的字节断言在最前面，就是为了不放过任一种。
+重新生成 golden 还是修代码。:func:`test_default_path_without_exam_snapshot_keeps_course_bytes`
+的字节断言在最前面，就是为了不放过任一种。
 
 可伪性
 ------
 给 :func:`xjtu_calendar.exporter.make_uid` 的 ``payload`` 追加任一字段（例如
-``str(meeting.weekday)``），或改 ``SUMMARY`` 的拼装（例如加一个后缀），本文件前两条用例
-立即红；第三条 :func:`test_course_side_rendering_is_reproducible` 反而会**保持绿**——它比的是
-同一段代码连跑两次的自洽性，专门用来区分「产物里有挂钟」与「产物与接入前不同」这两件事。
+``str(meeting.weekday)``），或改 ``SUMMARY`` 的拼装（例如加一个后缀），
+:func:`test_default_path_without_exam_snapshot_keeps_course_bytes` 那条**逐字节**用例立即红
+（它拿当前渲染比 v2 留底，v2 留底只能由 v2 配方产出）。
+:func:`test_v2_golden_matches_v1_except_uids` 比的是两份留底，所以它红在「两代之间越了界」
+这一类问题上——例如有人重生成 v2 留底时顺手让 SUMMARY 也跟着变了。
+第三条 :func:`test_course_side_rendering_is_reproducible` 反而会**保持绿**——它比的是
+同一段代码连跑两次的自洽性，专门用来区分「产物里有挂钟」与「产物与留底不同」这两件事。
 
 行尾：这条用例依赖 ``.gitattributes`` 的 ``tests/fixtures/*.ics -text``
 --------------------------------------------------------------------
 本仓库全局是 ``* text=auto eol=lf``，而 .ics 按 RFC 5545 是 CRLF。若那条例外被删掉，
-固件一进仓库就压成 LF，前两条字节用例会红成一场 2000 行的差异，看上去像课程侧回归。
+固件一进仓库就压成 LF，逐字节那条用例（:func:`test_default_path_without_exam_snapshot_keeps_course_bytes`）
+会红成一场 2000 行的差异，看上去像课程侧回归；两份留底（v1、v2）同属
+``tests/fixtures/*.ics``，一起受这条规则保护。
 :func:`test_golden_fixture_keeps_its_crlf_bytes` 先在那之前把原因说清楚。
 """
 
@@ -63,12 +78,21 @@ import json
 import os
 from pathlib import Path
 
+from icalendar import Calendar
+
 from xjtu_calendar.config import Settings
 from xjtu_calendar.exporter import build_ics_for_semester
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 INPUTS = FIXTURES / "legacy_course_inputs.json"
 GOLDEN = FIXTURES / "legacy_course_export.ics"
+
+#: 配方 v1（≤ 0.7.x）的留底，与上面的 :data:`GOLDEN` 同一份文件，改名只为把两代说清楚。
+#: 它**不再由当前代码产出**，作为历史证据保留（CD15）。
+GOLDEN_V1 = GOLDEN
+
+#: 配方 v2（0.8.0）的留底，由**当前代码**对同一份 :data:`INPUTS` 渲染而成。
+GOLDEN_V2 = FIXTURES / "legacy_course_export_v2.ics"
 
 #: 钉住的快照 mtime（UTC epoch 秒）换算出来的 DTSTAMP / LAST-MODIFIED 文本。
 #: 单独断言它，是为了让「golden 红了」和「mtime 推导变了」在失败信息里分得开。
@@ -101,23 +125,47 @@ def lay_out_home(tmp_path: Path) -> tuple[Settings, str]:
     return cfg, semester
 
 
-def test_course_side_bytes_equal_pre_feature_export(tmp_path: Path) -> None:
-    """课程侧产物逐字节等于接入前的产物（``include_exams=False`` 口径）。"""
-    cfg, semester = lay_out_home(tmp_path)
-    ics = build_ics_for_semester(cfg, semester, include_exams=False).ics
+def test_v2_golden_matches_v1_except_uids() -> None:
+    """v1 golden 的作用从"字节相等"降级为"除 UID 外全等"——这是规格批准的变更（CD15）。
 
-    assert ics.encode("utf-8") == GOLDEN.read_bytes()
-    # 下面两条是「红了以后一眼看懂红在哪」的前置断言，不参与字节比较。
-    assert ics.count("BEGIN:VEVENT") == EXPECTED_COURSE_EVENTS
-    assert f"DTSTAMP:{PINNED_STAMP}" in ics
+    原用例守的是「课程侧不许被无声改坏」。UID v2 是一次**有声**的、经规格批准的改动，
+    所以字节相等不再是判据；但"除 UID 之外一切不变"必须钉住：事件数、SUMMARY、
+    DTSTART/DTEND、SEQUENCE 任何一项跟着变，都是越界。本用例按 VEVENT 逐字段比对，
+    **不**直接断言 VTIMEZONE 与 X-WR-CALNAME——这两块跨代际的守卫在逐字节那条
+    (:func:`test_default_path_without_exam_snapshot_keeps_course_bytes`)：它拿当前渲染
+    比 v2 留底的整体字节，日历头与时区块的任何漂移都会先在那里红。
+
+    这不是「为了让测试变绿而松手」：本文件另有一条**逐字节**用例
+    (:func:`test_default_path_without_exam_snapshot_keeps_course_bytes`) 拿当前代码的
+    渲染结果去比 v2 留底，配方若被改成第五项、或渲染里漏进挂钟，那条先红。
+    """
+    v1 = Calendar.from_ical(GOLDEN_V1.read_bytes())
+    v2 = Calendar.from_ical(GOLDEN_V2.read_bytes())
+    ev1, ev2 = list(v1.walk("VEVENT")), list(v2.walk("VEVENT"))
+    assert len(ev1) == len(ev2)
+    # 前置断言（不参与逐字段比对）：留底不许空转，两代的 DTSTAMP 必须同源同值。
+    assert len(ev1) == EXPECTED_COURSE_EVENTS, "golden 里一个课程事件都没有：等于没钉"
+    assert f"DTSTAMP:{PINNED_STAMP}" in GOLDEN_V1.read_text(encoding="utf-8")
+    assert f"DTSTAMP:{PINNED_STAMP}" in GOLDEN_V2.read_text(encoding="utf-8")
+    for a, b in zip(ev1, ev2, strict=True):
+        assert a["SUMMARY"] == b["SUMMARY"]
+        assert a["DTSTART"].dt == b["DTSTART"].dt
+        assert a["DTEND"].dt == b["DTEND"].dt
+        assert a["SEQUENCE"] == b["SEQUENCE"]
+        assert a["UID"] != b["UID"], "UID 没变说明配方没换"
 
 
 def test_default_path_without_exam_snapshot_keeps_course_bytes(tmp_path: Path) -> None:
-    """没抓过考试时，**默认口径**（``include_exams=True``）的字节也必须与接入前一致。
+    """没抓过考试时，**默认口径**（``include_exams=True``）的字节必须与 v2 留底逐字节相等。
 
     课程侧的承诺面向真实用户，而真实用户第一次 export 时本地就没有考试快照：
     降级分支（``TimetableFetchError`` → 只记一条 INFO）必须一个字节都不动。
     只在 ``include_exams=False`` 上断言的话，这条分支就漏在钉子外面。
+
+    基准从 v1 留底换成 v2 留底（:data:`GOLDEN_V2`）不是削弱判据：0.8.0 起课程 UID
+    配方升到 v2，当前代码产出的 UID 就是 v2 的，拿 v1 留底比字节永远不会绿（CD15）。
+    这条仍是**逐字节**比较，所以它同时是「v2 留底确实由当前代码产出」的来历钉——
+    上面那条结构用例只比两份留底、不比渲染，缺的就是这一条。
 
     与上面那条同理由，``test_exam_snapshot_lag_days`` 那套「考试滞后提示」也不许动字节：
     滞后块在 ``cmd_export`` 里，只打日志，不回到渲染管线（本用例直接调
@@ -127,7 +175,11 @@ def test_default_path_without_exam_snapshot_keeps_course_bytes(tmp_path: Path) -
     cfg, semester = lay_out_home(tmp_path)
     assert not cfg.raw_exams_path(semester).exists()  # 前置：本用例测的就是「没有考试」
 
-    assert build_ics_for_semester(cfg, semester).ics.encode("utf-8") == GOLDEN.read_bytes()
+    ics = build_ics_for_semester(cfg, semester).ics
+    assert ics.encode("utf-8") == GOLDEN_V2.read_bytes()
+    # 下面两条是「红了以后一眼看懂红在哪」的前置断言，不参与字节比较。
+    assert ics.count("BEGIN:VEVENT") == EXPECTED_COURSE_EVENTS
+    assert f"DTSTAMP:{PINNED_STAMP}" in ics
 
 
 def test_course_side_rendering_is_reproducible(tmp_path: Path) -> None:
@@ -136,7 +188,7 @@ def test_course_side_rendering_is_reproducible(tmp_path: Path) -> None:
     这条是 golden 用例成立的前提，也是它自己的钉：`DTSTAMP` 走快照 mtime
     （见 :func:`xjtu_calendar.exporter._stamp_from_snapshot` 的说明），若将来有人
     把 ``now_local()`` 之类塞回渲染路径，两次跑就会分叉，本用例先红，
-    而不会让上面两条以「golden 莫名其妙变了」的形式红。
+    而不会让上面那条逐字节用例以「golden 莫名其妙变了」的形式红。
     """
     cfg, semester = lay_out_home(tmp_path)
     first = build_ics_for_semester(cfg, semester, include_exams=False).ics
@@ -147,8 +199,9 @@ def test_course_side_rendering_is_reproducible(tmp_path: Path) -> None:
 def test_golden_fixture_keeps_its_crlf_bytes() -> None:
     """golden 固件在**仓库里**仍是 CRLF：`.gitattributes` 的免归一化规则不许被删。
 
-    本仓库的全局行尾契约是 ``* text=auto eol=lf``，而 RFC 5545 要求 CRLF。上面两条
-    字节用例比的是「渲染字符串」与「固件字节」，一旦 Git 把固件压成 LF，两边就永远
+    本仓库的全局行尾契约是 ``* text=auto eol=lf``，而 RFC 5545 要求 CRLF。上面那条
+    逐字节用例 (:func:`test_default_path_without_exam_snapshot_keeps_course_bytes`)
+    比的是「渲染字符串」与「固件字节」，一旦 Git 把固件压成 LF，两边就永远
     对不上——而且是新克隆、CI、本机工作树**同时**红，红成一个 2000 行的字节差异，
     看上去像课程侧回归，实际只是行尾被"顺手转换"了。
 

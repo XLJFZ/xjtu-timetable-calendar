@@ -30,12 +30,14 @@ import subprocess
 import sys
 import urllib.error
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import __version__
 from .academic_calendar import AcademicCalendar
+from .cancellation import CANCELLATION_SUMMARY
 from .config import Settings
 from .errors import (
     AuthenticationExpired,
@@ -47,14 +49,13 @@ from .errors import (
     TimetableFetchError,
     XjtuCalendarError,
 )
-from .exporter import build_ics_for_semester
+from .exporter import UID_RECIPE_VERSION, ExportResult, MigrationSummary, build_ics_for_semester
 from .fileutil import atomic_write_text
 from .logging_setup import get_logger, setup_logging
 
 if TYPE_CHECKING:
     # cmd_subscribe 各分支内部惰性 `from . import subscribe`；这里只为类型标注。
     from . import subscribe
-    from .exporter import ExportResult
     from .fetcher import Endpoint
 
 __all__ = ["build_parser", "main"]
@@ -146,6 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="不并入考试安排（默认并入；本地快照不删）",
     )
+    export.add_argument(
+        "--allow-mass-cancellation",
+        action="store_true",
+        help="课程侧撤销规模触发门 2 熔断时仍强行发布（默认拒绝——疑似课表没抓全时"
+        "会拒绝发布并退出码 6；先确认课表真的少了一批课，再带此旗标重跑）",
+    )
 
     # --- notice ---
     notice = sub.add_parser(
@@ -212,12 +219,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="不并入考试安排（默认并入；本地快照不删）",
     )
+    push_p.add_argument(
+        "--allow-mass-cancellation",
+        action="store_true",
+        help="课程侧撤销规模触发门 2 熔断时仍强行发布（默认拒绝——疑似课表没抓全时"
+        "会拒绝发布并退出码 6；先确认课表真的少了一批课，再带此旗标重跑）",
+    )
     rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
     rot_p.add_argument("--semester")
     rot_p.add_argument(
         "--no-exams",
         action="store_true",
         help="不并入考试安排（默认并入；本地快照不删）",
+    )
+    rot_p.add_argument(
+        "--allow-mass-cancellation",
+        action="store_true",
+        help="课程侧撤销规模触发门 2 熔断时仍强行发布（默认拒绝——疑似课表没抓全时"
+        "会拒绝发布并退出码 6；与 push 同一判据、同一旗标）",
     )
     st_p = sact.add_parser("status", help="查看订阅状态、URL 与新鲜度")
     st_p.add_argument("--semester")
@@ -297,6 +316,7 @@ _DOCTOR_LABELS = {
     "exam_snapshot": "考试快照",
     "render": "渲染",
     "subscription": "订阅",
+    "uid_recipe": "UID 配方与迁移",
     "url": "URL 自检",
 }
 
@@ -556,6 +576,12 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
         baseline_probe=args.output,
         no_sequence=args.no_sequence,
         include_exams=not args.no_exams,
+        # CD4/§6.6：export 与订阅路径**同一判据同一心智**——熔断在构建内部抛出
+        # `MassCancellationBlocked`（退出码 6），沿 `main()` 的异常出口变成退出码；
+        # 产物与台账都在 `build_ics_for_semester` 返回之后才写，异常时一行都没落盘。
+        # CD3：刻意**不传** `published_baseline_text`——迁移与 export 无关，
+        # 手工导入的人把几百条撤销当新事件导进去更糟（§7「export 路径」行）。
+        allow_mass_cancellation=args.allow_mass_cancellation,
     )
 
     # §7:382-386 陈旧口径：考试快照 vs **同学期课表快照**（不是"距今多少天"）。
@@ -595,6 +621,13 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     # 影响 export 的退出码——课程是主功能。
     if result.exam_ledger_text is not None:
         _write_exam_ledger(cfg, semester, result.exam_ledger_text)
+
+    # 课程台账（CD8/§7「export 路径」行）：与考试台账**同一时机**——产物落地之后才回写，
+    # 写失败只 warning 不改退出码。export 只写台账这一份证据：它**不读也不写**
+    # `uid_recipe` 标记、不发迁移撤销（CD3），标记的回写只属于 publish 成功的
+    # push/rotate 路径（CD7）。
+    if result.course_ledger_text is not None:
+        _write_course_ledger(cfg, semester, result.course_ledger_text)
 
     # --- 汇总 ---
     info = result.info
@@ -675,6 +708,43 @@ def _write_exam_ledger(cfg: Settings, semester: str, text: str) -> None:
         logger.warning("考试台账没能写入 %s（%s），下次仍按原台账判断撤销", path, exc)
         return
     logger.debug("考试台账已更新：%s", path)
+
+
+def _write_course_ledger(cfg: Settings, semester: str, text: str) -> None:
+    """回写课程台账（CD8 的第二份台账，与考试侧同等待遇）；失败只记 warning。
+
+    措辞与时机逐字对齐 :func:`_write_exam_ledger`：`private=True` 原子写、写之前自己
+    `mkdir`（`ensure_dirs` 不建 `subscribe/`，D24①）、`OSError` 只降级为告警而不许改
+    调用方的退出码。**永不**打印台账内容（§8）。
+    """
+    path = cfg.course_ledger_path(semester)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(path, text, private=True)
+    except OSError as exc:
+        logger.warning("课程台账没能写入 %s（%s），下次仍按原台账判断撤销", path, exc)
+        return
+    logger.debug("课程台账已更新：%s", path)
+
+
+def _print_migration_notice(summary: MigrationSummary) -> None:
+    """v1→v2 迁移那一次的预告（CD11「自动但不静默」）——只在发布之前调用。
+
+    迁移是配方切换、天然整学期量级，所以它**豁免**门 2 的熔断；换来的代价是必须在这里
+    把规模说清楚，不许悄悄把几百条撤销塞进订阅者的日历。措辞的两条硬约束：
+    ①「这是升级到 v0.8 的预期行为、不需要额外操作」（否则用户会以为出了故障）；
+    ② 客户端删除行为仍写「通常会」——整学期规模的残条**没有在真机上演练过**（CD6/§11，
+    演练是发版前的独立一步），只有考试侧那一次单独读数（Google 网页版会移除）可以点名。
+    只报数量与占比，绝不带课程名（§8）。
+    """
+    print(
+        f"提示：检测到上次发布使用 v1 UID 配方，本次将一次性撤销 {summary.candidates} 条"
+        "旧事件并按新配方原地重建——这是升级到 v0.8 的预期行为，不需要额外操作。\n"
+        "  会回源的订阅客户端通常会随之移除旧事件（Google 网页版已实测）；"
+        "忽略该字段的客户端（Outlook.com、ColorOS）会留下一批"
+        f"「{CANCELLATION_SUMMARY}」占位，直到原定时刻过去——"
+        "整学期规模的残条在真机上尚未演练，退订再重新添加是唯一确定有效的清理手段。"
+    )
 
 
 def _print_publish_cancellation_summary(result_ics: ExportResult) -> None:
@@ -1289,7 +1359,15 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
     if args.action == "push":
         return _subscribe_push(args, cfg, state, semester)
     if args.action == "rotate":
-        return _subscribe_rotate(cfg, state, semester, include_exams=not args.no_exams)
+        return _subscribe_rotate(
+            cfg,
+            state,
+            semester,
+            include_exams=not args.no_exams,
+            # Task 9 已在 rot_p 上声明该旗标；`getattr` 保留为对直接调用方的兜底，缺省即 False
+            # （门 2 默认收紧）。
+            allow_mass_cancellation=getattr(args, "allow_mass_cancellation", False),
+        )
     return _subscribe_status(args, cfg, state, semester)
 
 
@@ -1347,13 +1425,24 @@ def _subscribe_push(
             f"确认可接受全新订阅的话，删除 {subscribe.state_path(cfg, semester)} "
             "后重新 subscribe init。",
         )
+    # 迁移判据只有一处：状态文件里 `uid_recipe` 是否缺失（CD7）。留底文本是候选的唯一
+    # 来源（v1 配方代码已删除，CD15 ⇒ 不重算旧 UID，只从上次发布的产物里读）。
+    migrating = subscribe.needs_uid_migration(state)
+    baseline_text = last_local.read_text(encoding="utf-8") if last_local.is_file() else None
     result_ics = build_ics_for_semester(
         cfg,
         semester,
         input_path=getattr(args, "input", None),
         baseline_probe=str(last_local) if last_local.is_file() else None,
         include_exams=not args.no_exams,
+        published_baseline_text=baseline_text if migrating else None,
+        allow_mass_cancellation=getattr(args, "allow_mass_cancellation", False),
     )
+    # 自动但不静默（CD11）：迁移豁免门 2，但规模必须在这一刻、**发布之前**说清楚。
+    # `published_baseline_text` 只有 push 会传（CD3）：`export` 的产物是手工导入的，
+    # 把几百条撤销交给一个永不回源的客户端比不迁移更糟。
+    if result_ics.migration_summary:
+        _print_migration_notice(result_ics.migration_summary)
     res = subscribe.publish(cfg, state, result_ics.ics)
     if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
         print("无变化，跳过推送。")
@@ -1366,22 +1455,41 @@ def _subscribe_push(
     # 写失败只 warning（D24①），不改 push 的退出码。
     if result_ics.exam_ledger_text is not None:
         _write_exam_ledger(cfg, semester, result_ics.exam_ledger_text)
+    if result_ics.course_ledger_text is not None:
+        _write_course_ledger(cfg, semester, result_ics.course_ledger_text)
+    # 迁移标记是这一串回写的**最后一步**（CD7/§5 不变量 3）：发出去才算迁移过。
+    # 判据只看状态文件（不猜 UID），所以「没有留底 ⇒ 没有旧 UID 可撤」的第一次成功发布
+    # 也要写上标记（§7：直接 `uid_recipe: 2`、无撤销），否则下次 push 还会重走迁移分支。
+    if migrating:
+        subscribe.save_state(cfg, replace(state, uid_recipe=UID_RECIPE_VERSION))
     print(f"已发布：{res.url}")
     _print_publish_cancellation_summary(result_ics)
     return 0
 
 
 def _subscribe_rotate(
-    cfg: Settings, state: subscribe.SubscriptionState, semester: str, *, include_exams: bool = True
+    cfg: Settings,
+    state: subscribe.SubscriptionState,
+    semester: str,
+    *,
+    include_exams: bool = True,
+    allow_mass_cancellation: bool = False,
 ) -> int:
     """换 token 并在有本地留底时重新发布。
 
     ``include_exams``：与 push 同口径透传给构建管线（spec §6.7）。rotate 若不接
     ``--no-exams``，用户明确关掉的考试会被悄悄塞回订阅 URL——正是本参数要防的缺陷。
 
+    ``allow_mass_cancellation``：门 2（CD12）的显式放行旗标，与 push 同义（换 token 后
+    的补发同样要撤课程事件，保险丝没有理由在这里松开）。
+
     行为（spec D12 / §6.8）：换 token **之前**先跑一次探针渲染，有已发布却尚未撤销的
     考试时打印警告；探针只算不写（台账文本一律丢弃），且与随后的真实渲染读**同一份**
     SEQUENCE 基线，所以警告条数就等于真正发出去的撤销条数。
+
+    v1→v2 迁移（CD7/CD11）：判据同样只看状态文件，预告走**同一条探针**——探针要拿到
+    与真实渲染一样的留底文本，报出的 N 才等于补发真正带出去的条数（D24 的"警告=实发"）；
+    "不产生迁移副作用"靠**丢弃探针返回的台账文本与不回写标记**来保证，而不是靠少传参数。
     """
     from . import subscribe
 
@@ -1394,6 +1502,8 @@ def _subscribe_rotate(
     # 真实渲染却把这 N 条全判成 D20 `unresolvable`——一条不发、还当场把它们永久移出台账，
     # 报给用户的与实际发生的正相反（虚报只朝"多报"这一侧偏）。
     last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
+    migrating = subscribe.needs_uid_migration(state)
+    baseline_text = last_local.read_text(encoding="utf-8") if last_local.is_file() else None
     # rotate 会换新 token = 换订阅 URL，旧地址此后永远收不到撤销（spec D12）。
     # 这里是**探针渲染**：只取撤销数量，返回的台账文本必须丢弃（D24②——此刻产物
     # 还没发布出去，落台账等于"假装撤销过"）。try **只罩探针**：撤销警告是增量，
@@ -1402,14 +1512,18 @@ def _subscribe_rotate(
     # spec §8），不许拖崩 rotate 主功能；换 token 之后的真实渲染在下面的另一个 try 里，
     # 其异常不受这一块影响（fail-closed 路径照旧）。
     probe_cancel = 0
+    probe_migration: MigrationSummary | None = None
     try:
         probe = build_ics_for_semester(
             cfg,
             semester,
             baseline_probe=str(last_local) if last_local.is_file() else None,
             include_exams=include_exams,
+            published_baseline_text=baseline_text if migrating else None,
+            allow_mass_cancellation=allow_mass_cancellation,
         )
         probe_cancel = int(str(probe.info.get("exam_cancellations", 0)))
+        probe_migration = probe.migration_summary
     except (XjtuCalendarError, ValueError, TypeError) as exc:
         probe_cancel = 0
         logger.warning(
@@ -1425,6 +1539,11 @@ def _subscribe_rotate(
             f"注意：本次有 {probe_cancel} 条考试事件尚未从旧订阅地址撤销，"
             "rotate 后旧地址将永远收不到撤销。"
         )
+    # 迁移预告同样**早于换 token**（D24「先警告再换」的形状，CD11「自动但不静默」）：
+    # 换完才说，用户面对的是一个已经改了地址、还可能没补发成功的订阅。条数取自探针，
+    # 与下面补发真正带出去的规模同源。
+    if probe_migration:
+        _print_migration_notice(probe_migration)
     subscribe.rotate_token(cfg, state)
     print(f"新订阅 URL：{state.subscription_url}（补发成功前旧 URL 仍可读取）")
     print(f"旧 token（{old[:4]}…）在本次补发成功后失效，请更新所有日历客户端的订阅地址。")
@@ -1440,7 +1559,12 @@ def _subscribe_rotate(
         return 0
     try:
         result_ics = build_ics_for_semester(
-            cfg, semester, baseline_probe=str(last_local), include_exams=include_exams
+            cfg,
+            semester,
+            baseline_probe=str(last_local),
+            include_exams=include_exams,
+            published_baseline_text=baseline_text if migrating else None,
+            allow_mass_cancellation=allow_mass_cancellation,
         )
         subscribe.publish(cfg, state, result_ics.ics)
     except XjtuCalendarError as exc:
@@ -1461,6 +1585,11 @@ def _subscribe_rotate(
     # 写失败只 warning（D24①），不改 rotate 的退出码。
     if result_ics.exam_ledger_text is not None:
         _write_exam_ledger(cfg, semester, result_ics.exam_ledger_text)
+    if result_ics.course_ledger_text is not None:
+        _write_course_ledger(cfg, semester, result_ics.course_ledger_text)
+    # 标记的回写与 push 同一条铁律：补发成功才算迁移过（CD7/§5 不变量 3）。
+    if migrating:
+        subscribe.save_state(cfg, replace(state, uid_recipe=UID_RECIPE_VERSION))
     print("已用新文件名重新发布。")
     # 与 push 同口径的撤销摘要（评审统一口径：两条发布路径报数一致）；同样只在
     # publish 成功之后打印（D11），`N == 0` 时整行不打印。

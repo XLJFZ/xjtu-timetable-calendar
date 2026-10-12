@@ -177,7 +177,7 @@ footer{border-top:1px solid var(--line);background:#fff;margin-top:2rem}
   <div class="grid">
     <div class="feature"><div class="ico">🕐</div><h3>钟点不属于课表事实</h3><p>课程只存「星期 + 节次 + 教学周」。<code class="inline-code">08:00</code> 这类钟点由当天生效的作息表在导出时现算——学期中途换季，数据模型毫发无损。</p></div>
     <div class="feature"><div class="ico">🧩</div><h3>不用一条 RRULE 糊弄一学期</h3><p>重复规则只携带第一个钟点，作息一换整条都错。本项目为每一次实际上课生成独立 VEVENT，几百个事件对现代日历毫无负担，换来逻辑可靠。</p></div>
-    <div class="feature"><div class="ico">🔁</div><h3>UID 稳定 + SEQUENCE 版本</h3><p>反复导出同一节课得到同一 UID；内容变了就递增 SEQUENCE——重新导入时日历客户端知道该「原地更新」，而不是无视或翻倍。</p></div>
+    <div class="feature"><div class="ico">🔁</div><h3>UID 稳定 + SEQUENCE 版本</h3><p>反复导出同一节课得到同一 UID；内容变了就递增 SEQUENCE——重新导入时日历客户端知道该「原地更新」，而不是无视或翻倍。v0.8 起课程名不再参与 UID 身份，改课名同样原地更新（<code class="inline-code">course_id</code> 缺失的行除外）。</p></div>
     <div class="feature"><div class="ico">🛡</div><h3>绝不静默缺课</h3><p>周次越界报错、解析不了的行拒绝写盘、无法表达的调课默认终止导出。宁可当场失败，也不给你一份「看起来正常、实则少课」的日历。</p></div>
   </div>
 
@@ -310,8 +310,12 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     所以「知道 URL 才能读」这层保护在公开仓库上<strong>并不成立</strong>——转发 URL 等于授权，任何能浏览该仓库的人都能读到你的课表；
     ③ 含考试发布时，考试名称、时间、考场以及 <code class="inline-code">DESCRIPTION</code> 里的座位号会进入那份公开产物，
     不愿意公开就用 <code class="inline-code">--no-exams</code>；
-    ④ 课程改名会表现为<strong>新事件</strong>（UID 配方含课程名，是 v0.1.x 起冻结的兼容契约），
-    订阅端与手工导入的表现一致；
+    ④ <strong>课程 UID 已升到 v2（0.8.0）</strong>：课程名不再参与身份，改课名走原地更新
+    （<code class="inline-code">course_id</code> 缺失的行除外）；真退课会以
+    <code class="inline-code">STATUS:CANCELLED</code> 下发。<strong>升级到 v2 的那一次迁移只在
+    <code class="inline-code">subscribe push</code> 自动发生</strong>（手工 <code class="inline-code">export</code> 导入者需删旧日历重导一次），
+    忽略取消字段的客户端（Outlook.com / ColorOS）通常会看到一次整学期「已取消的活动」——真机表现尚未演练，
+    退订重加是唯一确定有效的清理；回滚不免费（退回 0.7.x 会双份）。详见 README「升级到 v0.8」；
     ⑤ 发布分支永远是「无父孤儿单提交 + 强推」，课表旧版本不进 git 历史。
   </div>
 </section>

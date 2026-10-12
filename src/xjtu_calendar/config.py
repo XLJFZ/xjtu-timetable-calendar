@@ -175,6 +175,16 @@ class Settings:
         """
         return self.subscribe_dir / f"last-exams-{semester_key}.ics"
 
+    def course_ledger_path(self, semester_key: str) -> Path:
+        """课程台账：曾以 live 形态发布过、原定时刻还没过去的课程事件账本。
+
+        与考试台账**必须分开**（CD8）：两者 UID 同域同形状（`sha256[:32]@domain`），
+        从串上分不出彼此——拿发布留底当课程 live 集时，带 `--no-exams` 的那次发布
+        会让留底里的考试 UID 看起来"全消失了"。含课程名/教师/教室，**永不发布**、
+        只留本地、写盘 `private=True`。目录不在 `ensure_dirs()` 里创建，写入点自己 mkdir。
+        """
+        return self.subscribe_dir / f"last-courses-{semester_key}.ics"
+
 
 def find_browser() -> str | None:
     """自动探测可用的 Chromium 系浏览器。

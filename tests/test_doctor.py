@@ -73,7 +73,9 @@ def test_every_check_name_appears_once(tmp_path: Path) -> None:
         "exam_snapshot",
         "render",
         "subscription",
+        "uid_recipe",
     ]
+    assert names.count("uid_recipe") == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -268,3 +270,119 @@ class _FakeState:
     subscription_url = "https://example.invalid/cal.ics"
     token = "t"
     last_push = None
+
+
+# --------------------------------------------------------------------------- #
+# Task 10（CD18）：UID 配方与迁移状态——警告级，永不阻塞，输出过隐私 grep
+# --------------------------------------------------------------------------- #
+
+
+def _uid_state(uid_recipe: int | None):
+    from xjtu_calendar.subscribe import SubscriptionState
+
+    return SubscriptionState(
+        semester=SEMESTER,
+        repo_url="https://example.invalid/r.git",
+        branch="cal",
+        token="t" * 32,
+        url_base="https://example.invalid/cal",
+        uid_recipe=uid_recipe,
+    )
+
+
+def _write_course_ledger(cfg: Settings) -> None:
+    """落一份**真实渲染出来的**课程台账（含课程名/教师/教室），供隐私断言使用。"""
+    from xjtu_calendar.exporter import build_ics_for_semester
+
+    ledger = cfg.course_ledger_path(SEMESTER)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    text = build_ics_for_semester(cfg, SEMESTER).course_ledger_text
+    assert text is not None
+    ledger.write_text(text, encoding="utf-8", newline="")
+
+
+def test_doctor_warns_when_migration_pending(tmp_path: Path) -> None:
+    import xjtu_calendar.doctor as doctor_module
+
+    cfg = make_home(tmp_path)
+    got = doctor_module._check_uid_recipe(cfg, SEMESTER, _uid_state(None))
+    assert got.status == STATUS_WARN and "迁移" in got.detail
+    assert got.name == "uid_recipe"
+
+
+def test_doctor_ok_after_migration(tmp_path: Path) -> None:
+    import xjtu_calendar.doctor as doctor_module
+    from xjtu_calendar.exporter import UID_RECIPE_VERSION
+
+    cfg = make_home(tmp_path)
+    got = doctor_module._check_uid_recipe(cfg, SEMESTER, _uid_state(UID_RECIPE_VERSION))
+    assert got.status == STATUS_OK
+    assert str(UID_RECIPE_VERSION) in got.detail
+
+
+def test_doctor_ok_when_no_subscription(tmp_path: Path) -> None:
+    """没配订阅就没有迁移可言——这一项对全新用户是 OK，不是警告。"""
+    import xjtu_calendar.doctor as doctor_module
+
+    cfg = make_home(tmp_path)
+    got = doctor_module._check_uid_recipe(cfg, SEMESTER, None)
+    assert got.status == STATUS_OK
+    assert "未配置订阅" in got.detail
+
+
+def test_doctor_warns_when_unsubscribed_ledger_unreadable(tmp_path: Path) -> None:
+    """未订阅 + 课程台账存在但读不出 ⇒ WARN 并带上异常类名（终审 minor d）。
+
+    旧早退把刚算出的 `read_error` 丢掉、对未订阅用户报成 OK——坏台账是真实的可用性
+    信号，不许被"没有迁移可言"顺手掩掉；同时保持这一项**永不 FAIL**。
+    """
+    import xjtu_calendar.doctor as doctor_module
+
+    cfg = make_home(tmp_path)
+    ledger = cfg.course_ledger_path(SEMESTER)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"\xff\xfe not utf-8")
+
+    got = doctor_module._check_uid_recipe(cfg, SEMESTER, None)
+    assert got.status == STATUS_WARN
+    assert got.name == "uid_recipe"
+    assert "课程台账暂不可读（UnicodeDecodeError）" in got.detail
+    assert doctor_exit_code([got]) == 0, "这一项永不阻塞"
+
+
+def test_doctor_message_carries_no_personal_data(tmp_path: Path) -> None:
+    """输出要过隐私 grep：无课程名/教师/教室/token/订阅 URL（规格 §8）。
+
+    台账里躺着实打实的「示例课程甲」「教师甲」「A-1001」，三个分支的文案都只许报数。
+    """
+    import xjtu_calendar.doctor as doctor_module
+    from xjtu_calendar.exporter import UID_RECIPE_VERSION
+
+    cfg = make_home(tmp_path)
+    _write_course_ledger(cfg)
+    for state in (None, _uid_state(None), _uid_state(UID_RECIPE_VERSION)):
+        got = doctor_module._check_uid_recipe(cfg, SEMESTER, state)
+        for forbidden in ("示例课程", "教师", "A-1001", "t" * 32, "http", "@"):
+            assert forbidden not in got.detail
+    # 计数的确来自台账（不是恒 0 的假绿）。
+    got = doctor_module._check_uid_recipe(cfg, SEMESTER, _uid_state(None))
+    assert "2 条" in got.detail
+
+
+def test_doctor_uid_recipe_never_blocks_even_with_unreadable_ledger(
+    tmp_path: Path,
+) -> None:
+    """坏台账只少一个计数：本项**永不 FAIL**，退出码 0/5 契约不因它改变（约束 3/CD18）。"""
+    from xjtu_calendar import subscribe
+    from xjtu_calendar.exporter import UID_RECIPE_VERSION
+
+    cfg = make_home(tmp_path)
+    _write_session(cfg)
+    subscribe.save_state(cfg, _uid_state(UID_RECIPE_VERSION))
+    ledger = cfg.course_ledger_path(SEMESTER)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"\xff\xfe not utf-8")
+
+    got = by_name(run_checks(cfg, SEMESTER))["uid_recipe"]
+    assert got.status == STATUS_WARN, "读不出台账降级为警告，不升级为阻塞项"
+    assert doctor_exit_code(run_checks(cfg, SEMESTER)) == 0

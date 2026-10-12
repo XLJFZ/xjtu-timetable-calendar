@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, MutableSet, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -28,6 +28,7 @@ from .academic_calendar import AcademicCalendar
 from .config import Settings
 from .errors import (
     CalendarExportError,
+    MassCancellationBlocked,
     ScheduleNotConfigured,
     SemesterNotConfigured,
     TimetableFetchError,
@@ -50,6 +51,7 @@ if TYPE_CHECKING:  # 仅为注解：exams.py 顶层 import exporter，运行时�
 __all__ = [
     "PRODID",
     "ExportResult",
+    "MigrationSummary",
     "build_events",
     "build_ics_for_semester",
     "collect_unsupported",
@@ -72,12 +74,31 @@ UID_DOMAIN = "xjtu-timetable-calendar"
 _WEEKDAY_NAMES = ("一", "二", "三", "四", "五", "六", "日")
 
 
+#: 课程 UID 的配方版本。v2（0.8.0）去掉了 `course_name`；v1 的形状只保留在文档里，
+#: 代码不再能产出它——迁移读的是发布留底，不需要重算旧 UID（CD15）。
+#: `subscribe` 状态文件的 `uid_recipe` 字段与 `doctor` 都读这个常量，别写第二处字面量。
+UID_RECIPE_VERSION = 2
+
+
 def make_uid(
     semester_key: str,
     meeting: CourseMeeting,
     day: str,
 ) -> str:
-    """为「某学期、某课程的某一次实际上课」生成稳定 UID。
+    """为「某学期、某课程的某一次实际上课」生成稳定 UID（配方 v2）。
+
+    payload = ``semester_key | stable_course_key | day | periods_token``。
+    刻意**不纳入**时间、地点与课程名：作息调整、换教室、**改名**都应当被视作
+    「同一事件的新版本」由客户端原地更新（v0.8.0 起改名不再产生新事件，CD2）。
+
+    v1 配方（≤ 0.7.x，形状存档于此，代码里已无对应实现）在 ``stable_course_key``
+    之后多了一项 ``course_name.strip()``，即
+    ``semester | key | name | day | periods``。v1→v2 的一次性迁移见
+    docs/design/2026-10-12-course-cancellation-uid-v2.md §6.4：旧 UID 从发布留底
+    里读，不重算。
+
+    已知边界（CD16）：``course_id`` 缺失时 ``stable_course_key`` 退回
+    ``f"name:{course_name}"``（models.py:263），那种行**仍**对改名敏感。
 
     Parameters
     ----------
@@ -87,17 +108,6 @@ def make_uid(
         课程安排。
     day:
         实际上课日期（ISO 字符串）。
-
-    Notes
-    -----
-    刻意**不把时间和地点纳入哈希**：作息调整或换教室时，同一节课应当被视为
-    「同一事件的新版本」，由日历客户端原地更新，而不是产生重复事件。
-
-    **``course_name`` 参与身份是刻意的向后兼容选择**（legacy UID contract）：
-    ``course_id`` 已稳定时重复包含课程名在模型上并不理想，但 UID 算法自
-    v0.1.0 起已随正式版发布，改动会让已导入用户的整个学期被识别成新事件。
-    已知边界：同一 ``course_id`` 的课程被改名时，其事件会被视为新事件。
-    未来若做 UID v2，必须配显式迁移方案，不在普通 minor release 里直接改。
 
     Examples
     --------
@@ -113,7 +123,6 @@ def make_uid(
         [
             semester_key.strip(),
             meeting.stable_course_key.strip(),
-            meeting.course_name.strip(),
             day.strip(),
             periods_token,
         ]
@@ -167,6 +176,7 @@ def build_events(
     schedules: ScheduleTable,
     *,
     with_override_notes: bool = True,
+    collision_sink: MutableSet[str] | None = None,
 ) -> list[CalendarEvent]:
     """把课程安排展开成逐次上课的日历事件。
 
@@ -206,6 +216,12 @@ def build_events(
         作息表（日期 -> 作息 -> 节次钟点）。
     with_override_notes:
         是否把覆盖规则的备注写入 DESCRIPTION。
+    collision_sink:
+        向后兼容的出参（默认 ``None``，行为与旧签名完全一致）：收集「重复 UID 却对应
+        不同课程名」而被去重丢弃的那个 UID。v2 配方不含课程名，分层/分项教学班这类
+        形状会同课程号、同天、同节次、异名撞出同一个 UID；行为仍与今天一致——
+        **保留首个、丢弃后者**（产物字节不变），但碰撞必须冒给调用方，否则课程撤销
+        通路会把"分不清哪行是哪门课"当成常态继续算候选。
 
     Returns
     -------
@@ -215,7 +231,9 @@ def build_events(
     semester = calendar.semester
     total_weeks = semester.total_weeks
     events: list[CalendarEvent] = []
-    seen_uids: set[str] = set()
+    #: UID → 首个事件的 summary。命中重复 UID 且课程名不同 ⇒ 记入 collision_sink
+    #: （纯重复导入同名去重不算碰撞），处置仍是保留首个、丢弃后者。
+    seen_summaries: dict[str, str] = {}
 
     for meeting in meetings:
         sorted_periods = sorted(set(meeting.periods))
@@ -258,10 +276,17 @@ def build_events(
                 ) from exc
 
             uid = make_uid(semester.key, meeting, day.isoformat())
-            if uid in seen_uids:
-                # 同一课程同一天重复导入时去重，避免日历里出现双份
+            if uid in seen_summaries:
+                # 同一课程同一天重复导入时去重，避免日历里出现双份。同名异名的处置一样
+                # （保留首个、丢弃后者）；异名 ⇒ 碰撞，冒给 collision_sink（终审裁定的
+                # 短路判据），同名 ⇒ 纯重复，不惊动任何通路。
+                if (
+                    seen_summaries[uid] != meeting.course_name.strip()
+                    and collision_sink is not None
+                ):
+                    collision_sink.add(uid)
                 continue
-            seen_uids.add(uid)
+            seen_summaries[uid] = meeting.course_name.strip()
 
             description = _build_description(meeting, week)
             if with_override_notes and override is not None and override.note:
@@ -321,9 +346,14 @@ def build_events(
                 ) from exc
 
             uid = make_uid(semester.key, meeting, day.isoformat())
-            if uid in seen_uids:
+            if uid in seen_summaries:
+                if (
+                    seen_summaries[uid] != meeting.course_name.strip()
+                    and collision_sink is not None
+                ):
+                    collision_sink.add(uid)
                 continue
-            seen_uids.add(uid)
+            seen_summaries[uid] = meeting.course_name.strip()
 
             description = _build_makeup_description(meeting, source_week, source_weekday, source)
             if with_override_notes and override.note:
@@ -534,6 +564,19 @@ def summarize(
     }
 
 
+@dataclass(frozen=True)
+class MigrationSummary:
+    """v1→v2 迁移那一次全量撤销的规模（CD11），经 `ExportResult.migration_summary` 交给 CLI。
+
+    迁移是配方切换而不是数据缺失，规模天然达到整学期量级——所以它**豁免**门 2 的熔断
+    （喂进去会把升级永远掐死），但必须让 CLI 有机会打印一行预告（「自动但不静默」）。
+    只报数量与占比，不含任何课程名（§8）。
+    """
+
+    candidates: int
+    ratio: float
+
+
 @dataclass
 class ExportResult:
     """build_ics_for_semester 的返回：渲染文本 + 汇总数据（CLI 打印用）。
@@ -542,6 +585,8 @@ class ExportResult:
     （已过日期过滤与全局 UID 断言）；``exam_cancellations`` 是本次实际下发的撤销条数
     ——撤销条目**不进** ``sequence_stats``（spec D23），数量只在这里体现。
     ``events`` 与 ``date_range`` 的口径始终只算课程事件，见设计文档 §6.5 第 1 条。
+    ``info["course_cancellations"]`` 与 ``exam_cancellations`` 同口径（D23/CD14）：
+    只数**真正进了产物**的课程撤销条目（含迁移支），不计撞 UID 被丢弃与 unresolvable 的。
     """
 
     ics: str
@@ -553,6 +598,14 @@ class ExportResult:
     #: 不存在"算出空台账但不回写"的中间状态。live 侧取**未经日期过滤**的考试集（D19）。
     #: 本字段只**产出**文本；落盘是 Task 9/10 的 CLI 职责（exporter 绝不写文件）。
     exam_ledger_text: str | None = None
+    #: 课程台账文本，与 ``exam_ledger_text`` 同形（CD8 的两份台账各自独立回写）：
+    #: ``None`` ⟺ 门 1（CD13）没过；live 侧取**未经日期过滤**的课程事件集（CD14）。
+    #: 同样只产出文本，落盘是 CLI 的职责。
+    course_ledger_text: str | None = None
+    #: 迁移分支的规模（CD11）；``None`` ⟺ 本次没走迁移（CLI 没传留底，或留底里没有
+    #: 可撤的旧 UID）。构建层**只算不写**——`uid_recipe` 标记的回写只发生在发布成功
+    #: 之后（CD7），那是 Task 8/9 的 CLI 职责。
+    migration_summary: MigrationSummary | None = None
 
 
 def _stamp_from_snapshot(path: Path) -> datetime:
@@ -601,6 +654,31 @@ def _cancellation_baseline_uids(baseline: dict[str, EventBaseline] | None) -> se
     return set()
 
 
+def _append_cancellation_events(
+    events: Sequence[CalendarEvent],
+    pending: Sequence[LedgerEntry],
+    render_events: list[CalendarEvent],
+) -> tuple[list[CalendarEvent], list[LedgerEntry], list[CalendarEvent]]:
+    """撤销条目并入产物前的全局 UID 唯一性断言（课程支用；§9 第 15 条）。
+
+    与考试撤销块里的内层循环**同形**：撞车的条目丢弃 + warning，且**不进**台账 pending
+    （撞车下轮照撞，留下就是兑现不了的承诺）。事件与条目按位置配对（
+    `build_cancellation_events` 保持调用方全序），``strict=True`` 给配对上锁。
+    返回 ``(保留的撤销事件, 对应台账条目, 新的 render_events)``。
+    """
+    seen_uids = {event.uid for event in render_events}
+    kept_events: list[CalendarEvent] = []
+    kept_pending: list[LedgerEntry] = []
+    for event, entry in zip(events, pending, strict=True):
+        if event.uid in seen_uids:
+            logger.warning("撤销事件 UID 与已有事件冲突，已丢弃：%s", event.uid)
+            continue
+        seen_uids.add(event.uid)
+        kept_events.append(event)
+        kept_pending.append(entry)
+    return kept_events, kept_pending, [*render_events, *kept_events]
+
+
 def build_ics_for_semester(
     cfg: Settings,
     semester: str,
@@ -619,6 +697,8 @@ def build_ics_for_semester(
     include_exams: bool = True,
     exams_payload: dict[str, Any] | None = None,
     cancel_expiry_at: datetime | None = None,
+    allow_mass_cancellation: bool = False,
+    published_baseline_text: str | None = None,
 ) -> ExportResult:
     """按学期构建 RFC 5545 文本。export 与 subscribe push 共用的唯一管线。
 
@@ -645,6 +725,18 @@ def build_ics_for_semester(
     ``cancel_expiry_at``：撤销保留期比较用的墙钟；``None`` 取 ``datetime.now(TZ_XIAN)``
     （D9）。只有测试注入，**不暴露成 CLI 旗标**，也不参与 ``--from-date/--to-date``
     窗口过滤（撤销条目本就在过滤之后单独注入，见 §6.6）。
+
+    ``allow_mass_cancellation``：门 2（CD12）的显式放行旗标，对应 CLI 的
+    ``--allow-mass-cancellation``。默认 ``False`` 时课程侧熔断候选达标会抛
+    :class:`~xjtu_calendar.errors.MassCancellationBlocked`（退出码 6、零写盘），
+    **不会**被考试撤销块那种「任何异常降级为不撤销」的口径吞掉（CD4 fail-closed）。
+
+    ``published_baseline_text``：发布留底（上次发布产物）的**文本**——CLI 从
+    ``last-<学期>.ics`` 读出后，仅当订阅状态缺 ``uid_recipe``（升级后第一次 push）时
+    传入；``export`` 路径永远不传（CD3：迁移撤销只随 push 下发）。传了 ⇒ 走迁移分支
+    （§5：候选 = 留底 UID − live − 本次常态撤销，再过 D2 过期筛，CD10），该分支
+    **豁免**门 2 但规模经 ``migration_summary`` 冒出来给 CLI 打印预告（CD11）。
+    exporter 不读写任何文件：留底读取与状态标记回写都是 CLI 的职责。
     """
     from .fetcher import load_raw
 
@@ -714,7 +806,11 @@ def build_ics_for_semester(
         )
 
     # --- 展开（课程）---
-    events = build_events(meetings, academic, schedules)
+    #: v2 配方不含课程名：同课程号+同一天+同节次而课程名不同 ⇒ 同 UID（分层/分项教学班
+    #: 形状）。碰撞意味着"分不清哪行是哪门课"，此时任何撤销判断都不可信——收集起来，
+    #: 下面用它把整条课程撤销通路短路成不撤销。调课第二遍在 build_events 内共用同一个 sink。
+    course_uid_collisions: set[str] = set()
+    events = build_events(meetings, academic, schedules, collision_sink=course_uid_collisions)
     logger.info("已展开：%d 次实际上课", len(events))
 
     # --- 考试事件（并进**日期过滤之前**；§6.5 第 1 条）---
@@ -795,6 +891,11 @@ def build_ics_for_semester(
     #: 台账回写也用同一份**未过滤**的事件列表，两处必须同源（Task 8 的 `live=` 参数）。
     pre_filter_exam_events = list(exam_events)
     live_exam_uids = {event.uid for event in exam_events}
+    #: 课程撤销候选与台账回写都必须吃**未经日期过滤**的事件（CD14，D19 的对应物）。
+    #: 裁剪是课程侧的常态操作，用过滤后的集合会把窗口外的课当成"消失"并撤销、
+    #: 还从台账剪掉——一次局部导出动了全局订阅状态。
+    pre_filter_course_events = list(events)
+    live_course_uids = {event.uid for event in events}
     # 先把边界解析出来：它同时决定「事件过滤」与「unsupported 调课的范围判定」，
     # 两处必须用同一组边界，否则会出现「事件被裁掉、缺课告警却没报」。
     lower = date.fromisoformat(from_date) if from_date else None
@@ -975,6 +1076,151 @@ def build_ics_for_semester(
             exam_ledger_text = None
             render_events = pre_cancellation_render_events
 
+    # --- 课程侧撤销注入 + 课程台账文本（docs/design/2026-10-12-course-cancellation-uid-v2.md §6.5）---
+    # 门 1（CD13）：不信任 ⇒ 整块跳过——不读台账、不撤销、不产出课程台账文本（照 D18/D21），
+    # 且与 `--no-exams` 无关（课程撤销不受考试开关影响，§7 表倒数第 3 行）。
+    # 异常处理口径与考试支**不同**：门 2 的熔断 `MassCancellationBlocked` 必须冒到 CLI
+    # （CD4 fail-closed：退出码 6、零写盘），它不在考试支的 try 里，也必须在下面的
+    # 兜底 `except Exception` 之前单独 re-raise——保险丝不许被"降级为不撤销"吞掉。
+    # 其余意外（手改台账喂给 icalendar 之类）仍降级为"没有增量"，不改导出退出码。
+    # 运行时 import 留在函数体内：cancellation 顶层 import exporter 的 PRODID，courses
+    # 又 import cancellation，模块级反向 import 会成环（与 `load_raw`/`exams` 同法）。
+    from .courses import assess_courses
+
+    courses_trust = assess_courses(
+        total_candidates=parser.report.total_candidates,
+        skipped=parser.report.skipped,
+        meetings=meetings,
+    )
+    course_ledger_text: str | None = None
+    migration_summary: MigrationSummary | None = None
+    course_cancellation_events: list[CalendarEvent] = []
+    if not courses_trust.trusted:
+        # `reason` 是类别词（无记录/有跳过行/零门课），本身不含课程名（§8）。
+        logger.warning("课程撤销通路本次不启用：%s", courses_trust.reason)
+    if course_uid_collisions:
+        # UID 碰撞 ⇒ 台账行与课表行的对应关系本身不可信，整段撤销逻辑（读台账、算候选、
+        # 熔断、迁移、台账文本）本次一并跳过：零撤销、不迁移、不写课程台账文本，产物照常
+        # （第一不变量：任何降级只会让撤销变少）。只报数量，不带课程名/教师/教室/UID
+        # 之外的信息（§8）。考试侧成果不受牵连；熔断异常与这道短路互不相干。
+        logger.warning(
+            "本次有 %d 个课程 UID 对应了不同课程名（课程号+日期+节次撞在一起），"
+            "课程撤销通路本次降级为不撤销",
+            len(course_uid_collisions),
+        )
+    if courses_trust.trusted and not course_uid_collisions:
+        from .cancellation import (
+            build_cancellation_events,
+            cancel_candidates,
+            load_ledger,
+            render_ledger,
+        )
+        from .courses import mass_cancellation_check, migration_candidates, upcoming_ledger_count
+
+        pre_course_cancellation_render_events = render_events
+        try:
+            now = cancel_expiry_at or now_local()
+            course_ledger: dict[str, LedgerEntry] = {}
+            course_ledger_exists = cfg.course_ledger_path(semester).is_file()
+            if course_ledger_exists:
+                try:
+                    course_ledger = load_ledger(
+                        cfg.course_ledger_path(semester).read_text(encoding="utf-8"),
+                        label="课程台账",
+                    )
+                except (OSError, UnicodeDecodeError) as exc:
+                    # 就地降级成"当作没有台账"（D15）：本次不撤销任何课程，但
+                    # `course_ledger_exists` 仍为 True ⇒ 下方照旧产出文本，让调用方
+                    # 用当前课表**覆盖**这份读不出的坏台账（§7 的修复动作）。只报种类。
+                    logger.warning(
+                        "课程台账 %s 读不出（%s），本次当作无台账处理并用当前课表覆盖它",
+                        semester,
+                        type(exc).__name__,
+                    )
+            else:
+                logger.info("本地还没有 %s 的课程台账，本次不撤销任何已发布课程事件", semester)
+            deliverable, unresolvable = cancel_candidates(
+                ledger=course_ledger,
+                live_uids=live_course_uids,
+                baseline_uids=_cancellation_baseline_uids(baseline),
+                now=now,
+            )
+            blocked = (
+                None
+                if allow_mass_cancellation
+                else mass_cancellation_check(
+                    candidates=len(deliverable),
+                    ledger_total=upcoming_ledger_count(course_ledger, now),
+                )
+            )
+            if blocked is not None:
+                # 只报数量与占比，不列课程名（§8）。此刻 render_events 尚未被改动，冒到
+                # CLI ⇒ 退出码 6、留底/台账/状态文件字节不变（零写盘由"不产出"保证）。
+                # 分母是**未过期**台账条目（upcoming_ledger_count）——与分子 deliverable
+                # 同域，否则学期中段的比例会被过期条目稀释到阈值以下、熔断恰好漏响。
+                raise MassCancellationBlocked(
+                    f"本次将撤销 {blocked.candidates} 条课程事件，"
+                    f"占尚未过去的已发布事件的 {blocked.ratio:.0%}——疑似课表没抓全"
+                )
+            # D20/F3 的课程侧对应物：留底里没有的候选不下发，但留在台账里排队。
+            for item in unresolvable:
+                logger.warning(
+                    "课程 %s 无法安全下发撤销（发布留底里没有这个 UID，序号只能从 0 起，"
+                    "客户端会忽略更低的序号），本次不随产物下发这条撤销，"
+                    "留在课程台账里直到它原定时刻自然过去",
+                    item.uid,
+                )
+            course_cancellation_events, course_pending, render_events = _append_cancellation_events(
+                build_cancellation_events(deliverable), deliverable, render_events
+            )
+            # 台账 pending = 实际下发 + unresolvable（与考试支同形，都自限到 DTSTART 过去）。
+            course_pending = [*course_pending, *unresolvable]
+            #: 迁移分支（§5/CD7/CD10/CD11）：留底文本由 CLI 在状态缺 `uid_recipe` 时传进来
+            #: （export 路径永不传，CD3）。候选 = 留底 − live（课程 ∪ 考试）− 本次常态撤销，
+            #: 再过 D2 过期筛。**豁免门 2**：配方切换天然整学期量级，喂进保险丝等于掐死升级；
+            #: 但规模必须经 `migration_summary` 交给 CLI 打印预告——构建层不写状态标记（CD7）。
+            if published_baseline_text is not None:
+                published = load_ledger(published_baseline_text, label="发布留底")
+                migration = migration_candidates(
+                    published=published,
+                    live_uids=live_course_uids | live_exam_uids,
+                    normal_cancel_uids={event.uid for event in course_cancellation_events}
+                    | {event.uid for event in cancellation_events},
+                    now=now,
+                )
+                if migration:
+                    migration_summary = MigrationSummary(
+                        candidates=len(migration),
+                        ratio=len(migration) / max(1, len(published)),
+                    )
+                    kept, kept_pending, render_events = _append_cancellation_events(
+                        build_cancellation_events(migration), migration, render_events
+                    )
+                    course_cancellation_events = [*course_cancellation_events, *kept]
+                    course_pending = [*course_pending, *kept_pending]
+            #: 课程台账文本与考试侧同形（§6.6 空值口径）：读到过台账文件或本次有 live
+            #: 课程事件 ⇒ 产出；live 侧用**未经日期过滤**的 `pre_filter_course_events`
+            #: （CD14，与候选同源），pending 侧含迁移条目（自限到原定时刻过去）。本函数**不落盘**。
+            if course_ledger_exists or pre_filter_course_events:
+                course_ledger_text = render_ledger(
+                    pre_filter_course_events, course_pending, dtstamp=stamp
+                )
+        except MassCancellationBlocked:
+            # 熔断不是"课程侧的小毛病"，是 fail-closed 的拒绝发布信号：原样冒出去。
+            raise
+        except Exception as exc:
+            # 其余一切意外 ⇒ 降级为"没有撤销"（不变量 1：任何降级只会让撤销变少）。
+            # 只记异常类名：`str(exc)` 可能逐字引用坏台账原文（§8 禁止进日志）。
+            # 回滚只退到**课程撤销前**——考试支的成果（若有）不受牵连。
+            logger.warning(
+                "课程撤销通路本次降级为不撤销（%s），撤销条目与课程台账文本都不产出，导出照常",
+                type(exc).__name__,
+            )
+            course_cancellation_events = []
+            course_ledger_text = None
+            migration_summary = None
+            render_events = pre_course_cancellation_render_events
+
     if calendar_name is None:
         # 标题从课表数据推导；年级缺失/并列时 calendar_title 自己会退回基础名。
         calendar_name = calendar_title(semester, (m.grade_year for m in meetings))
@@ -991,6 +1237,9 @@ def build_ics_for_semester(
     info["exam_events"] = len(kept_exam)
     # 撤销数量单独报（§6.5 D23：撤销不进 sequence_stats，只在这个计数里体现）。
     info["exam_cancellations"] = len(cancellation_events)
+    # 课程侧同口径（CD14/§9-17）：只数真正进了产物的条目（含迁移支），被 UID 断言
+    # 丢弃的与 unresolvable 的不算。
+    info["course_cancellations"] = len(course_cancellation_events)
     stats: dict[str, int] | None = None
     if baseline is not None:
         # stats 口径（spec D23）：必须含「课程 + live 考试」——否则考试的 SEQUENCE/新增
@@ -1004,4 +1253,6 @@ def build_ics_for_semester(
         info=info,
         sequence_stats=stats,
         exam_ledger_text=exam_ledger_text,
+        course_ledger_text=course_ledger_text,
+        migration_summary=migration_summary,
     )

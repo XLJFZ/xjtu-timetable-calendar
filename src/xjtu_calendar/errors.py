@@ -19,6 +19,7 @@ __all__ = [
     "CalendarExportError",
     "EndpointNotConfigured",
     "GitNotAvailable",
+    "MassCancellationBlocked",
     "ParseError",
     "PermissionDenied",
     "ScheduleNotConfigured",
@@ -162,6 +163,18 @@ class GitNotAvailable(XjtuCalendarError):
 
 class SubscribeGuardError(XjtuCalendarError):
     """发布护栏拒绝：远端分支内容不像本工具产物，绝不强推覆盖。"""
+
+
+class MassCancellationBlocked(XjtuCalendarError):
+    """疑似数据不完整导致的整批撤销：拒绝发布，要求显式旗标放行（CD4/CD12）。"""
+
+    exit_code = 6
+
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(
+            message,
+            hint=hint or "确认课表真的少了一批课，再带 --allow-mass-cancellation 重跑。",
+        )
 
 
 class SubscribePublishError(XjtuCalendarError):

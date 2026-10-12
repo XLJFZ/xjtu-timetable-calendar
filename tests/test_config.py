@@ -20,6 +20,13 @@ def test_exam_ledger_path_lives_under_subscribe_dir(tmp_path):
     )
 
 
+def test_course_ledger_path_is_separate_from_exam_ledger(tmp_path) -> None:
+    """CD8：两份台账必须分开——考试与课程 UID 同域同形状，从串上分不出彼此。"""
+    cfg = Settings(home=tmp_path / "h")
+    assert cfg.course_ledger_path("2026-2027-1").name == "last-courses-2026-2027-1.ics"
+    assert cfg.course_ledger_path("2026-2027-1") != cfg.exam_ledger_path("2026-2027-1")
+
+
 def test_subscribe_function_delegates_to_settings(tmp_path):
     """目录字面量只能有一处（spec §6.1）。"""
     from xjtu_calendar import subscribe

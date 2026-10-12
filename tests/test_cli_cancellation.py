@@ -22,6 +22,7 @@ from xjtu_calendar import cli, fileutil, subscribe
 from xjtu_calendar.cli import main
 from xjtu_calendar.config import Settings
 from xjtu_calendar.errors import XjtuCalendarError
+from xjtu_calendar.exporter import UID_RECIPE_VERSION
 from xjtu_calendar.fetcher import save_raw
 
 
@@ -443,12 +444,53 @@ def test_rotate_stays_silent_without_a_retained_artifact(tmp_path, monkeypatch, 
 
 
 def test_rotate_stays_silent_when_nothing_to_cancel(tmp_path, monkeypatch, capsys):
+    # 固件前提（spec §5 不变量 + 决策表 CD7）：状态缺 `uid_recipe` 会被读作
+    # "上次发布出自 v1"⇒ rotate 进入一次性迁移清扫；本夹具的留底里那场考试已不在
+    # live 集、考试台账又被摘掉（常态撤销不接手），预告必然打印、"撤销"二字必现。
+    # 那是 v0.6 时代的前提被 v0.8 取代，不是回归：这条测的是 **v0.8 时代用户**的
+    # "无东西可撤 ⇒ 无撤销噪音"，所以把订阅状态带上配方标记，断言逐字不动。
+    # 反向用例（缺标记 ⇒ 预告先于换 token）见下一条。
     cfg = _ready_for_rotate(tmp_path, monkeypatch)
+    subscribe.save_state(
+        cfg, dataclasses.replace(subscribe.load_state(cfg, SEMESTER), uid_recipe=UID_RECIPE_VERSION)
+    )
     cfg.exam_ledger_path(SEMESTER).unlink()
     _stub_publish(monkeypatch)
 
     assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
     assert "撤销" not in capsys.readouterr().out
+
+
+def test_rotate_prints_migration_notice_before_swapping_when_marker_is_missing(
+    tmp_path, monkeypatch, capsys
+):
+    """上一条的反向（spec §5/§7、CD7、D24「先警告再换」）：状态**缺** `uid_recipe`、
+    留底里躺着一枚已不 live 的旧 UID（那场考试从快照消失，考试台账摘掉 ⇒ 常态撤销
+    不接手，迁移清扫接手）⇒ `subscribe rotate` 必须在换 token **之前**打印带条数的
+    迁移预告。
+
+    时序钉法：包裹真实 `rotate_token`，在进入的那一刻抓一次屏幕——预告出现在换
+    token 之前的快照里才是可观测证据；把 `_print_migration_notice` 挪到
+    `rotate_token` 之后，这条即红（快照里没有，只在最终输出里）。
+    """
+    cfg = _ready_for_rotate(tmp_path, monkeypatch)  # v1 时代的状态：无标记
+    cfg.exam_ledger_path(SEMESTER).unlink()
+    _stub_publish(monkeypatch)
+    at_swap: list[str] = []
+    real_rotate = subscribe.rotate_token
+
+    def spy_rotate(*args, **kwargs):
+        at_swap.append(capsys.readouterr().out)
+        return real_rotate(*args, **kwargs)
+
+    monkeypatch.setattr(subscribe, "rotate_token", spy_rotate)
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    assert len(at_swap) == 1  # 确实走到了换 token，快照不是空谈
+    notice = at_swap[0]
+    assert "v1 UID 配方" in notice
+    assert "撤销 1 条" in notice  # 条数 == 留底里那枚已不 live 的旧 UID
+    assert "预期行为" in notice
 
 
 def test_rotate_publish_failure_leaves_ledger_untouched(tmp_path, monkeypatch):

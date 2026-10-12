@@ -39,6 +39,7 @@ __all__ = [
     "derive_url_base",
     "has_unpublished_changes",
     "load_state",
+    "needs_uid_migration",
     "new_token",
     "publish",
     "rotate_token",
@@ -83,6 +84,11 @@ class SubscriptionState:
     token: str
     url_base: str
     last_push: PushRecord | None = None
+    #: 课程 UID 的配方版本（`exporter.UID_RECIPE_VERSION`）。
+    #: **None = 这个 URL 上最后一次发布出自 v1** ⇒ 下次 push 走一次性迁移（CD7）。
+    #: 旧版本工具读不出也写不回这个字段（`from_dict` 忽略未知键、`to_dict` 走 `asdict`），
+    #: 降级再升回来会重走一次迁移分支，而那时留底已是 v2 产物 ⇒ 候选空集、无副作用（CD17）。
+    uid_recipe: int | None = None
 
     @property
     def subscription_url(self) -> str:
@@ -108,7 +114,24 @@ class SubscriptionState:
             token=str(data["token"]),
             url_base=str(data["url_base"]),
             last_push=last_push,
+            # 缺失 = v0.7.x 写的文件（CD7）；坏值（手改/半写）按缺失处理，绝不因为
+            # 一个读不懂的整数拒绝加载状态——迁移分支的最坏后果只是「多算一次空集」。
+            uid_recipe=_parse_uid_recipe(data.get("uid_recipe")),
         )
+
+
+def _parse_uid_recipe(value: object) -> int | None:
+    """状态文件里的配方版本：只接受整数，其它形状（缺失/null/字符串）一律按「未知」。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def needs_uid_migration(state: SubscriptionState) -> bool:
+    """迁移判定的唯一归属地：看字段，不猜 UID（UID 是 hash，反推不了配方，CD7）。"""
+    return state.uid_recipe is None
 
 
 def subscribe_dir(cfg: Settings) -> Path:

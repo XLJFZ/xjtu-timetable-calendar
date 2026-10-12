@@ -291,11 +291,11 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
   </div>
   <p class="note">分辨自己走的是哪条路：订阅型入口带「上次同步时间」，导入型只有显示开关。
     另外，客户端通常在<strong>添加那一刻</strong>取一次日历名就不再更新：产物后来改了名，已加好的日历未必跟着改——
-    退订再重新添加一定有效，「不重加会不会自己改名」本仓库未在真机上验证，别当承诺。</p>
+    退订再重新添加**通常**有效，但本仓库未在真机上验证过改名这一项；而且 2026-10-12 的整学期迁移演练里，ColorOS 上「删除日历 + 重新添加」并**没有**清掉本地产物里已不存在的旧条目——所以别把重加当保证，改完要让用户确认日历确实变干净了。</p>
 
   <h3>所以手机侧到底订哪个</h3>
   <ul class="checks">
-    <li><strong>iPhone / Apple 日历</strong>：原生「添加日历 → 订阅」，直接贴 URL。</li>
+    <li><strong>iPhone / Apple 日历</strong>：原生「添加日历 → 订阅」，直接贴 URL；CLI 也会顺手打一行把 <code class="inline-code">https://</code> 换成 <code class="inline-code">webcal://</code> 的同址链接，iOS 上<strong>通常</strong>点开即弹订阅确认——这条本仓库未做真机验证，失败就回手动路径。</li>
     <li><strong>ColorOS</strong>：系统日历里的「URL 日历」就是手机侧正解——认新增、会自动原地更新、并用产物给的日历名。</li>
     <li><strong>MIUI / 鸿蒙</strong>：若系统日历只给「导入日历」，那是一次性快照、永不自动更新；改用 <strong>ICSx⁵</strong>（<code class="inline-code">at.bitfire.icsdroid</code>）做 URL 订阅。<strong>注意不是 DAVx⁵</strong>——它只做 CalDAV 双向同步，官方 FAQ 明确把 URL 订阅指向 ICSx⁵。</li>
     <li><strong>Google 日历</strong>：订阅只能在网页版建立，手机端要上课表请走系统日历那条腿，别把希望放在 Google App 上。</li>

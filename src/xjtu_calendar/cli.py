@@ -767,7 +767,8 @@ def _print_publish_cancellation_summary(result_ics: ExportResult) -> None:
 
 
 def _print_webcal_hint(state: subscribe.SubscriptionState | None) -> None:
-    """iOS/macOS 的一行 webcal 订阅链接（followups §3）：init / push / status 三处共用一份文案。
+    """iOS/macOS 的一行 webcal 订阅链接（followups §3）：
+    init / push（含 NO_CHANGE）/ rotate / status 四处共用一份文案。
 
     `webcal://` 是 URL scheme 而非发布物——只把已打印的 https URL 换个 scheme，发布分支上
     不多放任何文件（多一个 `<token>.webcal` 会撞 tree 护栏与 rotate 的 `*.ics` 清理）。

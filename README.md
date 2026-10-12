@@ -132,10 +132,11 @@ UID 由课程标识 + 实际上课日期 + 节次派生（`sha256`），**不含
 - 换教室或作息调整 → 视为同一事件的新版本，客户端自动覆盖；
 - 不同日期的课 → UID 不同，不会互相覆盖。
 
-> **已知边界**（为保持 v0.1.x 兼容，本版不改 UID 算法）：课程名也参与 UID，
-> 因此同一 `course_id` 的课程若被改名（如「大学英语（2）」→「大学英语Ⅱ」），
-> 其事件会被视为新事件而非原事件的新版本。将来若引入 UID v2，
-> 会配套一次性显式迁移方案，而不是直接改历史 UID。
+> **已知边界**：v0.8.0 起课程 UID 改用配方 v2，**课程名不再参与身份**——同一 `course_id`
+> 的课程被改名会作为同一事件的新版本被客户端原地更新，不再是新事件。唯一例外：
+> `course_id` 缺失的行会退回用课程名做标识（`models.py` 的 `stable_course_key`），那种行
+> 改名仍会产生新事件，但 `diff` 会在发布之前先报出来。从 v1 到 v2 的一次性迁移见
+> 「[升级到 v0.8（UID 配方变更）](#升级到-v08uid-配方变更)」。
 
 ### 四、SEQUENCE / LAST-MODIFIED：让「重新导入」真正生效
 
@@ -404,9 +405,12 @@ token 状态文件按收紧的文件权限写盘（与 `storage_state.json` 同�
 
 ### 已知边界
 
-- **课程改名会表现为新事件**：UID 含课程名（见「核心设计」的 UID 冻结边界），
-  改名前后是两个事件，订阅端与手工导入的表现一致；`diff` 能在 push 之前
-  先看到改名条目。
+- **课程改名（v0.8.0 起）通常会走原地更新**：课程 UID 改用配方 v2、课程名不再参与身份，
+  同一 `course_id` 的课被改名会作为同一事件的新版本被客户端原地覆盖，`diff` 仍会在 push
+  之前先把这条时段变化列出来。唯一例外是 `course_id` 缺失、退回用课程名做标识的行——那种行
+  改名仍会产生新事件。真退课、教学班换 `course_id` 会以 `STATUS:CANCELLED` 下发，客户端表现
+  与考试侧同（Google 网页版会移除；Outlook.com / ColorOS 会留一条「已取消的活动」占位到原定时刻
+  过去——**整学期规模的迁移残条在真机上尚未演练**，见下一节）。
 - **换 token 后所有客户端要重贴 URL**（见上）。
 - **取消事件在部分客户端不会消失**：会回源的订阅客户端里，Google 日历实测会移除
   `STATUS:CANCELLED` 条目；而 Outlook.com 与 ColorOS 系统日历实测**忽略该字段**，
@@ -425,6 +429,32 @@ token 状态文件按收紧的文件权限写盘（与 `storage_state.json` 同�
 > （记住仓库是公开的！），此后分支 tip 不再满足「根目录仅一个 .ics」的
 > tree 护栏，后续发布被 fail-closed 拒绝，直到你清空该目录并自行清空
 > （或换名重建）那个分支。**不要往这个目录放任何东西。**
+
+### 升级到 v0.8（UID 配方变更）
+
+v0.8.0 把课程 UID 的配方从 v1 换成 v2（去掉课程名），这是**每个已发布过课表的老用户都会遇到的
+一次身份切换**。分客户端说清楚会发生什么：
+
+- **URL 订阅（`subscribe push`）：自动迁移，用户零操作。** 工具靠订阅状态文件
+  `subscribe/subscribe-<学期>.json` 里的 `uid_recipe` 字段判断「上次发布用的还是 v1」，
+  下一次 `subscribe push` 会自动走一遍迁移：发布前打印一行预告（撤销 N 条 + 原因），
+  把整学期旧 UID 标成 `STATUS:CANCELLED` 一次性下发，同时用 v2 重建 live 事件。
+  **迁移只在 `subscribe push` 上发生，`export` 永不触发**；发布没成功就不会写任何状态，
+  下次 push 仍会重试迁移。
+
+- **手工 `export` 导入者：删除旧日历、重新导入一次。** 迁移撤销不在 `export` 下发
+  （`export` 也不读不写 `uid_recipe`），双击导入的旧日历不会被自动收掉。正确做法是把旧的
+  课表日历删掉，用 v0.8 重新 `export` 的 .ics 再导一次；此后改课、改名都会原地更新。
+
+- **忽略 `STATUS:CANCELLED` 的客户端（Outlook.com / ColorOS）会看到一次整学期「已取消的活动」。**
+  迁移那一次是几百条量级的全量撤销：会回源的订阅客户端里 Google 网页版实测会移除；不认这个字段的
+  客户端会留下一批标题固定为「已取消的活动」的占位，直到各自原定时刻过去。**这批整学期残条的真机
+  表现尚未演练**（发版前会在隔离 URL 上单独补验），目前只能按考试侧的读数说「通常会」；唯一确定
+  有效的清理手段是**退订整本日历再重新添加**。
+
+- **回滚不是免费的。** v2 事件一旦发布，退回 0.7.x 会重新发一批 v1 UID，订阅端于是出现**双份**事件，
+  补救同样只有退订重加。所以真出问题应当**停在 0.8.0 往前修**，而不是去手改状态文件里的 `uid_recipe`
+  ——手动改写只会让迁移分支反复触发，解决不了问题。
 
 ### 常见客户端订阅入口
 
@@ -848,10 +878,10 @@ python -m xjtu_calendar schedule --semester 2026-2027-1 --apply
 | `status` | 查看会话与配置状态（不发起网络请求） |
 | `fetch [--semester S] [--source auto\|http\|browser] [--from-file F] [--no-exams]` | 获取课表原始 JSON（HTTP 路径同时抓考试安排；覆盖前自动把上一份轮转为 `*.prev.json`，作为 `diff` 基线） |
 | `diff [--semester S] [--old F] [--new F]` | 比对新旧课表快照：新增/删除课程、时段增减、周次/教室/教师变化；并列「考试变更」小节（新增/取消/时间/教室/座位；纯本地；`--old/--new` 只对课表生效） |
-| `export [--semester S] [-o OUT] [--input F] [--name N] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence] [--no-exams]` | 生成 `.ics`（默认并入考试事件；`--name` 不给时标题按课表自动推导，见上文「导出」） |
+| `export [--semester S] [-o OUT] [--input F] [--name N] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence] [--no-exams] [--allow-mass-cancellation]` | 生成 `.ics`（默认并入考试事件；`--name` 不给时标题按课表自动推导，见上文「导出」；`--allow-mass-cancellation` 放行课程侧熔断，见「升级到 v0.8」） |
 | `notice --url U \| --from-file F [--semester S] [--apply]` | 解析停课/调课通知，预览或合并进学期配置 |
 | `schedule [--url U \| --from-file F] [--semester S] [--apply]` | 解析官方「学生作息时间表」页，预览或合并进作息表配置 |
-| `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F] [--no-exams]` \| `subscribe rotate [--no-exams]` \| `subscribe status [--verify]`（均可带 `--semester S`） | 把 .ics 发布到自己的 GitHub Pages，日历客户端按 URL 订阅（见上文「URL 订阅」；push/rotate 默认并入考试，`--no-exams` 同样生效） |
+| `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F] [--no-exams] [--allow-mass-cancellation]` \| `subscribe rotate [--no-exams] [--allow-mass-cancellation]` \| `subscribe status [--verify]`（均可带 `--semester S`） | 把 .ics 发布到自己的 GitHub Pages，日历客户端按 URL 订阅（见上文「URL 订阅」；push/rotate 默认并入考试，`--no-exams` 同样生效；push 首次会自动做 v1→v2 UID 迁移，`--allow-mass-cancellation` 放行课程侧熔断） |
 | `inspect [--input F] [-o OUT]` | 对原始 JSON 做**脱敏**结构分析 |
 | `doctor [--semester S] [--verify]` | **只读体检**：版本 / 会话 / 校历 / 作息 / 快照 / 渲染 / 订阅留底一次看全。不写任何文件、默认不发请求（`--verify` 才对订阅 URL 做一次匿名 GET）。有阻塞项时退出码为 `5` |
 
@@ -867,6 +897,7 @@ python -m xjtu_calendar schedule --semester 2026-2027-1 --apply
 | `3` | 登录态已失效，需要重新 `login --force`（不带 `--force` 会直接沿用这份已失效的会话） |
 | `4` | 当前账号无权限访问该资源 |
 | `5` | `doctor` 检出阻塞项（警告不算，仍 `0`） |
+| `6` | 课程侧疑似数据不完整的整批撤销被拒绝发布（熔断，见「升级到 v0.8」；确认无误后用 `--allow-mass-cancellation` 放行） |
 | `130` | 用户中断 |
 
 ### 环境变量
@@ -1215,6 +1246,15 @@ python scripts/probe_ehall.py
 ③ 忽略 `STATUS:CANCELLED` 的订阅客户端会留下那条「已取消的活动」残条，而订阅型日历通常
 是只读的，用户唯一的补救是退订整个日历再重新添加。
 
+**Q：为什么 `subscribe push` 拒绝发布，还报了一个比例？**
+
+那是课程侧撤销的第二道门（熔断）。当这一次「消失」的课程事件数**同时**满足「≥ 10 条」和
+「≥ 本地课程台账的 30%」时，工具判定「多半是课表没抓全，而不是真的退了一批课」，于是
+**拒绝发布、退出码 `6`，且不写任何文件**（留底 / 课程台账 / 状态文件字节不变）——防止半份课表
+被实现成「课全没了」。处理顺序：先跑 `diff` 确认课表是不是真的少了一批课；只有确认无误、
+确实要撤销这一整批时，才带 `--allow-mass-cancellation` 重跑放行。门槛的来龙去脉见
+「[升级到 v0.8（UID 配方变更）](#升级到-v08uid-配方变更)」。
+
 **Q：为什么不用一个 RRULE 简化 ICS？**
 
 见上文[核心设计](#二不为整学期课程使用单个-rrule)。简单说：作息切换会让
@@ -1295,6 +1335,9 @@ Google 日历（网页版）与 ColorOS 系统日历实测会在添加时采用�
 - [x] 考试安排接入（`fetch` HTTP 路径同时抓考试快照，考试事件并入同一份 .ics /
   同一个订阅 URL；三态判定「状态未知绝不覆盖快照」、`--no-exams` 四路径开关、
   `diff`「考试变更」小节，见上文「考试安排」）
+- [x] 课程侧撤销 + UID v2（0.8.0：课程名不再参与 UID，改名走原地更新；真退课以
+  `STATUS:CANCELLED` 下发；两道门 + 熔断拒绝发布（退出码 `6`、`--allow-mass-cancellation` 放行）；
+  `subscribe push` 一次性 v1→v2 迁移，见上文「升级到 v0.8」）
 
 **待完成**
 

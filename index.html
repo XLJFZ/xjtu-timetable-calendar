@@ -314,7 +314,7 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     （<code class="inline-code">course_id</code> 缺失的行除外）；真退课会以
     <code class="inline-code">STATUS:CANCELLED</code> 下发。<strong>升级到 v2 的那一次迁移只在
     <code class="inline-code">subscribe push</code> 自动发生</strong>（手工 <code class="inline-code">export</code> 导入者需删旧日历重导一次），
-    忽略取消字段的客户端（Outlook.com / ColorOS）会看到一次整学期「已取消的活动」——真机表现尚未演练，
+    忽略取消字段的客户端（Outlook.com / ColorOS）通常会看到一次整学期「已取消的活动」——真机表现尚未演练，
     退订重加是唯一确定有效的清理；回滚不免费（退回 0.7.x 会双份）。详见 README「升级到 v0.8」；
     ⑤ 发布分支永远是「无父孤儿单提交 + 强推」，课表旧版本不进 git 历史。
   </div>

@@ -79,7 +79,7 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 - 升级到 v0.8（0.8.0）时如实告知（口径解释，不新增判据）：课程 UID 改用配方 v2、
   课程名不再参与身份，改课名从此走原地更新；首次 `subscribe push` 会自动做一次 v1→v2 迁移
   （发布前打印一行预告），`export` 不参与迁移——手工 `export` 导入的用户需删旧日历重导一次。
-  忽略 `STATUS:CANCELLED` 的客户端（Outlook.com / ColorOS）会看到一次整学期「已取消的活动」，
+  忽略 `STATUS:CANCELLED` 的客户端（Outlook.com / ColorOS）通常会看到一次整学期「已取消的活动」，
   退订再重新添加是唯一确定有效的清理（这批整学期残条的真机表现尚未演练）。
   若 push 报退出码 `6`（疑似没抓全的整批撤销被熔断拒绝），先 `diff` 确认再决定是否带
   `--allow-mass-cancellation` 放行。

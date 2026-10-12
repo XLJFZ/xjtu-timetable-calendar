@@ -21,8 +21,8 @@ render/load、`cancel_candidates`、`build_cancellation_events`），`exams.py` 
 
 每条都对**所有任务**生效，值一律逐字抄自规格与 `AGENTS.md`：
 
-- 解释器：`PY = C:/Users/lenovo/.workbuddy/binaries/python/envs/cv-project0/Scripts/python.exe`
-  （裸 `python` 是 3.14、没装 pytest）。跑测试必须带 `--basetemp=_notes/pytest-tmp`。
+- 解释器：本机私有 venv 里的 `python.exe`（绝对路径只记在 `_notes/` 的私有备忘里，
+  不进跟踪内容）。裸 `python` 是 3.14、没装 pytest。跑测试必须带 `--basetemp=_notes/pytest-tmp`。
 - **迭代阶段只跑定向测试**（`-k` 或单个测试文件）。四条全量门禁
   （`pytest -q` / `mypy` / `ruff check .` / `ruff format --check .`）**只在 Task 12 收尾跑一次**。
 - 跟踪内容**不得**包含真实个人信息、本机绝对路径、AI 工具品牌名；文档里的课程/教室一律用
@@ -506,6 +506,9 @@ Run: `"$PY" -m pytest tests/test_courses_gates.py -q --basetemp=_notes/pytest-tm
 git add src/xjtu_calendar/courses.py src/xjtu_calendar/errors.py tests/test_courses_gates.py
 git commit -m "feat(courses): 课程侧门 1 数据可信与门 2 比例熔断，新增退出码 6"
 ```
+
+> 执行中修订：门 2 分母按终审改为未过期条目数，见 `7cc0ae2` 与规格 CD12/CD20。上面已跑过的
+> 红绿代码块保持原样，不改写施工记录。
 
 ---
 

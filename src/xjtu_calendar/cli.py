@@ -743,7 +743,8 @@ def _print_migration_notice(summary: MigrationSummary) -> None:
         "  会回源的订阅客户端通常会随之移除旧事件（Google 网页版已实测）；"
         "忽略该字段的客户端（Outlook.com、ColorOS）会留下一批"
         f"「{CANCELLATION_SUMMARY}」占位，直到原定时刻过去——"
-        "整学期规模的残条在真机上尚未演练，退订再重新添加是唯一确定有效的清理手段。"
+        "2026-10 真机演练实测：占位与新课程 1:1 成对，且占位由产物自身携带，"
+        "退订再重新添加也清不掉，只能等各自原定时刻过去后由后续发布收掉。"
     )
 
 

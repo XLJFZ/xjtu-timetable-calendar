@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, MutableSet, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -176,6 +176,7 @@ def build_events(
     schedules: ScheduleTable,
     *,
     with_override_notes: bool = True,
+    collision_sink: MutableSet[str] | None = None,
 ) -> list[CalendarEvent]:
     """把课程安排展开成逐次上课的日历事件。
 
@@ -215,6 +216,12 @@ def build_events(
         作息表（日期 -> 作息 -> 节次钟点）。
     with_override_notes:
         是否把覆盖规则的备注写入 DESCRIPTION。
+    collision_sink:
+        向后兼容的出参（默认 ``None``，行为与旧签名完全一致）：收集「重复 UID 却对应
+        不同课程名」而被去重丢弃的那个 UID。v2 配方不含课程名，分层/分项教学班这类
+        形状会同课程号、同天、同节次、异名撞出同一个 UID；行为仍与今天一致——
+        **保留首个、丢弃后者**（产物字节不变），但碰撞必须冒给调用方，否则课程撤销
+        通路会把"分不清哪行是哪门课"当成常态继续算候选。
 
     Returns
     -------
@@ -224,7 +231,9 @@ def build_events(
     semester = calendar.semester
     total_weeks = semester.total_weeks
     events: list[CalendarEvent] = []
-    seen_uids: set[str] = set()
+    #: UID → 首个事件的 summary。命中重复 UID 且课程名不同 ⇒ 记入 collision_sink
+    #: （纯重复导入同名去重不算碰撞），处置仍是保留首个、丢弃后者。
+    seen_summaries: dict[str, str] = {}
 
     for meeting in meetings:
         sorted_periods = sorted(set(meeting.periods))
@@ -267,10 +276,17 @@ def build_events(
                 ) from exc
 
             uid = make_uid(semester.key, meeting, day.isoformat())
-            if uid in seen_uids:
-                # 同一课程同一天重复导入时去重，避免日历里出现双份
+            if uid in seen_summaries:
+                # 同一课程同一天重复导入时去重，避免日历里出现双份。同名异名的处置一样
+                # （保留首个、丢弃后者）；异名 ⇒ 碰撞，冒给 collision_sink（终审裁定的
+                # 短路判据），同名 ⇒ 纯重复，不惊动任何通路。
+                if (
+                    seen_summaries[uid] != meeting.course_name.strip()
+                    and collision_sink is not None
+                ):
+                    collision_sink.add(uid)
                 continue
-            seen_uids.add(uid)
+            seen_summaries[uid] = meeting.course_name.strip()
 
             description = _build_description(meeting, week)
             if with_override_notes and override is not None and override.note:
@@ -330,9 +346,14 @@ def build_events(
                 ) from exc
 
             uid = make_uid(semester.key, meeting, day.isoformat())
-            if uid in seen_uids:
+            if uid in seen_summaries:
+                if (
+                    seen_summaries[uid] != meeting.course_name.strip()
+                    and collision_sink is not None
+                ):
+                    collision_sink.add(uid)
                 continue
-            seen_uids.add(uid)
+            seen_summaries[uid] = meeting.course_name.strip()
 
             description = _build_makeup_description(meeting, source_week, source_weekday, source)
             if with_override_notes and override.note:
@@ -785,7 +806,11 @@ def build_ics_for_semester(
         )
 
     # --- 展开（课程）---
-    events = build_events(meetings, academic, schedules)
+    #: v2 配方不含课程名：同课程号+同一天+同节次而课程名不同 ⇒ 同 UID（分层/分项教学班
+    #: 形状）。碰撞意味着"分不清哪行是哪门课"，此时任何撤销判断都不可信——收集起来，
+    #: 下面用它把整条课程撤销通路短路成不撤销。调课第二遍在 build_events 内共用同一个 sink。
+    course_uid_collisions: set[str] = set()
+    events = build_events(meetings, academic, schedules, collision_sink=course_uid_collisions)
     logger.info("已展开：%d 次实际上课", len(events))
 
     # --- 考试事件（并进**日期过滤之前**；§6.5 第 1 条）---
@@ -1073,14 +1098,24 @@ def build_ics_for_semester(
     if not courses_trust.trusted:
         # `reason` 是类别词（无记录/有跳过行/零门课），本身不含课程名（§8）。
         logger.warning("课程撤销通路本次不启用：%s", courses_trust.reason)
-    if courses_trust.trusted:
+    if course_uid_collisions:
+        # UID 碰撞 ⇒ 台账行与课表行的对应关系本身不可信，整段撤销逻辑（读台账、算候选、
+        # 熔断、迁移、台账文本）本次一并跳过：零撤销、不迁移、不写课程台账文本，产物照常
+        # （第一不变量：任何降级只会让撤销变少）。只报数量，不带课程名/教师/教室/UID
+        # 之外的信息（§8）。考试侧成果不受牵连；熔断异常与这道短路互不相干。
+        logger.warning(
+            "本次有 %d 个课程 UID 对应了不同课程名（课程号+日期+节次撞在一起），"
+            "课程撤销通路本次降级为不撤销",
+            len(course_uid_collisions),
+        )
+    if courses_trust.trusted and not course_uid_collisions:
         from .cancellation import (
             build_cancellation_events,
             cancel_candidates,
             load_ledger,
             render_ledger,
         )
-        from .courses import mass_cancellation_check, migration_candidates
+        from .courses import mass_cancellation_check, migration_candidates, upcoming_ledger_count
 
         pre_course_cancellation_render_events = render_events
         try:
@@ -1114,15 +1149,18 @@ def build_ics_for_semester(
                 None
                 if allow_mass_cancellation
                 else mass_cancellation_check(
-                    candidates=len(deliverable), ledger_total=len(course_ledger)
+                    candidates=len(deliverable),
+                    ledger_total=upcoming_ledger_count(course_ledger, now),
                 )
             )
             if blocked is not None:
                 # 只报数量与占比，不列课程名（§8）。此刻 render_events 尚未被改动，冒到
                 # CLI ⇒ 退出码 6、留底/台账/状态文件字节不变（零写盘由"不产出"保证）。
+                # 分母是**未过期**台账条目（upcoming_ledger_count）——与分子 deliverable
+                # 同域，否则学期中段的比例会被过期条目稀释到阈值以下、熔断恰好漏响。
                 raise MassCancellationBlocked(
                     f"本次将撤销 {blocked.candidates} 条课程事件，"
-                    f"占已发布事件的 {blocked.ratio:.0%}——疑似课表没抓全"
+                    f"占尚未过去的已发布事件的 {blocked.ratio:.0%}——疑似课表没抓全"
                 )
             # D20/F3 的课程侧对应物：留底里没有的候选不下发，但留在台账里排队。
             for item in unresolvable:

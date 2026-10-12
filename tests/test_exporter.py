@@ -224,6 +224,35 @@ def test_uid_v2_still_namesensitive_without_course_id() -> None:
     assert make_uid("2026-2027-1", a, "2026-09-11") != make_uid("2026-2027-1", b, "2026-09-11")
 
 
+def test_uid_collision_between_different_course_names_is_detected(
+    calendar: AcademicCalendar, schedules: ScheduleTable
+) -> None:
+    """v2 配方去掉课程名的代价：同课程号+同星期+同节次、异名的两行撞同一个 UID。
+
+    `collision_sink` 是唯一能看见这次碰撞的出口——去重循环照旧**保留首个、丢弃后者**
+    （产物字节不变），但异名碰撞必须冒出来；同名纯重复导入仍静默去重、不算碰撞。
+    """
+    first = CourseMeeting("DEMO-1001", "分层教学甲班", 5, [1, 2], [1])
+    second = CourseMeeting("DEMO-1001", "分层教学乙班", 5, [1, 2], [1])
+    uid = make_uid("2026-fall", first, "2026-09-11")
+    assert make_uid("2026-fall", second, "2026-09-11") == uid
+
+    sink: set[str] = set()
+    events = build_events([first, second], calendar, schedules, collision_sink=sink)
+    assert sink == {uid}
+    assert len(events) == 1, "行为与今天一致：保留首个、丢弃后者"
+    assert events[0].summary == "分层教学甲班"
+
+    # 对照：纯重复导入（同 UID 同课程名）不算碰撞，sink 保持空。
+    dup_sink: set[str] = set()
+    dup_events = build_events([first, first], calendar, schedules, collision_sink=dup_sink)
+    assert dup_sink == set()
+    assert len(dup_events) == 1
+
+    # 不传出参时行为与旧签名一致（向后兼容看守）。
+    assert len(build_events([first, second], calendar, schedules)) == 1
+
+
 # --------------------------------------------------------------------------- #
 # 事件展开
 # --------------------------------------------------------------------------- #

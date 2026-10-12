@@ -235,6 +235,14 @@ def _check_uid_recipe(cfg: Settings, semester: str, state: Any) -> Check:
         count = None
         read_error = type(exc).__name__
     if state is None:
+        if read_error is not None:
+            # 未订阅也要如实交代台账读不出来（终审 minor d）：这一项对未订阅用户
+            # 仍是"没有迁移可言"，但坏台账是真实可用性信号——折成警告，永不 FAIL。
+            return Check(
+                "uid_recipe",
+                STATUS_WARN,
+                f"配方 v{UID_RECIPE_VERSION}；未配置订阅，无迁移；课程台账暂不可读（{read_error}）",
+            )
         return Check("uid_recipe", STATUS_OK, f"配方 v{UID_RECIPE_VERSION}；未配置订阅，无迁移")
     if needs_uid_migration(state):
         ledger_part = (

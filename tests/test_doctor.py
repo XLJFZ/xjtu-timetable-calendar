@@ -330,6 +330,26 @@ def test_doctor_ok_when_no_subscription(tmp_path: Path) -> None:
     assert "未配置订阅" in got.detail
 
 
+def test_doctor_warns_when_unsubscribed_ledger_unreadable(tmp_path: Path) -> None:
+    """未订阅 + 课程台账存在但读不出 ⇒ WARN 并带上异常类名（终审 minor d）。
+
+    旧早退把刚算出的 `read_error` 丢掉、对未订阅用户报成 OK——坏台账是真实的可用性
+    信号，不许被"没有迁移可言"顺手掩掉；同时保持这一项**永不 FAIL**。
+    """
+    import xjtu_calendar.doctor as doctor_module
+
+    cfg = make_home(tmp_path)
+    ledger = cfg.course_ledger_path(SEMESTER)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"\xff\xfe not utf-8")
+
+    got = doctor_module._check_uid_recipe(cfg, SEMESTER, None)
+    assert got.status == STATUS_WARN
+    assert got.name == "uid_recipe"
+    assert "课程台账暂不可读（UnicodeDecodeError）" in got.detail
+    assert doctor_exit_code([got]) == 0, "这一项永不阻塞"
+
+
 def test_doctor_message_carries_no_personal_data(tmp_path: Path) -> None:
     """输出要过隐私 grep：无课程名/教师/教室/token/订阅 URL（规格 §8）。
 

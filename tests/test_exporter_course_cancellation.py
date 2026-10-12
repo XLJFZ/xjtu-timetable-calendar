@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -17,7 +17,12 @@ from exam_support import SEMESTER, STAMP, captured_logs
 from icalendar import Calendar
 from subscribe_support import make_home, payload_row
 
-from xjtu_calendar.cancellation import CANCELLATION_SUMMARY, load_ledger, render_ledger
+from xjtu_calendar.cancellation import (
+    CANCELLATION_SUMMARY,
+    LedgerEntry,
+    load_ledger,
+    render_ledger,
+)
 from xjtu_calendar.exporter import build_ics_for_semester
 from xjtu_calendar.schedules import combine
 
@@ -83,6 +88,33 @@ def _cancelled_sequences(ics: str) -> dict[str, int]:
 
 def _cancelled_uids(ics: str) -> set[str]:
     return set(_cancelled_sequences(ics))
+
+
+def _synth_entries(prefix: str, count: int, *, offset_days: int) -> list[LedgerEntry]:
+    """批量合成台账条目：`offset_days` 相对 NOW（负数 ⇒ 原定时刻已过去）。
+
+    UID/课程名都是占位值；合成条目**不在** live 集里（live UID 走真实配方），
+    于是可发性完全由"哪些 UID 出现在 baseline_probe 留底里"控制。
+    """
+    entries = []
+    for i in range(count):
+        start = NOW + timedelta(days=offset_days, hours=i // 10, minutes=5 * (i % 10))
+        entries.append(
+            LedgerEntry(
+                uid=f"{prefix}-{i}@xjtu-timetable-calendar",
+                start=start,
+                end=start + timedelta(hours=2),
+                summary="示例课程甲",
+            )
+        )
+    return entries
+
+
+def _write_synth_baseline(tmp_path: Path, entries: list[LedgerEntry]) -> Path:
+    """把合成条目渲染成"上次发布留底"（台账文本本身就是合法 ICS，供 parse_baseline 读 UID）。"""
+    retained = tmp_path / "synth-baseline.ics"
+    retained.write_text(render_ledger([], entries, dtstamp=STAMP), encoding="utf-8", newline="")
+    return retained
 
 
 def test_vanished_course_is_cancelled_in_next_export(tmp_path: Path) -> None:
@@ -312,3 +344,92 @@ def test_migration_branch_is_exempt_from_gate_two_and_surfaces_size(tmp_path: Pa
     assert not cfg.subscribe_dir.exists(), "exporter 一个字都不写盘（状态标记回写是 CLI 的职责）"
     # 迁移条目也要回写进课程台账文本，自限到各自原定时刻（与考试侧 pending 同形）。
     assert result.course_ledger_text is not None
+
+
+def test_mass_cancellation_fuse_counts_only_upcoming_ledger_entries(tmp_path: Path) -> None:
+    """门 2 分母改为「未过期台账条目」（终审裁定）：这条用例就是旧分母那个洞的钉子。
+
+    台账 50 条 = 40 条已过期 + 10 条未过期，10 条未过期全部是撤销候选。
+    旧分母：10/50 = 20% < 30% ⇒ 熔断**漏响**，剩余学期 100% 被静默撤销；
+    新分母：10/10 = 100% ⇒ 必须抛 MassCancellationBlocked。
+    """
+    from xjtu_calendar.errors import MassCancellationBlocked
+
+    cfg = make_home(tmp_path, _rows(), semester=SEMESTER)
+    expired = _synth_entries("exp", 40, offset_days=-7)
+    upcoming = _synth_entries("upc", 10, offset_days=7)
+    _write_course_ledger(cfg, [*expired, *upcoming])
+    retained = _write_synth_baseline(tmp_path, [*expired, *upcoming])
+
+    with pytest.raises(MassCancellationBlocked):
+        build_ics_for_semester(cfg, SEMESTER, baseline_probe=str(retained), cancel_expiry_at=NOW)
+
+
+def test_gate2_narrower_denominator_does_not_flag_small_edits(tmp_path: Path) -> None:
+    """反向对照：40 条过期 + 40 条未过期，未过期里只有 1 条具备发布凭据（⇒ 候选 1）⇒ 不抛。
+
+    证明分母收窄没有把常态小调整变成误伤：候选不足 10 条时双条件的比例条件根本轮不到。
+    """
+    cfg = make_home(tmp_path, _rows(), semester=SEMESTER)
+    expired = _synth_entries("exp", 40, offset_days=-7)
+    upcoming = _synth_entries("upc", 40, offset_days=7)
+    _write_course_ledger(cfg, [*expired, *upcoming])
+    retained = _write_synth_baseline(tmp_path, upcoming[:1])
+
+    result = build_ics_for_semester(
+        cfg, SEMESTER, baseline_probe=str(retained), cancel_expiry_at=NOW
+    )
+    assert result.info["course_cancellations"] == 1
+    assert _cancelled_uids(result.ics) == {upcoming[0].uid}
+
+
+def test_uid_collision_disables_the_course_cancellation_path(tmp_path: Path) -> None:
+    """v2 配方放宽了碰撞面（终审裁定）：异名同 UID ⇒ 整条课程撤销通路本次不工作。
+
+    碰撞意味着"分不清哪一行是哪门课"，此时任何撤销判断都不可信：零撤销、不迁移、
+    不产出课程台账文本，课表产物照常；只发一条不含课程名的安全 warning（§8）。
+    台账里放一条本来会被撤销的旧课（有留底凭据），短路必须让它**不**被撤销。
+    """
+    rows = [
+        _row("示例课程甲", "D-1"),
+        _row("示例课程乙", "D-1"),  # 同课程号、同天同节次、异名 ⇒ 同 UID
+    ]
+    cfg = make_home(tmp_path, rows, semester=SEMESTER)
+    stale = _synth_entries("stale", 1, offset_days=7)
+    _write_course_ledger(cfg, stale)
+    retained = _write_synth_baseline(tmp_path, stale)
+
+    with captured_logs() as records:
+        result = build_ics_for_semester(
+            cfg, SEMESTER, baseline_probe=str(retained), cancel_expiry_at=NOW
+        )
+
+    assert "STATUS:CANCELLED" not in result.ics, "碰撞时一条撤销都不许下发"
+    assert result.info["course_cancellations"] == 0
+    assert result.course_ledger_text is None, "碰撞时不许改写课程台账"
+    assert result.migration_summary is None
+    msgs = [
+        rec.getMessage() for rec in records if "课程撤销通路本次降级为不撤销" in rec.getMessage()
+    ]
+    assert msgs, "碰撞短路必须留下一条 warning"
+    assert any("2 个课程 UID" in m for m in msgs), "1-2 周两个上课日各撞一个 UID"
+    assert not any("示例课程" in m for m in msgs), "warning 只许报数量（§8）"
+    assert result.ics, "课表产物照常产出"
+
+
+def test_no_baseline_makes_gate2_unreachable(tmp_path: Path) -> None:
+    """钉住「无基线 ⇒ 熔断不可达」：这是 doctor/render 类调用把熔断说成 FAIL 的反证。
+
+    `baseline=None`（没有上次发布产物）时全部候选进 `unresolvable`、`deliverable` 为空，
+    门 2 数的是 deliverable ⇒ 永不触发。如果哪天有人给渲染路径传了基线，
+    此用例的语义就该重新讨论。
+    """
+    cfg = make_home(tmp_path, _rows(), semester=SEMESTER)
+    upcoming = _synth_entries("upc", 12, offset_days=7)
+    _write_course_ledger(cfg, upcoming)
+    # 不传 baseline_probe / published_baseline_text：doctor/render 类的调用形状。
+
+    result = build_ics_for_semester(cfg, SEMESTER, cancel_expiry_at=NOW)
+    assert "STATUS:CANCELLED" not in result.ics
+    assert result.info["course_cancellations"] == 0
+    assert result.migration_summary is None

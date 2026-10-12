@@ -4,8 +4,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from xjtu_calendar.cancellation import LedgerEntry
-from xjtu_calendar.courses import assess_courses, mass_cancellation_check, migration_candidates
+from xjtu_calendar.courses import (
+    assess_courses,
+    mass_cancellation_check,
+    migration_candidates,
+    upcoming_ledger_count,
+)
 from xjtu_calendar.models import CourseMeeting
 
 
@@ -58,6 +65,34 @@ def test_gate2_below_min_events_never_triggers() -> None:
 
 def test_gate2_empty_ledger_never_triggers() -> None:
     assert mass_cancellation_check(candidates=50, ledger_total=0) is None
+
+
+@pytest.mark.parametrize(
+    ("candidates", "ledger_total", "blocks"),
+    [
+        (10, 30, True),  # 恰好触到最小事件数（10/30 ≈ 33% 同时过比例关）⇒ 熔断
+        (12, 40, True),  # 恰好 30% ⇒ 熔断（放行条件是 ratio < 0.30，等号不放过）
+        (9, 20, False),  # 恰好少一条最小事件数 ⇒ 不熔断
+        (299, 1000, False),  # 比例 0.299 ⇒ 不熔断
+        (50, 0, False),  # 分母 0 ⇒ 不熔断（除零防线）
+    ],
+)
+def test_gate2_boundaries(candidates: int, ledger_total: int, blocks: bool) -> None:
+    """CD12 双条件的四个等号/邻界钉死：`==10`、`==30%`、`==9`、`<30%`、分母 `==0`。"""
+    got = mass_cancellation_check(candidates=candidates, ledger_total=ledger_total)
+    assert (got is not None) is blocks
+
+
+def test_gate2_denominator_only_counts_upcoming_entries() -> None:
+    """门 2 分母（终审裁定）：`start >= now` 的条目才进分母——与分子 `deliverable` 同域。
+
+    旧口径数整本台账：学期中段 50 条里 40 条已过期时，"抓漏只剩 10 条"算出 10/50 = 20%，
+    熔断恰好在该响的时候不响。通路级反证见 `test_exporter_course_cancellation` 同名用例。
+    """
+    ledger = {f"e{i}": _entry(f"e{i}", hours=-240 + i) for i in range(40)}  # 40 条全部在 NOW 之前
+    ledger.update({f"u{i}": _entry(f"u{i}", hours=10 + i) for i in range(10)})
+    assert upcoming_ledger_count(ledger, NOW) == 10
+    assert upcoming_ledger_count({}, NOW) == 0
 
 
 def _entry(uid: str, *, hours: int) -> LedgerEntry:

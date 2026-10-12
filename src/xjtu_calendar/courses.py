@@ -57,11 +57,21 @@ class MassCancellation:
     ratio: float
 
 
+def upcoming_ledger_count(ledger: Mapping[str, LedgerEntry], now: datetime) -> int:
+    """门 2 的分母：台账里**原定时刻还没过去**的条目数。
+
+    分子 `deliverable` 只数未来条目（`cancel_candidates` 会把 `start < now` 筛掉），
+    分母若用整本台账，学期中段"抓漏一半课表"的比例会被过期条目稀释到 30% 以下——
+    熔断恰好在该响的时候不响。分子分母必须同域。
+    """
+    return sum(1 for entry in ledger.values() if entry.start >= now)
+
+
 def mass_cancellation_check(*, candidates: int, ledger_total: int) -> MassCancellation | None:
-    """候选数 ≥ 10 **且** 占台账事件总数 ≥ 30% ⇒ 熔断（CD12）。
+    """候选数 ≥ 10 **且** 占门 2 分母（未过期台账条目，见 :func:`upcoming_ledger_count`）≥ 30% ⇒ 熔断（CD12）。
 
     双条件是为了不误伤两种形状：小规模调整（候选不足 10 条，无论比例）与大日历的
-    局部异常（500 条里撤 20 条 ≈ 4%，比例不达标）。命中即由调用方拒绝发布——
+    局部异常（未过期 500 条里撤 20 条 ≈ 4%，比例不达标）。命中即由调用方拒绝发布——
     课程侧最坏的错位是"我们以为撤销过了，订阅端从没收到"（CD4）。
     """
     if ledger_total <= 0 or candidates < MASS_CANCELLATION_MIN_EVENTS:

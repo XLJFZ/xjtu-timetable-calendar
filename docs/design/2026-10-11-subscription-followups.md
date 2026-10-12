@@ -91,7 +91,30 @@ D8 的序号幂等不破：标题每次渲染都相同 ⇒ `event_fingerprint` �
 
 ---
 
-## 3. `.webcal` 分发（小改动，降门槛明显）
+## 3. `.webcal` 分发 → **改为输出 `webcal://` 链接，不发 `.webcal` 文件**（0.8.x 决定，2026-10-12）
+
+**决定与理由**（原方案是"在 `.ics` 旁边多写一个 `<token>.webcal`"，四条理由否决）：
+
+1. `webcal://` 本来就是 **URL scheme**，不是文件格式——`.webcal` 文件的内容就是一行 webcal URL。
+   我们的 `.ics` 已经有稳定 URL，把 scheme 换掉就是同一个地址 ⇒ **不需要任何新文件**。
+2. 发布分支的 tree 护栏断言「根目录恰好一个 `*.ics`」（`subscribe.py:279-291`）。多一个
+   `<token>.webcal` 会让 `len(listing) == 2` ⇒ **下一次发布被自家护栏判成"分支被污染"而拒绝**；
+   要放行就得放宽护栏，而护栏的职责正是"别把用户的工作仓库强推覆盖掉"，为省一个链接去削它不值。
+3. `rotate` 会换 token，而清理只 `unlink` `*.ics`（`subscribe.py:297`）⇒ 旧 `<token>.webcal`
+   会留在 tip 上，同样撞死护栏。这是原方案里没写到的新 bug 面。
+4. 多一个公开文件就多一个可枚举面（本文第 4 条），而且 GitHub Pages **不能设自定义
+   `Content-Type`**，`.webcal` 多半以 `application/octet-stream` 下发，在 iOS 上反而不如
+   直接点 `webcal://` 链接可靠。
+
+**改成做什么**：`SubscriptionState` 加一个 `webcal_url` 属性（`https://` → `webcal://` 的 scheme
+替换，非 https 时返回 `None`），`init` / `push` / `status` 各多打一行；README 补 iOS/macOS 路径。
+
+**红线 3 仍然适用**：「iOS/Safari 点 `webcal://` 会弹订阅确认」是常识但**未在本项目真机验证**，
+输出与文档一律写「通常」并注明未验证。
+
+---
+
+### 原方案存档（为什么曾考虑发文件）
 
 **现状**：iOS/macOS 的订阅入口藏在「设置 → 日历 → 账户 → 添加账户 → 其他 →
 添加已订阅的日历」，用户要手贴 URL；而 `.webcal` 链接点一下就能完成订阅。

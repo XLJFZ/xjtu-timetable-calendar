@@ -9,7 +9,23 @@
 ## [未发布]
 
 版本号单一来源仍是 `pyproject.toml`（尚未随本版 bump）。下面 Documentation 小节是本分支已落地、
-随 0.8.0 一起发布的用户可见文档回写。
+随 0.8.0 一起发布的用户可见文档回写；Added 小节是 0.8.0 **之后**的第一笔代码改动，
+版本号仍未 bump。
+
+### Added
+
+- **`subscribe` 的四处输出各补一行 iOS/macOS 的 `webcal://` 订阅链接**：`init`、`push`
+  （含「无变化，跳过推送」那一支）、`rotate`（打的是**新** token 的那条）、`status`，
+  文案为「iOS/macOS：通常可直接打开 <链接> 完成订阅（真机未验证，失败就走 README 的手动路径）」。
+  链接来自新增的只读属性 `SubscriptionState.webcal_url`——只把同一行里那条 `https://` 订阅 URL
+  换个 scheme，指向**同一份** `<token>.ics`；`url_base` 非 https（明文 `http`、彩排用的 `file://`）
+  时属性为 `None`、整行不打印，宁可不提示也不给一条看起来能点其实无效的链接。
+  **发布物形态不变**：`webcal://` 是 URL scheme 而不是文件，所以不在 `.ics` 旁边多写一个
+  `<token>.webcal`——那会撞 `subscribe` 的 tree 护栏（发布分支根目录恰好一个 `*.ics`）与 rotate
+  只清 `*.ics` 的清理逻辑，让下一次发布被自家护栏判成「分支被污染」。
+  「点开就弹订阅确认」在本项目**没有做过真机验证**（AGENTS 红线 3），措辞停在「通常」；
+  rotate 后旧链接随之作废、必须用新那条重订，iOS/macOS 的手动路径与完整口径见 README
+  「iOS / macOS：`webcal://` 订阅链接」。
 
 ### Changed
 

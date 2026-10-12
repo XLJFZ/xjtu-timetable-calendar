@@ -76,6 +76,15 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
   2. 若发布仓库是**公开**的，仓库分支页会直接列出 `<token>.ics` 的文件名——
      "知道 URL 才能读"这层保护在公开仓库上并不成立。要么接受，要么改用私有分发。
 - 换 token（`subscribe rotate`）会让所有已添加的 URL 立刻失效，需用户明确同意。
+- iOS / macOS 用户可以**试** init / push / rotate / status 四处打印的那条 `webcal://` 链接
+  （它只是把同一行 `https://` URL 换个 scheme）。「点开就弹订阅确认」**没有在本项目真机验证过**，
+  只能说「通常」，失败就回手动路径：iOS「设置 → 日历 → 账户 → 添加账户 → 其他 →
+  添加已订阅的日历」、macOS 日历 App「文件 → 新建订阅日历」（README「iOS / macOS：
+  `webcal://` 订阅链接」有完整版）。rotate 之后要用**新** token 的那条重订。
+- **这一条不改变发布物形态**：`webcal://` 是 URL scheme 而不是文件，发布分支的 tip
+  仍然只有**一个** `<token>.ics`。**不要**因为看到 webcal 就去多发布一个 `<token>.webcal`
+  文件——那会撞 `subscribe` 的 tree 护栏（根目录恰好一个 `*.ics`）与 rotate 只清 `*.ics`
+  的清理逻辑；非 https 的 `url_base` 下工具根本不打印这一行。
 - 升级到 v0.8（0.8.0）时如实告知（口径解释，不新增判据）：课程 UID 改用配方 v2、
   课程名不再参与身份，改课名从此走原地更新；首次 `subscribe push` 会自动做一次 v1→v2 迁移
   （发布前打印一行预告），`export` 不参与迁移——手工 `export` 导入的用户需删旧日历重导一次。

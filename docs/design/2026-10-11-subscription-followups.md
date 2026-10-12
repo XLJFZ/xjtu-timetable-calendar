@@ -91,7 +91,7 @@ D8 的序号幂等不破：标题每次渲染都相同 ⇒ `event_fingerprint` �
 
 ---
 
-## 3. `.webcal` 分发 → **改为输出 `webcal://` 链接，不发 `.webcal` 文件**（0.8.x 决定，2026-10-12）
+## 3. `.webcal` 分发 → **改为输出 `webcal://` 链接，不发 `.webcal` 文件**（0.8.x 决定，2026-10-12）—— **已落地（2026-10-12）**
 
 **决定与理由**（原方案是"在 `.ics` 旁边多写一个 `<token>.webcal`"，四条理由否决）：
 
@@ -106,11 +106,19 @@ D8 的序号幂等不破：标题每次渲染都相同 ⇒ `event_fingerprint` �
    `Content-Type`**，`.webcal` 多半以 `application/octet-stream` 下发，在 iOS 上反而不如
    直接点 `webcal://` 链接可靠。
 
-**改成做什么**：`SubscriptionState` 加一个 `webcal_url` 属性（`https://` → `webcal://` 的 scheme
-替换，非 https 时返回 `None`），`init` / `push` / `status` 各多打一行；README 补 iOS/macOS 路径。
+**落地形态（2026-10-12，0.8.x 的第一笔）**：`SubscriptionState` 有了只读属性 `webcal_url`
+（`subscription_url` 的 `https://` → `webcal://` scheme 替换；非 https 的 `url_base` ——
+明文 `http`、`file://` 彩排远端 —— 返回 `None`），CLI 的 `_print_webcal_hint` 在**四处**各打一行：
+`subscribe init`、`subscribe push`（含 `NO_CHANGE` 那一支——幂等跳过往往是用户第二次看到入口）、
+`subscribe rotate`（打的是**新** token 的链接，旧链接随之作废）、`subscribe status`。
+文案为「iOS/macOS：通常可直接打开 <链接> 完成订阅（真机未验证，失败就走 README 的手动路径）」。
+发布分支的 tip 形态**未变**，仍然只有一个 `<token>.ics`（有用例钉住）；README 补了
+「iOS / macOS：`webcal://` 订阅链接」一节给出手动路径与三条口径，`skills/` 的第 7 步与
+`references/client-matrix.md` 同步，并写明这一改动不产生新发布物，防止下一个 agent 又去发文件。
 
 **红线 3 仍然适用**：「iOS/Safari 点 `webcal://` 会弹订阅确认」是常识但**未在本项目真机验证**，
-输出与文档一律写「通常」并注明未验证。
+输出与文档一律写「通常」并注明未验证。iPhone 侧的端到端订阅（点了到底弹不弹、订阅后是否定期回源）
+仍是**待做的真机演练**，本轮只落了链接与文案。
 
 ---
 

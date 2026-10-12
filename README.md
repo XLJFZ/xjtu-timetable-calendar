@@ -344,6 +344,8 @@ Output:
 
 5. 把订阅 URL 复制到日历客户端（入口见下）。Pages 首次生效有数分钟延迟，
    可运行 `subscribe status --verify` 对 URL 做一次匿名 GET 自检。
+   iOS / macOS 用户还可直接打开 init 一并打印的那条 `webcal://` 链接
+   （口径与手动路径见下面「iOS / macOS：`webcal://` 订阅链接」）。
 
 ### 日常更新
 
@@ -375,9 +377,43 @@ python -m xjtu_calendar subscribe rotate --semester 2026-fall
 换新 token 后 rotate 会顺手重新发布（若之前从未 push 过，则提示你跑
 `subscribe push`）。新文件挂上分支、旧文件名从 tip 消失，**旧 URL 自此 404**；
 **所有日历客户端都要重新粘贴新 URL**——这是换 token 的固有成本。
+rotate 也会把**新** token 的 `webcal://` 链接打印出来（旧的那条随之作废，见下一节），
+重订时用新的一条。
 极端情况 rotate 后发布失败（网络/权限）：token 已换、远端还挂着旧文件名，
 **补发成功前旧 URL 仍可读取**——这正是需要尽快补发（或清理）的原因；
 按终端提示修复后跑 `subscribe push` 补发即可。
+
+### iOS / macOS：`webcal://` 订阅链接
+
+`subscribe init`、`subscribe push`（含「无变化，跳过推送」那一支）、`subscribe rotate`、
+`subscribe status` 四处都会额外打印一行，文案逐字如下：
+
+```
+iOS/macOS：通常可直接打开 webcal://<你的 Pages 前缀>/<token>.ics 完成订阅（真机未验证，失败就走 README 的手动路径）。
+```
+
+三点缺一不可：
+
+1. **它不是一个新文件**。这条链接只是把同一行里那条订阅 URL 的 `https://` 换成 `webcal://`
+   （`webcal` 是 URL scheme，不是文件格式），指向的还是**同一份** `<token>.ics`；发布分支的
+   tip 上始终只有那一个 `.ics`。当初考虑过「在 `.ics` 旁边再写一个 `<token>.webcal`」，
+   因为会撞 `subscribe` 的 tree 护栏（根目录恰好一个 `*.ics`）与 rotate 只清 `*.ics`
+   的清理逻辑而否决，理由见 `docs/design/2026-10-11-subscription-followups.md` §3。
+   另外只有 `url_base` 是 **https** 时才打印这一行：非 https 的订阅地址（明文 `http`、
+   自建托管给的 `file://` 一类彩排远端）会整行省略——宁可不提示，也不给一条看起来能点
+   其实无效的链接。
+2. **「点开就弹订阅确认」本项目没有做过真机验证**。这一句按 AGENTS 红线 3 停在「通常」：
+   iOS/Safari 拿到 `webcal://` 之后的处置、弹不弹订阅确认，都没有 iPhone 实测读数。
+   点了没反应或没能订阅，就走手动路径，两条都能建立订阅：
+   - **iOS**：设置 → 日历 → 账户 → 添加账户 → 其他 → 添加已订阅的日历，
+     粘贴那条 `https://` 订阅 URL（新版 iOS 把「日历」设置项收进 App 分组，菜单名随系统版本有出入）。
+   - **macOS**：日历 App → 文件 → 新建订阅日历（旧版本为「文件 → 添加日历 → 订阅」），
+     粘贴 URL，并把「自动刷新」设为一个周期。
+
+   这两条菜单路径同样**未在本项目真机验证**，写出来是 Apple 一贯的入口形态，不是实测步骤。
+3. **rotate 之后旧链接随之作废**。换 token 换的就是 URL 本身：补发成功后旧 `<token>.ics`
+   从分支 tip 消失，旧 `webcal://` 链接和旧 `https://` URL 一起失效（补发成功前旧 URL
+   仍可读取，见上一节），iOS 侧必须用 rotate 打印的**新**那条重新订阅一次。
 
 ### 隐私口径
 
@@ -474,8 +510,11 @@ v0.8.0 把课程 UID 的配方从 v1 换成 v2（去掉课程名），这是**�
 
 ### 常见客户端订阅入口
 
-- Apple 日历：「通过订阅添加日历」（macOS 文件 → 添加日历 → 订阅；
-  iPhone 设置 → 日历 → 添加日历）。
+- Apple 日历：走**订阅**入口而不是导入（macOS 日历 App「文件 → 新建订阅日历」，
+  旧版本为「文件 → 添加日历 → 订阅」；iPhone「设置 → 日历 → 账户 → 添加账户 → 其他 →
+  添加已订阅的日历」）。`subscribe` 打印的那行 `webcal://` 链接是给 Apple 用户抄的捷径，
+  **未在本项目真机验证**，点了没反应就回上面这两条手动路径
+  （完整口径见「iOS / macOS：`webcal://` 订阅链接」）。
 - Google Calendar：**订阅只能在网页版建立**——打开 calendar.google.com，左侧「其他日历」
   旁的「添加日历」→「通过 URL 创建 / 从 URL 添加」（各语言版本措辞略有差异）。
   **手机 App 里没有这个入口**；而且实测：网页端建好之后，手机上的 Google 日历 App

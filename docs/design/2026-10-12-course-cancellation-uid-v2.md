@@ -51,7 +51,7 @@ v0.6 当时判定"不做"的理由（课程消失多半是选课/学期变化，
 | CD9 | 通用撤销机制放哪 | **纯搬迁**到新模块 `cancellation.py`（`LedgerEntry` / `cancel_candidates` / `build_cancellation_events` / `CANCELLATION_SUMMARY` / 台账 render+load 的通用部分），`exams.py` 保留 re-export | 代理 | 既让"权威在哪"说得清，又不动 v0.6 已发布代码的调用点与测试 import——零回归面。参数化台账文件名（`last-exams-*` / `last-courses-*`），逻辑一份都不复制 |
 | CD10 | 迁移候选要不要过 D2 过期筛 | **要**：留底里 `DTSTART` 已过的 UID 不进迁移候选 | 代理（复核新增） | 留底里也含**上一次已撤销**的条目，而它们不在任何台账里（台账只存 live 形态，D10），迁移分支若不过期筛会把上学期的旧事件反复撤销、无限续命。本学期课程的时刻都在未来 ⇒ 全量撤销不受影响 |
 | CD11 | 迁移分支与门 2 的关系 | 迁移分支**豁免**熔断，但 push 前必须打印一行预告（N 条 + 原因） | 代理 | 迁移是配方切换，不是数据缺失，用整学期撤销的规模去判熔断会永远卡死升级。"自动但不静默"：不要求用户额外操作，但绝不让它悄悄发生 |
-| CD12 | 熔断判据 | `候选数 ≥ 10` **且** `候选数 ÷ 未过期（原定时刻 ≥ now）课程台账条目数 ≥ 0.30` ⇒ 触发。两个常量写死在模块顶部（`MASS_CANCELLATION_MIN_EVENTS = 10`、`MASS_CANCELLATION_RATIO = 0.30`），**不新增配置项**；出口是旗标 `--allow-mass-cancellation` 与新退出码 `6` | 代理（分母经终审修订，见 `7cc0ae2`） | 双条件的分工：数量下限保证**候选不足 10 条时熔断永不介入**——不论比例多高，任何日历上的正常逐学期加减课调整都不会被拦（小台账"未过期 30 条里撤 12 条"因 12 ≥ 10 且 12/30 = 40% ≥ 30%，**是会触发的**，出口正是旗标 + 退出码 6，这符合 fail-closed 的本意）；比例条件则放行大日历的局部异常（未过期条目 500 条里撤 20 条 ≈ 4%，不触发）。阈值 0.30 拍的是"一学期最多几门课变动"的量级。**分母口径终审改为「未过期」条目**：分子 `deliverable` 本就只数未来条目（`cancel_candidates` 把 `start < now` 筛掉），分子分母必须同域。旧口径数整本台账会被过期条目稀释——学期中段"台账 500 条里 450 条已过去 + 只抓到 1 门课" ⇒ 候选 50、50/500 = 10% < 30% ⇒ 熔断**漏响、剩余学期 100% 被静默撤**；按未过期条目 50 算则 50/50 = 100% ≥ 30%，熔断如期触发（`courses.upcoming_ledger_count`） |
+| CD12 | 熔断判据 | `候选数 ≥ 10` **且** `候选数 ÷ 未过期（原定时刻 ≥ now）课程台账条目数 ≥ 0.30` ⇒ 触发。两个常量写死在模块顶部（`MASS_CANCELLATION_MIN_EVENTS = 10`、`MASS_CANCELLATION_RATIO = 0.30`），**不新增配置项**；出口是旗标 `--allow-mass-cancellation` 与新退出码 `6` | 代理（分母经终审修订，见 `7cc0ae2`） | 双条件的分工：数量下限保证**候选不足 10 条时熔断永不介入**——不论比例多高，任何日历上的正常逐学期加减课调整都不会被拦（小台账"未过期 30 条里撤 12 条"因 12 ≥ 10 且 12/30 = 40% ≥ 30%，**是会触发的**，出口正是旗标 + 退出码 6，这符合 fail-closed 的本意）；比例条件则放行大日历的局部异常（未过期条目 500 条里撤 20 条 ≈ 4%，不触发）。阈值 0.30 拍的是"一学期最多几门课变动"的量级。**分母口径终审改为「未过期」条目**：分子 `deliverable` 本就只数未来条目（`cancel_candidates` 把 `start < now` 筛掉），分子分母必须同域。旧口径数整本台账会被过期条目稀释——学期中段"台账 500 条里 450 条已过去 + 只抓到 1 门课" ⇒ 候选 50、50/500 = 10% < 30% ⇒ 熔断**漏响、剩余学期 100% 被静默撤**；按未过期条目 50 算则 50/50 = 100% ≥ 30%，熔断如期触发（`courses.upcoming_ledger_count`）。**（2026-10-12 修复回写 `bb2a721`）** 门 2 数的是**本次新撤销**，不是「产物里带了几条撤销」：**分子与分母都排除基线（留底）里 `STATUS:CANCELLED` 的 UID**。原因：课程台账按 D10 不带 STATUS，「还活着的课」和「上次已撤、这次继续携带的墓碑」在台账里同形，`cancel_candidates` 会把墓碑重新算成候选，于是迁移跑完之后每一次普通 `push` 都被自己的保险丝误杀（真数据彩排实测：75 条墓碑 ÷ 未过期分母 150 = 50%，修复前第三次 push 退出码 6）。「上次已发布过这条撤销」的权威在留底（带 STATUS），不在台账。**分子分母必须同时排除**——只排分子会在学期末重新打开分母稀释的洞（剩余 live 被抹掉、分母还挂着墓碑 ⇒ 比例跌破阈值、熔断漏响）。两个常量（10 / 0.30）与「不新增配置项」口径照旧 |
 | CD13 | 门 1 的判据 | `courses_trusted =` 快照读到了 **且** 解析没有任何 skipped/unresolved 行 **且** 课程门数 ≥ 1。不满足 ⇒ 不读台账、不撤销、`course_ledger_text=None`（照 D18/D21） | 代理 | `--from-file` 本身**不**取消信任——离线导入是常态操作，判据是"这份数据里有没有课、有没有读不懂的行"，不是它从哪来。课程侧现有行为已经 fail-closed（解析不了的行拒绝写盘），所以门 1 主要防的是"接口返回了半份课表" |
 | CD14 | 日期裁剪与撤销 | live 集与台账回写都取**未经 `--from-date/--to-date` 过滤**的课程事件 | 代理 | D19 的对应物。裁剪是课程侧的**常态操作**（考试侧只是偶尔），若候选在过滤之后算，一次局部导出就会把窗口外的课当成"消失"并撤销、还从台账剪掉——局部导出动了全局订阅状态 |
 | CD15 | v1 配方代码去留 | **删**。迁移从留底读旧 UID，不需要重算 v1；v1 golden 文件保留作历史证据，新增 v2 golden，并把 v1 payload 形状写进 docstring | 代理 | 不留死分支。但两年后必须有人能解释旧产物里那批 UID 是怎么来的——所以形状进文档不进代码 |
@@ -187,6 +187,11 @@ publish 成功 → 写 last-<学期>.ics + last-courses-<学期>.ics
   进日志时不得携带课程名。
 - `mass_cancellation_check(*, candidates: int, ledger_total: int) -> MassCancellation | None`：
   门 2（CD12），常量 `MASS_CANCELLATION_MIN_EVENTS = 10`、`MASS_CANCELLATION_RATIO = 0.30`。
+- `upcoming_ledger_count(ledger: Mapping[str, LedgerEntry], now: datetime, *, exclude_uids: Collection[str] = ()) -> int`：
+  门 2 的分母（CD12）——台账里**原定时刻还没过去**、且**上次还没被撤过**的条目数。关键字默认参
+  `exclude_uids`（修复回写 `bb2a721`）传「基线里已经是 `STATUS:CANCELLED` 的那批 UID」，把墓碑从分母一并
+  抹掉；**分子分母必须同时排除**（只排分子会在学期末重新打开分母稀释的洞，见 CD12）。默认空集保持既有
+  调用形状、不破坏兼容。exporter 侧对应的分子排除是 `candidates=len([c for c in deliverable if c.uid not in already_cancelled])`。
 - `migration_candidates(published: Mapping[str, LedgerEntry], live_uids: Collection[str], normal_cancel_uids: Collection[str], now: datetime) -> list[LedgerEntry]`：
   CD10 的集合运算（留底解析出的 `{UID: LedgerEntry}` − 本次 live − 本次常态撤销，再过期筛），
   输出按 `(start, uid)` 全序。
@@ -232,6 +237,21 @@ payload 去掉 `course_name`（CD2），docstring 改写：删掉"刻意兼容"�
 - `doctor` 新增检查项「UID 配方与迁移状态」：`uid_recipe` 有无、课程台账条数、
   留底是否仍属迁移前。警告级，不阻塞（退出码规则不变）。
 
+### 6.7 `sequence.py`：基线携带 STATUS 供门 2 排除（修复回写 `bb2a721`）
+
+`EventBaseline` 新增末尾字段 `status: str | None = None`（frozen dataclass，默认 `None`）。
+`parse_baseline` 经新增私有 helper `_read_status(component: Any) -> str | None` 从留底读出：归一化为
+大写去空白，缺失/空串 ⇒ `None`（普通 live 事件即是 `None`，`STATUS:CANCELLED` ⇒ `"CANCELLED"`，与
+`STATUS_CANCELLED` 同形）。**`status` 不参与 `fingerprint`**——塞进指纹会改动既有 SEQUENCE/幂等判定与
+golden 用例。它是门 2 判定「这条撤销上次是否已发布过」的权威来源：课程台账按 D10 不带 STATUS，发布凭据
+只在留底里。exporter 消费：`already_cancelled = {uid for uid, item in (baseline or {}).items() if item.status == STATUS_CANCELLED}`，
+门 2 的分子与分母同时按它排除（见 CD12、§6.2），**墓碑照旧继续携带、产物形态与文案不变**。
+
+> 幂等说明（实测校正）：固定标题让墓碑内容逐次恒定，重复携带本身**不** bump SEQUENCE——SEQUENCE 只在
+> 迁移那一次从 0 抬到 1，此后每次发布内容未变 ⇒ `resolve_sequence` 走「未变」分支、SEQUENCE 稳定在 1，
+> 产物逐字节相同、`NO_CHANGE` 幂等成立。**「每次发布 SEQUENCE 都会递增、幂等在撤销存续期内不成立」是
+> 错误说法**，代码注释已按实测改掉，文档一律不写。
+
 ---
 
 ## 7. 错误处理与降级
@@ -256,6 +276,7 @@ payload 去掉 `course_name`（CD2），docstring 改写：删掉"刻意兼容"�
 | 带 `--from-date/--to-date` | 对课程撤销与台账**零影响** | CD14 |
 | 学期 key 换写法 | 旧 `last-courses-*.ics` 永远读不到 ⇒ README 给出手动删除指引 | 照考试侧 |
 | 降级回 v0.7.x 再升回来 | 字段被抹掉 ⇒ 重走迁移分支 ⇒ 候选空集、无副作用 | CD17 |
+| 留底不可读（`baseline is None`） | `already_cancelled` 取空集（与 `_cancellation_baseline_uids` 同口径），门 2 分子分母都无墓碑可排除——而此时候选全部判 `unresolvable`、`deliverable` 为空，熔断本就不可达，故**没打开新洞** | CD12 |
 
 ---
 
@@ -319,6 +340,19 @@ payload 去掉 `course_name`（CD2），docstring 改写：删掉"刻意兼容"�
     零撤销（产物无 `STATUS:CANCELLED`）、`course_ledger_text is None`、`migration_summary is None`、课表产物照常、
     只发一条不含课程名的 warning（`test_uid_collision_disables_the_course_cancellation_path`）。
 
+**熔断只数「本次新撤销」（修复回写 `bb2a721`）**
+
+22. 通路级（必须走 `build_ics_for_semester`）：迁移产出墓碑后，把该次产物当基线、**同一份课表**再渲染一次
+    ⇒ 不得抛 `MassCancellationBlocked`（旧口径 12/30 = 40% 会拦下，升级后每次普通 push 都被自己的保险丝
+    误杀），且那批墓碑仍须**原样携带**、一条不少，重复携带不 bump SEQUENCE
+    （`test_recarried_tombstones_do_not_refuse_later_pushes`）。分母排除的单元保证：`upcoming_ledger_count`
+    带 `exclude_uids` 把墓碑抹掉、默认参数不破坏既有调用形状
+    （`test_gate2_denominator_excludes_already_cancelled_uids`）。
+23. 排除墓碑之后门 2 **仍是保险丝**：基线里大量 `CANCELLED` 墓碑 + 少量以 live 形态发布过的旧事件、
+    本次课表一条没抓到 ⇒ 新撤销 = 那一小撮 live、分母 = 未过期且非墓碑 ⇒ 仍须抛 `MassCancellationBlocked`
+    （`test_tombstone_exclusion_leaves_the_fuse_armed`）。配套字段用例：`EventBaseline.status` 能从留底区分
+    live/撤销、大写归一、且不进指纹（`test_parse_baseline_reads_status`、`test_status_is_not_part_of_the_fingerprint`）。
+
 **跑法纪律**（AGENTS.md 第 3 条）：红绿阶段只跑定向测试（`-k` 或单文件），
 四条全量门禁在收尾跑一次。
 
@@ -375,3 +409,8 @@ payload 去掉 `course_name`（CD2），docstring 改写：删掉"刻意兼容"�
   熔断在真实渲染里抛出时新 token 与状态文件已换（§6）。要做到"熔断先于换 token"，得让那条
   只读探针与真实渲染**同判据**（同一道门 2、同一未过期分母）并据探针结果决定是否换 token——
   这既动 v0.6 的既有取舍又有探针/真实两次渲染的一致性风险，留待后续决定，v0.8 不改行为。
+- `doctor` 的渲染**不传基线**（沿用只读探针路径），所以迁移跑完之后的用户跑 `doctor` 会看到**一整屏**
+  「课程 … 无法安全下发撤销…留在课程台账里」的 D20 逐条警告（彩排实测 75 行；每行只打印 UID 这一 hash，
+  不含课程名）。**退出码不受影响、语义无害**——`doctor` 只是把「留底读不到发布凭据 ⇒ 判 unresolvable」这件事
+  逐条念出来。要不要把它聚合成一行（「本次有 N 条撤销因无发布凭据不下发」），留给后续决定。**这是既有的
+  构造性行为，不是 v0.8 引入的缺陷**，措辞不许写成 bug。

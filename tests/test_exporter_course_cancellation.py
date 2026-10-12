@@ -253,6 +253,34 @@ def test_stats_updated_not_polluted_by_course_cancellations(tmp_path: Path) -> N
     assert stats["added"] == 0
 
 
+def test_no_exams_leaves_the_course_cancellation_path_working(tmp_path: Path) -> None:
+    """§7 表「带 `--no-exams`」那一行：考试开关只关考试侧（D4/D21），课程撤销照常。
+
+    构建层目前只靠代码结构保证这件事（课程撤销块在 `include_exams` 的 `if` 之外），
+    这条把它钉成契约：把整块挪进 `if include_exams:` 立刻红。
+    """
+    rows = _rows()
+    cfg = make_home(tmp_path, rows, semester=SEMESTER)
+    retained = _publish_baseline(tmp_path, cfg, rows=rows)
+    _rewrite_snapshot(cfg, [r for r in rows if r["KCH"] != "D-4"])
+
+    result = build_ics_for_semester(
+        cfg,
+        SEMESTER,
+        baseline_probe=str(retained),
+        cancel_expiry_at=NOW,
+        include_exams=False,
+    )
+
+    assert _cancelled_uids(result.ics) == _uids_by_course(
+        retained.read_text(encoding="utf-8"), "示例课程丁"
+    )
+    assert result.info["course_cancellations"] == 2
+    assert result.info["exam_events"] == 0, "前提：`--no-exams` 真的关掉了考试侧"
+    assert result.exam_ledger_text is None
+    assert result.course_ledger_text is not None, "课程台账的回写不许跟着考试开关走"
+
+
 def test_migration_branch_is_exempt_from_gate_two_and_surfaces_size(tmp_path: Path) -> None:
     """CD11/§9-4 构建层半边：迁移豁免熔断，但规模必须经 migration_summary 冒出来给 CLI 预告。
 

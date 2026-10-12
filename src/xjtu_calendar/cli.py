@@ -1576,6 +1576,8 @@ def _subscribe_rotate(
         _print_migration_notice(probe_migration)
     subscribe.rotate_token(cfg, state)
     print(f"新订阅 URL：{state.subscription_url}（补发成功前旧 URL 仍可读取）")
+    # 换 token 正是最需要新链接的时刻：旧 URL 一失效，iOS 侧只能靠这条 webcal 链接重订。
+    _print_webcal_hint(state)
     print(f"旧 token（{old[:4]}…）在本次补发成功后失效，请更新所有日历客户端的订阅地址。")
     if not last_local.is_file():
         if state.last_push is not None:

@@ -466,6 +466,32 @@ def test_webcal_hint_shown_once_per_publish_facing_action(
     assert len(_webcal_lines(out)) == 1 and state.webcal_url in _webcal_lines(out)[0]
 
 
+def test_rotate_prints_the_new_webcal_link(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """rotate 换的就是 URL 本身 ⇒ 提示行必须给**新** token 的 webcal 链接，且只有一行。
+
+    旧地址在补发成功后立刻失效，这里若漏打、或把旧值打出来，iOS 用户会拿着一个
+    已经死掉的链接反复重试——换 token 恰恰是最需要新链接的时刻。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    old = subscribe.load_state(Settings(home=home), SEMESTER)
+    assert old is not None and old.webcal_url is not None
+    capsys.readouterr()
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    new = subscribe.load_state(Settings(home=home), SEMESTER)
+    assert new is not None and new.webcal_url is not None
+    assert new.token != old.token
+
+    lines = _webcal_lines(capsys.readouterr().out)
+    assert len(lines) == 1
+    assert new.webcal_url in lines[0]
+    assert old.webcal_url not in lines[0]
+
+
 def test_webcal_hint_absent_for_non_https_and_before_init(
     env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:

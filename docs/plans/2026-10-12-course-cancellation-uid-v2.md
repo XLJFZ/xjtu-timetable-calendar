@@ -145,12 +145,15 @@ def load_ledger(text: str, *, label: str = "台账") -> dict[str, LedgerEntry]:
     logger.warning("%s里有一条读不出（%s），已丢弃", label, type(exc).__name__)
 ```
 
-`exams.py` 末尾（原位置）加 re-export，保持 `__all__` 里原有名字：
+`exams.py` 里加 re-export（**放在文件顶部的 import 区**，不要放文件末尾），保持
+`__all__` 里原有名字：
 
 ```python
-# 撤销机制已搬到 cancellation.py（CD9）。这几个别名是**兼容层**：
+# 撤销机制的权威已搬到 cancellation.py（CD9）。这几个别名是**兼容层**：
 # 既有调用点与测试仍用考试侧原名，行为逐字节不变。
-from .cancellation import (  # noqa: E402  —— 位置固定在文件末尾，避免与上方定义重复
+from functools import partial
+
+from .cancellation import (
     CANCELLATION_SUMMARY,
     LedgerEntry,
     STATUS_CANCELLED,
@@ -162,12 +165,14 @@ from .cancellation import (  # noqa: E402  —— 位置固定在文件末尾，
 
 EXAM_STATUS_CANCELLED = STATUS_CANCELLED
 render_exam_ledger = render_ledger
-load_exam_ledger = lambda text: load_ledger(text, label="考试台账")  # noqa: E731
+#: 用 partial 而不是 lambda：`load_ledger` 的日志措辞按侧区分（"考试台账" / "课程台账"），
+#: partial 不需要 `# noqa: E731`，也不会被 RUF100 判成"未启用的 noqa"。
+load_exam_ledger = partial(load_ledger, label="考试台账")
 ```
 
-> `load_exam_ledger` 用 lambda 包一层只为保住名字与"考试台账"这个日志措辞
-> （`test_load_exam_ledger_*` 那组用例断言了 warning 文案）。若断言比对的是
-> `caplog` 全文，就把这行换成 `functools.partial(load_ledger, label="考试台账")`。
+> `cancellation.py` 只依赖 `models` / `timeutil`，**不** import `exams`，所以顶部 import
+> 不会成环。若 `test_load_exam_ledger_*` 那组用例断言的是 `caplog` 全文措辞，
+> `label="考试台账"` 必须逐字保持。
 
 - [ ] **Step 4: 跑考试侧全部既有撤销用例**
 
@@ -966,7 +971,7 @@ git commit -m "feat(subscribe): 状态文件记录 uid_recipe，作为迁移判�
 
 def test_push_prints_migration_notice_before_publishing(home, capsys, patched_origin) -> None:
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
-    out = capsys.readoutenc().out if False else capsys.readouterr().out
+    out = capsys.readouterr().out
     assert "v1 UID 配方" in out and "预期行为" in out
 
 
@@ -1361,8 +1366,8 @@ git commit -m "docs(drill): v1→v2 迁移的隔离真机读数回写矩阵与�
 
 **2. Placeholder scan**：无 TBD/TODO；Task 6 与 Task 8 的用例代码里对夹具的依赖写成
 "照 `tests/exam_support.py` 的现有形状"，是指明复用哪份既有固件（具体文件、具体函数），
-不是留空。Task 8 Step 1 里那行 `capsys.readoutenc()` 是**故意留下的反例并当场标注不要提交**
-——执行时直接写成 `capsys.readouterr().out`。
+不是留空。Task 9 的用例片段里 `out` / `cfg` / `capsys` 沿用上文夹具与既有 fixture 名，
+执行时补全为完整用例（该文件已有同名夹具可用）。
 
 **3. Type consistency**：跨任务签名的单一事实来源已核对——
 `render_ledger` / `load_ledger(label=…)` / `cancel_candidates` / `build_cancellation_events`

@@ -57,14 +57,28 @@ class MassCancellation:
     ratio: float
 
 
-def upcoming_ledger_count(ledger: Mapping[str, LedgerEntry], now: datetime) -> int:
-    """门 2 的分母：台账里**原定时刻还没过去**的条目数。
+def upcoming_ledger_count(
+    ledger: Mapping[str, LedgerEntry],
+    now: datetime,
+    *,
+    exclude_uids: Collection[str] = (),
+) -> int:
+    """门 2 的分母：台账里**原定时刻还没过去**、且**上次还没被撤过**的条目数。
 
     分子 `deliverable` 只数未来条目（`cancel_candidates` 会把 `start < now` 筛掉），
     分母若用整本台账，学期中段"抓漏一半课表"的比例会被过期条目稀释到 30% 以下——
     熔断恰好在该响的时候不响。分子分母必须同域。
+
+    `exclude_uids` 传「基线（留底）里已经是 ``STATUS:CANCELLED`` 的那批 UID」：
+    课程台账按 D10 不写 STATUS，所以「还活着的课」和「上次已撤、这次继续携带的墓碑」
+    在台账里长得一模一样，三道筛子对墓碑全部命中 ⇒ 会被当成**新撤销**。v0.8 迁移跑完后的
+    每一次普通 `push` 就是这样被自己的保险丝误杀的（真数据彩排复现：75/150 = 50%）。
+    **分子分母要同时排除**：只排分子会在学期末重新打开分母稀释的洞——剩余 20 条 live
+    被抹掉、分母还挂着 80 条墓碑 ⇒ 20/100 = 20% < 30%，熔断又漏响。
     """
-    return sum(1 for entry in ledger.values() if entry.start >= now)
+    return sum(
+        1 for entry in ledger.values() if entry.start >= now and entry.uid not in exclude_uids
+    )
 
 
 def mass_cancellation_check(*, candidates: int, ledger_total: int) -> MassCancellation | None:

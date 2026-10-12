@@ -1110,6 +1110,7 @@ def build_ics_for_semester(
         )
     if courses_trust.trusted and not course_uid_collisions:
         from .cancellation import (
+            STATUS_CANCELLED,
             build_cancellation_events,
             cancel_candidates,
             load_ledger,
@@ -1145,12 +1146,25 @@ def build_ics_for_semester(
                 baseline_uids=_cancellation_baseline_uids(baseline),
                 now=now,
             )
+            # 门 2 数的是**本次新撤销**，不是「这次产物里带着几条撤销」。
+            # 现场证据（2026-10-12 真数据彩排）：v0.8 迁移跑完后课程台账里有 171 条
+            # （96 live + 75 墓碑），台账按 D10 不带 STATUS ⇒ 墓碑与活课在 `cancel_candidates`
+            # 的三道筛里长得一模一样、再次被算成 deliverable ⇒ 75/150 = 50% ⇒ 之后每一次普通
+            # `push` 都被自己的保险丝误杀，直到那批原定时刻自然过去。
+            # 「上次已经发布过这条撤销」的权威在留底（带 STATUS），不在台账。
+            # 墓碑照旧继续携带（产物形态不变）；固定标题让墓碑内容逐次恒定 ⇒ 重复携带只会
+            # 在迁移那一次把 SEQUENCE 从 0 抬到 1，之后每次发布指纹相同、SEQUENCE 不再漂移。
+            already_cancelled = {
+                uid for uid, item in (baseline or {}).items() if item.status == STATUS_CANCELLED
+            }
             blocked = (
                 None
                 if allow_mass_cancellation
                 else mass_cancellation_check(
-                    candidates=len(deliverable),
-                    ledger_total=upcoming_ledger_count(course_ledger, now),
+                    candidates=len([c for c in deliverable if c.uid not in already_cancelled]),
+                    ledger_total=upcoming_ledger_count(
+                        course_ledger, now, exclude_uids=already_cancelled
+                    ),
                 )
             )
             if blocked is not None:
@@ -1158,6 +1172,7 @@ def build_ics_for_semester(
                 # CLI ⇒ 退出码 6、留底/台账/状态文件字节不变（零写盘由"不产出"保证）。
                 # 分母是**未过期**台账条目（upcoming_ledger_count）——与分子 deliverable
                 # 同域，否则学期中段的比例会被过期条目稀释到阈值以下、熔断恰好漏响。
+                # 两侧还都排除基线里已 CANCELLED 的墓碑，理由见上面那段现场证据。
                 raise MassCancellationBlocked(
                     f"本次将撤销 {blocked.candidates} 条课程事件，"
                     f"占尚未过去的已发布事件的 {blocked.ratio:.0%}——疑似课表没抓全"

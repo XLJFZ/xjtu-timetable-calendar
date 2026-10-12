@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from .errors import CalendarExportError
 from .models import CalendarEvent
@@ -55,11 +56,16 @@ class EventBaseline:
         SEQUENCE 仍保持不变——对客户端而言这是合法的「元数据刷新」）。
     fingerprint:
         内容指纹，用于与本次导出的事件逐一比对。
+    status:
+        旧事件的 ``STATUS``（归一化成大写去空白），用于判定「这条撤销是否已经发布过」——
+        课程台账刻意不带 STATUS（spec D10），发布凭据的权威在留底。
+        旧文件缺失该属性或为空串时为 ``None``（普通 live 事件即是 ``None``）。
     """
 
     sequence: int
     last_modified: datetime | None
     fingerprint: str
+    status: str | None = None
 
 
 def event_fingerprint(
@@ -151,8 +157,22 @@ def parse_baseline(ics_text: str) -> dict[str, EventBaseline]:
             sequence=sequence,
             last_modified=last_modified,
             fingerprint=fingerprint,
+            status=_read_status(component),
         )
     return baselines
+
+
+def _read_status(component: Any) -> str | None:
+    """旧事件的 ``STATUS`` → 大写归一文本；缺失/空串 ⇒ ``None``。
+
+    只用于判定「这条撤销上次是否已经发布过」（门 2 的分子分母同域排除），
+    **不参与指纹**——塞进指纹会改动既有 SEQUENCE/幂等判定与 golden 用例。
+    """
+    raw = component.get("status")
+    if raw is None:
+        return None
+    text = str(raw).strip().upper()
+    return text or None
 
 
 def resolve_sequence(

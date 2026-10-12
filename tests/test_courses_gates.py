@@ -95,6 +95,22 @@ def test_gate2_denominator_only_counts_upcoming_entries() -> None:
     assert upcoming_ledger_count({}, NOW) == 0
 
 
+def test_gate2_denominator_excludes_already_cancelled_uids() -> None:
+    """分母与分子同域的第二半：基线里已 CANCELLED 的墓碑 UID 要从分母一并抹掉。
+
+    只排分子会在学期末重新打开分母稀释的洞：10 条未过期 live 候选 + 80 条墓碑
+    ⇒ 10/90 ≈ 11% < 30%，熔断又漏响。排除后 10/10 = 100%。
+    """
+    ledger = {f"u{i}": _entry(f"u{i}", hours=10 + i) for i in range(10)}
+    ledger.update({f"t{i}": _entry(f"t{i}", hours=20 + i) for i in range(80)})
+    tombstones = {f"t{i}" for i in range(80)}
+    assert upcoming_ledger_count(ledger, NOW) == 90
+    assert upcoming_ledger_count(ledger, NOW, exclude_uids=tombstones) == 10
+    # 默认参数保持既有调用形状（关键字默认，不破坏兼容）。
+    assert upcoming_ledger_count(ledger, NOW, exclude_uids=()) == 90
+    assert upcoming_ledger_count(ledger, NOW, exclude_uids=frozenset(ledger)) == 0
+
+
 def _entry(uid: str, *, hours: int) -> LedgerEntry:
     start = datetime(2026, 10, 1, 8, tzinfo=UTC) + timedelta(hours=hours)
     return LedgerEntry(uid=uid, start=start, end=start + timedelta(hours=2), summary="示例课程甲")

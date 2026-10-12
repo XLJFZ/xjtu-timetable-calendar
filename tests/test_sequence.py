@@ -245,6 +245,50 @@ def test_parse_baseline_missing_last_modified_is_none() -> None:
     assert baseline["no-lm@example"].last_modified is None
 
 
+def test_parse_baseline_reads_status() -> None:
+    """基线要能区分「live 事件」与「上次已发布的撤销」——门 2 的排除靠这个字段。
+
+    台账按 D10 不带 STATUS，留底（发布产物）带；普通事件读出 `None`，
+    `STATUS:CANCELLED` 读出 `"CANCELLED"`（大写归一，与 :data:`STATUS_CANCELLED` 同形）。
+    """
+    live = make_event()
+    tombstone = make_event(
+        uid="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb@example",
+        summary="已取消的活动",
+        location=None,
+        description=None,
+        status="cancelled",  # 小写输入 ⇒ 归一化成大写
+    )
+    baseline = parse_baseline(render_ics([live, tombstone], dtstamp=STAMP))
+    assert baseline[live.uid].status is None
+    assert baseline[tombstone.uid].status == "CANCELLED"
+
+
+def test_status_is_not_part_of_the_fingerprint() -> None:
+    """STATUS 不许进指纹：加字段会改动既有 SEQUENCE/幂等判定与 golden 用例。"""
+    event = make_event()
+    baseline = parse_baseline(render_ics([event], dtstamp=STAMP))
+    cancelled = CalendarEvent(
+        uid=event.uid,
+        summary=event.summary,
+        start=event.start,
+        end=event.end,
+        location=event.location,
+        description=event.description,
+        meeting=event.meeting,
+        status="CANCELLED",
+    )
+    assert baseline[event.uid].fingerprint == event_fingerprint(
+        summary=cancelled.summary,
+        location=cancelled.location,
+        description=cancelled.description,
+        start=cancelled.start,
+        end=cancelled.end,
+    )
+    sequence, _ = resolve_sequence(cancelled, baseline, STAMP_2)
+    assert sequence == baseline[event.uid].sequence, "内容未变 ⇒ 只改 STATUS 不该 bump SEQUENCE"
+
+
 def test_baseline_ignores_dtstamp_only_differences() -> None:
     """两次导出只有 DTSTAMP 不同（元数据），内容未变必须判定为 preserved。"""
     event = make_event()

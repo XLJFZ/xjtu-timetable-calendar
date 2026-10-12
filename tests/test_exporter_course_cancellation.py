@@ -23,7 +23,8 @@ from xjtu_calendar.cancellation import (
     load_ledger,
     render_ledger,
 )
-from xjtu_calendar.exporter import build_ics_for_semester
+from xjtu_calendar.exporter import build_ics_for_semester, render_ics
+from xjtu_calendar.models import CalendarEvent
 from xjtu_calendar.schedules import combine
 
 #: 课程事件的保留期墙钟：固件里第 1 教学周周一是 2026-09-07，取 9-01 ⇒ 全部课次"未过期"。
@@ -115,6 +116,84 @@ def _write_synth_baseline(tmp_path: Path, entries: list[LedgerEntry]) -> Path:
     retained = tmp_path / "synth-baseline.ics"
     retained.write_text(render_ledger([], entries, dtstamp=STAMP), encoding="utf-8", newline="")
     return retained
+
+
+def test_recarried_tombstones_do_not_refuse_later_pushes(tmp_path: Path) -> None:
+    """发布阻断级回归（2026-10-12 真数据彩排复现）：迁移后重复携带的墓碑不算新撤销。
+
+    序列照彩排走：①留底 UID 与本次 live 完全不同配方 ⇒ 迁移分支产出墓碑；
+    ②把①的产物当基线、①的课程台账当台账、**同一份课表**再渲染一次 ⇒ 第二次不得抛
+    `MassCancellationBlocked`（判据旧口径下 12/30 = 40% 会拦下，用户升级后每一次普通
+    `push` 都被自己的保险丝误杀），且那批墓碑**仍须原样携带**（产物形态不变，README 承诺
+    的「直到原定时刻过去由下一次发布收掉」不许改）。
+    """
+    rows = _rows()
+    cfg = make_home(tmp_path, rows, semester=SEMESTER)
+    v1 = _synth_entries("v1", 12, offset_days=7)  # 冒充 v0.7 发布出去的 12 条旧事件
+    retained_v1 = _write_synth_baseline(tmp_path, v1)
+
+    first = build_ics_for_semester(
+        cfg,
+        SEMESTER,
+        baseline_probe=str(retained_v1),
+        cancel_expiry_at=NOW,
+        published_baseline_text=retained_v1.read_text(encoding="utf-8"),
+    )
+    assert first.migration_summary is not None
+    assert first.migration_summary.candidates == 12, "前提：迁移分支确实产出了一批墓碑"
+    assert _cancelled_uids(first.ics) == {e.uid for e in v1}
+    assert first.course_ledger_text is not None
+
+    ledger_path = cfg.course_ledger_path(SEMESTER)
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger_path.write_text(first.course_ledger_text, encoding="utf-8", newline="")
+    retained_after = tmp_path / "retained-after-migration.ics"
+    retained_after.write_text(first.ics, encoding="utf-8", newline="")
+
+    second = build_ics_for_semester(
+        cfg, SEMESTER, baseline_probe=str(retained_after), cancel_expiry_at=NOW
+    )
+    assert _cancelled_uids(second.ics) == {e.uid for e in v1}, "墓碑要继续随产物携带，一条都不许少"
+    assert len(_cancelled_uids(second.ics)) == 12
+    assert second.info["course_cancellations"] == 12
+    # 固定标题 ⇒ 墓碑内容恒定：重复携带本身不 bump SEQUENCE（幂等仍然成立）。
+    assert _cancelled_sequences(second.ics) == _cancelled_sequences(first.ics)
+
+
+def test_tombstone_exclusion_leaves_the_fuse_armed(tmp_path: Path) -> None:
+    """这条守的是「排除墓碑之后门 2 还是不是保险丝」。
+
+    基线里 60 条已 CANCELLED 的墓碑 + 20 条以 live 形态发布过的旧事件，台账 80 条全部未过期，
+    本次课表一条没抓到（这 80 条全成候选）：新撤销 = 20，分母 = 未过期且非墓碑 = 20 ⇒ 100% ≥ 30%
+    ⇒ 必须照旧熔断。若把排除逻辑写成"墓碑一律不看"，真正的抓漏就不响了。
+    """
+    from xjtu_calendar.errors import MassCancellationBlocked
+
+    cfg = make_home(tmp_path, _rows(), semester=SEMESTER)
+    tombstones = _synth_entries("tomb", 60, offset_days=7)
+    published_live = _synth_entries("fresh", 20, offset_days=9)
+
+    events = [
+        CalendarEvent(
+            uid=e.uid,
+            summary=CANCELLATION_SUMMARY,
+            start=e.start,
+            end=e.end,
+            status="CANCELLED",
+        )
+        for e in tombstones
+    ] + [
+        CalendarEvent(uid=e.uid, summary=e.summary, start=e.start, end=e.end)
+        for e in published_live
+    ]
+    retained = tmp_path / "mixed-baseline.ics"
+    retained.write_text(render_ics(events, dtstamp=STAMP), encoding="utf-8", newline="")
+    _write_course_ledger(cfg, [*tombstones, *published_live])
+
+    with pytest.raises(MassCancellationBlocked) as excinfo:
+        build_ics_for_semester(cfg, SEMESTER, baseline_probe=str(retained), cancel_expiry_at=NOW)
+    # 熔断文案里的分子必须是「本次新撤销」= 20，不是 deliverable 的 80。
+    assert "20 条课程事件" in str(excinfo.value)
 
 
 def test_vanished_course_is_cancelled_in_next_export(tmp_path: Path) -> None:

@@ -300,6 +300,40 @@ def test_mass_cancellation_exit_code_is_six_and_writes_nothing(
 
 
 # --------------------------------------------------------------------------- #
+# §7「缺 `uid_recipe` 且无留底」行（Task 7+8 评审回填）：没有旧 UID 可撤也要写标记
+# --------------------------------------------------------------------------- #
+def test_first_push_without_archive_still_writes_the_marker(
+    home: Settings, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """全新订阅的首次 push：状态缺 `uid_recipe`、**没有留底** ⇒ 仍必须直接写 `uid_recipe: 2`。
+
+    判据是状态文件本身（CD7），与留底在不在无关。若把 `migrating` 写成
+    `needs_uid_migration(state) and baseline_text is not None`，这条用例会红：
+    没有留底时标记不写 ⇒ 下次 push 又重走迁移分支（§7 的补救失效）。
+    空集迁移的另一面同样钉住：候选为空 ⇒ 零撤销、零预告。
+    """
+    cfg = home
+    _register(cfg)  # uid_recipe=None 且从未成功发布 ⇒ 本地没有留底
+    assert not _archive_path(cfg).exists()
+    order: list[str] = []
+    _stub_publish(monkeypatch, order)
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+
+    assert subscribe.load_state(cfg, SEMESTER).uid_recipe == UID_RECIPE_VERSION
+    assert f"state:{UID_RECIPE_VERSION}" in order, "标记必须在这一次成功发布后就写上"
+    out = capsys.readouterr().out
+    assert "v1 UID 配方" not in out, "候选空集不发预告（CD11 只在真有撤销时报规模）"
+    assert "STATUS:CANCELLED" not in _archive_path(cfg).read_text(encoding="utf-8")
+
+    # 补救后的下一次 push 不再进迁移分支：标记已被上一条写上。
+    order2: list[str] = []
+    _stub_publish(monkeypatch, order2)
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert not [item for item in order2 if item.startswith("state")]
+
+
+# --------------------------------------------------------------------------- #
 # CD3：迁移撤销只在 subscribe push，export 一律不参与
 # --------------------------------------------------------------------------- #
 def test_export_never_triggers_the_migration_sweep(

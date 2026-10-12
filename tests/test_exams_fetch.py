@@ -559,6 +559,8 @@ def _export_args(cfg: Settings, *, no_exams: bool) -> argparse.Namespace:
         output=str(cfg.home / "out.ics"),
         no_sequence=False,
         no_exams=no_exams,
+        # v0.8（CD4）：export 子命令新增门 2 旗标；本组用例只验告警块，走默认拒绝即可。
+        allow_mass_cancellation=False,
     )
 
 

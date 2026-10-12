@@ -21,9 +21,16 @@ from typing import TYPE_CHECKING, Any
 
 from . import __version__
 from .auth import inspect_session
+from .cancellation import load_ledger
 from .errors import XjtuCalendarError
-from .exporter import build_ics_for_semester
-from .subscribe import has_unpublished_changes, load_state, snapshot_age_days, verify_url
+from .exporter import UID_RECIPE_VERSION, build_ics_for_semester
+from .subscribe import (
+    has_unpublished_changes,
+    load_state,
+    needs_uid_migration,
+    snapshot_age_days,
+    verify_url,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from pathlib import Path
@@ -207,6 +214,45 @@ def _check_subscription(cfg: Settings, semester: str, state: Any) -> Check:
     return Check("subscription", STATUS_WARN, "有未发布变更或 token 已轮换，运行 subscribe push")
 
 
+def _check_uid_recipe(cfg: Settings, semester: str, state: Any) -> Check:
+    """UID 配方与迁移状态（CD18）。**警告级**——迁移是升级的预期动作，不是故障，
+
+    所以本函数**永不返回 STATUS_FAIL**：读坏课程台账只是少一个计数，在函数内部就地
+    吸收、降级成警告（`_safe` 的兜底形态是 fail，这一项不许把它走到）。
+    文案只带数量与配方号（规格 §8：无课程名/教师/教室、无台账内容、无 token、无订阅 URL）。
+    """
+    count: int | None
+    read_error: str | None = None
+    try:
+        ledger = cfg.course_ledger_path(semester)
+        count = (
+            len(load_ledger(ledger.read_text(encoding="utf-8"), label="课程台账"))
+            if ledger.is_file()
+            else 0
+        )
+    except (OSError, ValueError) as exc:
+        # 只报失败**种类**（类名），不引用台账原文（§8 同口径于 load_ledger 自身）。
+        count = None
+        read_error = type(exc).__name__
+    if state is None:
+        return Check("uid_recipe", STATUS_OK, f"配方 v{UID_RECIPE_VERSION}；未配置订阅，无迁移")
+    if needs_uid_migration(state):
+        ledger_part = (
+            f"课程台账现有 {count} 条" if count is not None else f"课程台账暂不可读（{read_error}）"
+        )
+        return Check(
+            "uid_recipe",
+            STATUS_WARN,
+            f"待迁移：上次发布使用 v1 配方；下次 subscribe push 会一次性撤销旧事件并原地重建"
+            f"（{ledger_part}）",
+        )
+    ledger_part = (
+        f"课程台账 {count} 条" if count is not None else f"课程台账暂不可读（{read_error}）"
+    )
+    status = STATUS_OK if count is not None else STATUS_WARN
+    return Check("uid_recipe", status, f"配方 v{state.uid_recipe}；{ledger_part}")
+
+
 def _check_url(state: Any) -> Check:
     url = str(getattr(state, "subscription_url", ""))
     try:
@@ -241,6 +287,7 @@ def run_checks(cfg: Settings, semester: str, *, verify: bool = False) -> list[Ch
     ]
     state = load_state(cfg, semester)
     checks.append(_safe("subscription", _check_subscription, cfg, semester, state))
+    checks.append(_safe("uid_recipe", _check_uid_recipe, cfg, semester, state))
     if verify and state is not None:
         checks.append(_safe("url", _check_url, state))
     return checks

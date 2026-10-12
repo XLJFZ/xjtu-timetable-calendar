@@ -316,6 +316,7 @@ _DOCTOR_LABELS = {
     "exam_snapshot": "考试快照",
     "render": "渲染",
     "subscription": "订阅",
+    "uid_recipe": "UID 配方与迁移",
     "url": "URL 自检",
 }
 

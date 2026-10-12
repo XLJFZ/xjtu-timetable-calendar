@@ -140,3 +140,39 @@ def test_verify_url_reports_fetch_failure_without_network() -> None:
     # 空 host：scheme 是 https，但连接前即失败（URLError），测试因此不碰真实网络。
     ok, msg = subscribe.verify_url("https://")
     assert not ok and "请求失败" in msg
+
+
+def _state_for(url_base: str) -> SubscriptionState:
+    """只给 url_base 的最小状态：webcal 判定只看 scheme，其余字段与本用例无关。"""
+    return SubscriptionState(
+        semester=SEMESTER,
+        repo_url="https://github.com/alice/cal.git",
+        branch="cal",
+        token=new_token(),
+        url_base=url_base,
+    )
+
+
+def test_webcal_url_swaps_scheme_and_keeps_path_and_token() -> None:
+    """https ⇒ 只换 scheme：host/路径/token 与 `subscription_url` 逐字符一致。
+
+    `webcal://` 是 URL scheme 而不是文件格式（followups §3），所以这条链接指向的就是
+    已经发布的那一份 `.ics`——不新增任何发布物。
+    """
+    state = _state_for("https://alice.github.io/cal")  # 尾斜杠缺失也要归一
+    assert state.webcal_url == f"webcal://alice.github.io/cal/{state.token}.ics"
+    assert state.subscription_url == f"https://alice.github.io/cal/{state.token}.ics"
+    assert state.webcal_url == state.subscription_url.replace("https://", "webcal://", 1)
+
+
+@pytest.mark.parametrize(
+    "url_base",
+    [
+        "http://alice.github.io/cal/",  # 明文 http：不发 webcal（宁可不提示）
+        "http://pages.example.com/cal/",  # 自建 Pages 走 http
+        "file:///tmp/fake-origin/",  # `file://` 彩排远端，根本没有公开 https 地址
+    ],
+)
+def test_webcal_url_is_none_for_non_https(url_base: str) -> None:
+    """非 https 一律 None：不给一个「看起来能点其实无效」的链接（followups §3）。"""
+    assert _state_for(url_base).webcal_url is None

@@ -766,6 +766,31 @@ def _print_publish_cancellation_summary(result_ics: ExportResult) -> None:
         )
 
 
+def _print_webcal_hint(state: subscribe.SubscriptionState | None) -> None:
+    """iOS/macOS 的一行 webcal 订阅链接（followups §3）：init / push / status 三处共用一份文案。
+
+    `webcal://` 是 URL scheme 而非发布物——只把已打印的 https URL 换个 scheme，发布分支上
+    不多放任何文件（多一个 `<token>.webcal` 会撞 tree 护栏与 rotate 的 `*.ics` 清理）。
+    非 https 的 url_base（`webcal_url` 为 `None`）整行不打印：宁可不提示，也不给一个
+    看起来能点其实无效的链接；`state is None`（尚未 init）同样静默返回。
+
+    口径两条：① 用 `print` 走 stdout（与相邻输出一致，`--debug` 时 token 仍不进日志通道）；
+    ② 文案必须是 GBK 可编码的纯中文 + ASCII，不得出现 emoji——重定向到 cp936 管道时非 GBK
+    字符会抛 UnicodeEncodeError（v0.4 真机踩过的坑，见 :func:`_harden_output_streams`）。
+    「点链接即可订阅」在本项目**没有真机验证过**（红线 3），所以措辞停在「通常」并指回
+    README 的手动路径，不许说满。
+    """
+    if state is None:
+        return
+    webcal_url = state.webcal_url
+    if webcal_url is None:
+        return
+    print(
+        f"iOS/macOS：通常可直接打开 {webcal_url} 完成订阅"
+        "（真机未验证，失败就走 README 的手动路径）。"
+    )
+
+
 def _payload_size(payload: object) -> int:
     if isinstance(payload, list):
         return len(payload)
@@ -1397,6 +1422,7 @@ def _subscribe_init(args: argparse.Namespace, cfg: Settings, semester: str) -> i
     )
     subscribe.save_state(cfg, state)
     print(f"订阅 URL：{state.subscription_url}")
+    _print_webcal_hint(state)
     print()
     print("一次性开启 Pages（GitHub）：仓库 Settings → Pages → Deploy from branch，")
     print(f"分支选 {state.branch}、目录选 /(root)。完成后运行 subscribe push。")
@@ -1447,6 +1473,8 @@ def _subscribe_push(
     res = subscribe.publish(cfg, state, result_ics.ics)
     if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
         print("无变化，跳过推送。")
+        # 幂等跳过也要给链接：用户可能第一次没记下，这一支是他唯一能看到入口的地方。
+        _print_webcal_hint(state)
         return 0
     # newline=""：留底必须与远端产物字节一致（CRLF 完整），否则下次把它当
     # SEQUENCE 基线读回、以及 status 的 sha 比对都会错位（同 cmd_export）。
@@ -1464,6 +1492,7 @@ def _subscribe_push(
     if migrating:
         subscribe.save_state(cfg, replace(state, uid_recipe=UID_RECIPE_VERSION))
     print(f"已发布：{res.url}")
+    _print_webcal_hint(state)
     _print_publish_cancellation_summary(result_ics)
     return 0
 
@@ -1605,6 +1634,7 @@ def _subscribe_status(
 
     print(f"仓库：{state.repo_url}（分支 {state.branch}）")
     print(f"URL ：{state.subscription_url}")
+    _print_webcal_hint(state)
     if state.last_push:
         print(f"上次发布：{state.last_push.pushed_at}")
         last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"

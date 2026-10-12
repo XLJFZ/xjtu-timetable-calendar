@@ -422,3 +422,69 @@ def test_push_refuses_when_last_push_exists_but_archive_missing(
     last_local.write_bytes(blob)
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     assert "无变化" in capsys.readouterr().out
+
+
+def _webcal_lines(out: str) -> list[str]:
+    """stdout 里所有带 webcal scheme 的行（本仓库只有提示行会用到这个 scheme）。"""
+    return [line for line in out.splitlines() if "webcal://" in line]
+
+
+def test_webcal_hint_shown_once_per_publish_facing_action(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """init / push / NO_CHANGE / status 四处各补**一行** iOS/macOS 的 webcal 链接。
+
+    钉三点：① 只在 https 的 url_base 下出现（本 fixture 就是 https）；② 每次调用
+    恰好一行，不重复刷屏；③ 内容与 `SubscriptionState.webcal_url` 逐字符一致——
+    CLI 不许自己再拼一遍 scheme（三处共用同一个函数）。
+    """
+    _home, origin = env
+    assert _init(origin) == 0
+    state = subscribe.load_state(Settings(home=_home), SEMESTER)
+    assert state is not None and state.webcal_url is not None
+
+    out = capsys.readouterr().out
+    lines = _webcal_lines(out)
+    assert len(lines) == 1 and state.webcal_url in lines[0]
+    assert "通常" in lines[0] and "未验证" in lines[0]
+    # v0.4 真机踩过的坑：重定向到 cp936 管道时非 GBK 字符会炸（见 _harden_output_streams）
+    lines[0].encode("gbk")
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "已发布" in out
+    assert len(_webcal_lines(out)) == 1 and state.webcal_url in _webcal_lines(out)[0]
+
+    # NO_CHANGE 分支也要打：用户可能第一次没记下链接，幂等跳过不是「没有链接」
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "无变化" in out
+    assert len(_webcal_lines(out)) == 1 and state.webcal_url in _webcal_lines(out)[0]
+
+    assert main(["subscribe", "status", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert len(_webcal_lines(out)) == 1 and state.webcal_url in _webcal_lines(out)[0]
+
+
+def test_webcal_hint_absent_for_non_https_and_before_init(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """两条「不许提示」的边界：自建非 https 的 url_base、以及尚未 init 的 status。
+
+    后者还钉住退出码口径未变（SubscribeNotConfigured 的既有 1），webcal 提示不是
+    一个新的失败模式，status 也不许因为 state 是 None 而炸。
+    """
+    home, origin = env
+    assert _init(origin, url_base="http://pages.example.com/cal/") == 0
+    out = capsys.readouterr().out
+    assert "订阅 URL" in out and not _webcal_lines(out)
+    assert main(["subscribe", "status", "--semester", SEMESTER]) == 0
+    assert not _webcal_lines(capsys.readouterr().out)
+
+    # 换一份干净的 home：未 init 时 status 的口径与之前一致（无 webcal 行、无 traceback）
+    (home / "subscribe" / f"subscribe-{SEMESTER}.json").unlink()
+    code = main(["subscribe", "status", "--semester", SEMESTER])
+    assert code == 1
+    captured = capsys.readouterr()
+    assert not _webcal_lines(captured.out)
+    assert "尚未登记订阅" in captured.err and "Traceback" not in captured.err

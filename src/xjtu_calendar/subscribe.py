@@ -94,6 +94,20 @@ class SubscriptionState:
     def subscription_url(self) -> str:
         return self.url_base.rstrip("/") + f"/{self.token}.ics"
 
+    @property
+    def webcal_url(self) -> str | None:
+        """iOS/macOS 的订阅链接：把 https 换成 webcal scheme，其余一律不给。
+
+        `webcal://` 是 URL scheme 而非文件格式，所以不需要在发布分支上多放一个 `.webcal`
+        文件（那会撞 tree 护栏与 rotate 清理，见 followups §3）。非 https 的 url_base
+        （自建 Pages、http、`file://` 彩排远端）返回 ``None``——宁可不提示，也不给一个
+        看起来能点其实无效的链接。
+        """
+        url = self.subscription_url
+        if url.startswith("https://"):
+            return "webcal://" + url[len("https://") :]
+        return None
+
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 

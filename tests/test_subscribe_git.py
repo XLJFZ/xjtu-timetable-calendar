@@ -98,6 +98,21 @@ def test_publish_skips_when_unchanged(env: tuple) -> None:
     assert _git("rev-parse", "cal", cwd=origin) == before
 
 
+def test_publish_tip_stays_a_single_ics_even_with_webcal_hint(env: tuple) -> None:
+    """webcal 走 URL scheme，不是发布物（followups §3）：tip 上仍然**只有**一个 `<token>.ics`。
+
+    当初否决「在 `.ics` 旁边再写一个 `<token>.webcal`」的理由，这里用断言钉死，防止日后
+    有人「顺手」去发文件：多一个文件会让 tree 护栏（`subscribe.py` 根目录恰好一个 `*.ics`）
+    把下一次发布判成分支被污染，而 `rotate` 只清 `*.ics` 会让旧 `<token>.webcal` 残留在 tip。
+    """
+    cfg, state, origin = env
+    assert state.webcal_url is not None  # 环境 url_base 是 https：提示靠链接，不靠文件
+    publish(cfg, state, ICS)
+    tip = _tip_tree(origin)
+    assert tip == [f"{state.token}.ics"]
+    assert not [name for name in tip if name.endswith(".webcal")]
+
+
 def test_publish_pushes_when_content_same_but_token_changed(env: tuple) -> None:
     cfg, state, origin = env
     publish(cfg, state, ICS)

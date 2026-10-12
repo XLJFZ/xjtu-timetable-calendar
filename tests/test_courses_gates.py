@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from xjtu_calendar.courses import assess_courses, mass_cancellation_check
+from datetime import UTC, datetime, timedelta
+
+from xjtu_calendar.cancellation import LedgerEntry
+from xjtu_calendar.courses import assess_courses, mass_cancellation_check, migration_candidates
 from xjtu_calendar.models import CourseMeeting
 
 
@@ -55,3 +58,48 @@ def test_gate2_below_min_events_never_triggers() -> None:
 
 def test_gate2_empty_ledger_never_triggers() -> None:
     assert mass_cancellation_check(candidates=50, ledger_total=0) is None
+
+
+def _entry(uid: str, *, hours: int) -> LedgerEntry:
+    start = datetime(2026, 10, 1, 8, tzinfo=UTC) + timedelta(hours=hours)
+    return LedgerEntry(uid=uid, start=start, end=start + timedelta(hours=2), summary="示例课程甲")
+
+
+NOW = datetime(2026, 10, 1, 0, tzinfo=UTC)
+
+
+def test_migration_cancels_every_stale_published_uid() -> None:
+    published = {u: _entry(u, hours=10 + i) for i, u in enumerate(["a", "b", "c"])}
+    got = migration_candidates(
+        published=published, live_uids={"b"}, normal_cancel_uids=set(), now=NOW
+    )
+    assert [e.uid for e in got] == ["a", "c"]
+
+
+def test_migration_skips_entries_already_cancelled_this_run() -> None:
+    """常态分支已经要撤的 UID，迁移分支不许再出一份（同 UID 双条目）。"""
+    published = {"a": _entry("a", hours=10)}
+    got = migration_candidates(
+        published=published, live_uids=set(), normal_cancel_uids={"a"}, now=NOW
+    )
+    assert got == []
+
+
+def test_migration_skips_expired_entries() -> None:
+    """CD10：留底里含"上次已撤销"的条目，它们不在任何台账里；
+    不过期筛就会把上学期的旧事件反复撤销、无限续命。
+
+    （简报原例的 hours=-5 换算后是 03:00，仍在 NOW=00:00 之后、并没有过期；
+    按 CD10 的语义把过期条目改成真正落在 now 之前的时刻。）
+    """
+    published = {"old": _entry("old", hours=-10), "new": _entry("new", hours=5)}
+    got = migration_candidates(
+        published=published, live_uids=set(), normal_cancel_uids=set(), now=NOW
+    )
+    assert [e.uid for e in got] == ["new"]
+
+
+def test_migration_output_is_fully_ordered() -> None:
+    published = {u: _entry(u, hours=20 - i) for i, u in enumerate(["x", "y", "z"])}
+    got = migration_candidates(published, set(), set(), NOW)  # 位置参数也要能吃
+    assert [e.uid for e in got] == ["z", "y", "x"]

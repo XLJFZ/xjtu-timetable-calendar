@@ -6,9 +6,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
+from .cancellation import LedgerEntry
 from .models import CourseMeeting
 
 
@@ -68,3 +70,28 @@ def mass_cancellation_check(*, candidates: int, ledger_total: int) -> MassCancel
     if ratio < MASS_CANCELLATION_RATIO:
         return None
     return MassCancellation(candidates=candidates, ledger_total=ledger_total, ratio=ratio)
+
+
+def migration_candidates(
+    published: Mapping[str, LedgerEntry],
+    live_uids: Collection[str],
+    normal_cancel_uids: Collection[str],
+    now: datetime,
+) -> list[LedgerEntry]:
+    """v1→v2 那一次的全量撤销候选（CD7/CD10）。
+
+    ``published`` 是从**发布留底**解析出来的 `{UID: LedgerEntry}`——留底本身就是上次
+    发出去的完整事件清单，所以旧 UID 不需要重算配方就能拿到（CD15），而且这些 UID
+    天然都在 SEQUENCE 基线里，D20 那道筛自动全过。
+
+    减去两个集合：本次 live（同 UID 是原地更新，不该撤）、本次常态撤销（避免同 UID
+    双条目）。再过一遍 D2 过期筛：时刻已过的条目**不撤**，否则留底里那些"上次已撤销"
+    的条目会因为不在任何台账里而永远出不去（CD10）。
+    输出按 ``(start, uid)`` 全序，与 `cancel_candidates` 同口径。
+    """
+    picked = [
+        entry
+        for uid, entry in published.items()
+        if uid not in live_uids and uid not in normal_cancel_uids and entry.start >= now
+    ]
+    return sorted(picked, key=lambda e: (e.start, e.uid))

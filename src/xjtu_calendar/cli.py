@@ -147,6 +147,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="不并入考试安排（默认并入；本地快照不删）",
     )
+    export.add_argument(
+        "--allow-mass-cancellation",
+        action="store_true",
+        help="课程侧撤销规模触发门 2 熔断时仍强行发布（默认拒绝——疑似课表没抓全时"
+        "会拒绝发布并退出码 6；先确认课表真的少了一批课，再带此旗标重跑）",
+    )
 
     # --- notice ---
     notice = sub.add_parser(
@@ -213,12 +219,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="不并入考试安排（默认并入；本地快照不删）",
     )
+    push_p.add_argument(
+        "--allow-mass-cancellation",
+        action="store_true",
+        help="课程侧撤销规模触发门 2 熔断时仍强行发布（默认拒绝——疑似课表没抓全时"
+        "会拒绝发布并退出码 6；先确认课表真的少了一批课，再带此旗标重跑）",
+    )
     rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
     rot_p.add_argument("--semester")
     rot_p.add_argument(
         "--no-exams",
         action="store_true",
         help="不并入考试安排（默认并入；本地快照不删）",
+    )
+    rot_p.add_argument(
+        "--allow-mass-cancellation",
+        action="store_true",
+        help="课程侧撤销规模触发门 2 熔断时仍强行发布（默认拒绝——疑似课表没抓全时"
+        "会拒绝发布并退出码 6；与 push 同一判据、同一旗标）",
     )
     st_p = sact.add_parser("status", help="查看订阅状态、URL 与新鲜度")
     st_p.add_argument("--semester")
@@ -557,6 +575,12 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
         baseline_probe=args.output,
         no_sequence=args.no_sequence,
         include_exams=not args.no_exams,
+        # CD4/§6.6：export 与订阅路径**同一判据同一心智**——熔断在构建内部抛出
+        # `MassCancellationBlocked`（退出码 6），沿 `main()` 的异常出口变成退出码；
+        # 产物与台账都在 `build_ics_for_semester` 返回之后才写，异常时一行都没落盘。
+        # CD3：刻意**不传** `published_baseline_text`——迁移与 export 无关，
+        # 手工导入的人把几百条撤销当新事件导进去更糟（§7「export 路径」行）。
+        allow_mass_cancellation=args.allow_mass_cancellation,
     )
 
     # §7:382-386 陈旧口径：考试快照 vs **同学期课表快照**（不是"距今多少天"）。
@@ -596,6 +620,13 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     # 影响 export 的退出码——课程是主功能。
     if result.exam_ledger_text is not None:
         _write_exam_ledger(cfg, semester, result.exam_ledger_text)
+
+    # 课程台账（CD8/§7「export 路径」行）：与考试台账**同一时机**——产物落地之后才回写，
+    # 写失败只 warning 不改退出码。export 只写台账这一份证据：它**不读也不写**
+    # `uid_recipe` 标记、不发迁移撤销（CD3），标记的回写只属于 publish 成功的
+    # push/rotate 路径（CD7）。
+    if result.course_ledger_text is not None:
+        _write_course_ledger(cfg, semester, result.course_ledger_text)
 
     # --- 汇总 ---
     info = result.info
@@ -1332,8 +1363,8 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
             state,
             semester,
             include_exams=not args.no_exams,
-            # 旗标的 argparse 声明在 Task 9；这里先用 `getattr` 兜住，缺省即 False，
-            # 保证 Task 8 单独落地时行为完全等于现状（门 2 默认收紧）。
+            # Task 9 已在 rot_p 上声明该旗标；`getattr` 保留为对直接调用方的兜底，缺省即 False
+            # （门 2 默认收紧）。
             allow_mass_cancellation=getattr(args, "allow_mass_cancellation", False),
         )
     return _subscribe_status(args, cfg, state, semester)

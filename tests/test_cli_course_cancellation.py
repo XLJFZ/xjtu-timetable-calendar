@@ -437,3 +437,114 @@ def test_untrusted_snapshot_writes_no_course_ledger(
 
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     assert not cfg.course_ledger_path(SEMESTER).exists()
+
+
+# --------------------------------------------------------------------------- #
+# Task 9：export 路径——台账回写、熔断零写盘（CD4）、旗标三处统一（§6.6）
+# --------------------------------------------------------------------------- #
+def _export_fuse_setup(cfg: Settings, out: Path) -> str:
+    """布置「export 用户上次导过整学期、这次课表少了一批」的熔断现场。
+
+    Task 6 落地的 D20/F2 口径：没有 SEQUENCE 基线就没有"发布过"的凭据，候选全部
+    `unresolvable`、一条不撤、熔断也无从触发。export 的基线来自 `-o` 输出路径的
+    旧版本（`baseline_probe=args.output`），所以必须**先**把整学期产物落在那里，
+    再缩小快照——这才是一个真会熔断的 export 现场。
+
+    返回旧产物的字节 sha，供「零写盘 = 原字节不变」断言使用。
+    """
+    many = [payload_row(KCM=f"示例课程{i}", KCH=f"D-{i}") for i in range(1, 7)]
+    _rewrite_snapshot(cfg, many)
+    full = build_ics_for_semester(cfg, SEMESTER)
+    assert full.course_ledger_text is not None
+    out.write_text(full.ics, encoding="utf-8", newline="")
+    ledger = cfg.course_ledger_path(SEMESTER)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(full.course_ledger_text, encoding="utf-8", newline="")
+    _rewrite_snapshot(cfg, many[:1])  # 12 条里只剩 2 条 ⇒ 候选 10、占比 0.83 ⇒ 门 2 触发
+    return hashlib.sha256(out.read_bytes()).hexdigest()
+
+
+def test_export_blocked_writes_no_output_file(home: Settings) -> None:
+    """export 触发熔断 ⇒ 产物与台账**零写盘**、退出码 6（与 push 同一判据同一心智，CD4）。
+
+    「不写产物」在 export 场景下的可取证形态是**旧产物字节不变**：用户上次导出留下的
+    文件就躺在 `-o` 路径上（那也是本次的 SEQUENCE 基线——Task 6 的 D20/F2 口径下，
+    没有基线就没有可下发的撤销，熔断根本不会触发），熔断时一个字节都不许动。
+    写产物与写台账都在 `build_ics_for_semester` 返回之后，构建内部抛
+    `MassCancellationBlocked` 时一行都没落盘——这条用例钉的就是这个顺序。
+    """
+    cfg = home
+    out = cfg.home / "blocked.ics"
+    old_sha = _export_fuse_setup(cfg, out)
+    ledger = cfg.course_ledger_path(SEMESTER)
+    ledger_before = hashlib.sha256(ledger.read_bytes()).hexdigest()
+
+    assert main(["export", "--semester", SEMESTER, "-o", str(out)]) == 6
+    assert hashlib.sha256(out.read_bytes()).hexdigest() == old_sha, "旧产物必须字节不变"
+    assert hashlib.sha256(ledger.read_bytes()).hexdigest() == ledger_before, (
+        "CD4：熔断的 export 连课程台账都不许动（字节级不变）"
+    )
+
+
+def test_export_writes_course_ledger_after_the_output(
+    home: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """export（未触发熔断）⇒ 产物落地**之后**回写课程台账；不读不写 `uid_recipe`（§7）。"""
+    cfg = home
+    out = cfg.home / "ok.ics"
+    seen: dict[str, bool] = {}
+    real = cli._write_course_ledger
+
+    def spy(cfg_: Settings, semester: str, text: str) -> None:
+        seen["output_landed_first"] = out.is_file()
+        real(cfg_, semester, text)
+
+    monkeypatch.setattr(cli, "_write_course_ledger", spy)
+
+    assert main(["export", "--semester", SEMESTER, "-o", str(out)]) == 0
+    assert out.is_file()
+    assert cfg.course_ledger_path(SEMESTER).is_file()
+    assert seen["output_landed_first"] is True, "台账必须晚于产物（与考试台账同一时机，D11）"
+    # CD3 的另一半：export 从不碰状态文件里的迁移标记。
+    assert subscribe.load_state(cfg, SEMESTER) is None
+
+
+def test_export_blocked_passes_with_the_flag(home: Settings) -> None:
+    """`--allow-mass-cancellation` 放行后 export 恢复退出码 0，撤销随产物发出（CD4/CD12）。"""
+    cfg = home
+    out = cfg.home / "allowed.ics"
+    _export_fuse_setup(cfg, out)
+
+    assert (
+        main(
+            [
+                "export",
+                "--semester",
+                SEMESTER,
+                "-o",
+                str(out),
+                "--allow-mass-cancellation",
+            ]
+        )
+        == 0
+    )
+    assert "STATUS:CANCELLED" in out.read_text(encoding="utf-8"), "放行后 10 条撤销照发"
+
+
+def test_flag_accepted_by_three_commands(home: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§6.6：`export` / `subscribe push` / `subscribe rotate` 三处都接受该旗标。
+
+    没有 argparse 声明时 `parser.error` 会抛 `SystemExit(2)` 炸穿 `main()`，
+    所以「返回退出码」本身就是对旗标已注册的取证。
+    """
+    cfg = home
+    _register(cfg, uid_recipe=UID_RECIPE_VERSION)
+    _publish_archive(cfg, _rows())
+    _stub_publish(monkeypatch, [])
+    out = cfg.home / "three.ics"
+
+    assert (
+        main(["export", "--semester", SEMESTER, "-o", str(out), "--allow-mass-cancellation"]) == 0
+    )
+    assert main(["subscribe", "push", "--semester", SEMESTER, "--allow-mass-cancellation"]) == 0
+    assert main(["subscribe", "rotate", "--semester", SEMESTER, "--allow-mass-cancellation"]) == 0

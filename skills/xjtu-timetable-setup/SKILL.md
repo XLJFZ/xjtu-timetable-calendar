@@ -21,7 +21,10 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 ## 第 1 步 环境
 
 - 动作：`xjtu-calendar --version`（或 `python -m xjtu_calendar --version`）。
-- 证据：版本 ≥ **0.7.0**。`doctor` 子命令自 0.7.0 才存在，低于它本向导的收尾判据根本跑不出来。
+- 证据：版本 ≥ **0.8.0**。这里有两个下限，别混：`doctor` 子命令自 0.7.0 才存在（低于它，
+  本向导的收尾判据根本跑不出来）；但第 7 步的 v1→v2 迁移语义、以及 `doctor` 的
+  「UID 配方与迁移」一项自 **0.8.0** 才有。停在 0.7.x 的用户会在第 7 步拿到一份
+  他的版本里并不存在的指引——判据的最低版本 = **该判据能跑起来的那个版本**。
 - 不满足：`pip install -U xjtu-timetable-calendar` 后重新验证；装不上先解决 Python 版本
   （要求 ≥ 3.11）。若版本显示为 0.6.x 而你确定装过更新的包，那是**可编辑安装的元数据没刷新**
   （重跑 `pip install -e . --no-deps --no-build-isolation`），不是 doctor 坏了。
@@ -50,8 +53,13 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 
 ## 第 4 步 作息表
 
-- 动作：优先 `xjtu-calendar schedule`（抓官方作息页，切换点取自页面原文，解析不了的行
-  会逐条列出且拒绝写入）；抓不到就让用户按 `examples/` 填。
+- 动作：先 `xjtu-calendar schedule` 预览，确认后
+  `xjtu-calendar schedule --semester <学期标识> --apply` 才真正合并落盘
+  （抓官方作息页，切换点取自页面原文，解析不了的行会逐条列出且拒绝写入）。
+  **不带 `--apply` 时它只预览、不写任何文件**（它会自己打印「以上为解析结果预览
+  （未写入任何文件）」），照抄不带 `--apply` 的写法永远拿不到本步的证据；
+  `--apply` 还必须带 `--semester`（生效区间的覆盖范围来自该学期校历）。
+  抓不到就让用户按 `examples/` 填。
 - 证据：`doctor` 的「作息表」一项为通过。
 - 注意夏秋季 / 冬春季两套钟点会在学期中间切换，这是本校的既有事实，不是异常。
 
@@ -69,7 +77,10 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 
 ## 第 7 步 发布成订阅
 
-- 动作：`subscribe init` 登记发布目标 → `subscribe push` 发布。
+- 动作：`subscribe init --repo <发布仓库的 git 远端 URL>` 登记发布目标 → `subscribe push` 发布。
+  **`--repo` 是必填**：照抄不带它的 `subscribe init` 会停在
+  「the following arguments are required: --repo」上，一步都走不出去。
+  `--branch` 默认 `cal`；`--url-base` 在 GitHub 远端下能自动推导，非 GitHub 才需要显式给。
 - 证据：`subscribe status` 显示留底一致，且 `doctor --verify` 的「URL 自检」通过（HTTP 200）。
 - 必须如实告知用户两件事，不许淡化：
   1. 订阅 URL 里的随机 token **等价于凭据**，不要提交、不要发到群里；

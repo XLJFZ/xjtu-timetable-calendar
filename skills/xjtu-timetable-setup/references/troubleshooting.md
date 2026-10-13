@@ -64,8 +64,11 @@
    考试快照。看 `doctor` 的「考试快照」一项与 `fetch` 的 warning 原文。
    处置：UNKNOWN **不等于"本学期无考试"**，不要为此改配置或宣布没有考试；重新登录再
    `fetch` 一次。
-3. **渲染口径有没有把考试关掉。** `export --no-exams` 与 `subscribe init --no-exams`
-   会让产物里根本没有考试事件，后者还会记进状态文件。看 `doctor` 的「渲染」一项报的
+3. **渲染口径有没有把考试关掉。** `--no-exams` 只有**四条路径**认它：`fetch`（侧是**不抓**）
+   与 `export` / `subscribe push` / `subscribe rotate`（侧是**不并入**）。
+   **`subscribe init` 没有这个旗标**，别往它后面加。两种情况本地快照
+   `raw/exams-<学期>.json` 都不删除；但发布侧要如实告知「`--no-exams` 既不发布考试、
+   也不发布撤销」——撤销的下发顺延到开关重新打开之后。看 `doctor` 的「渲染」一项报的
    考试场数。处置：去掉 `--no-exams` 重新导出/发布。
 
 ## 撤销的考试残条不消失

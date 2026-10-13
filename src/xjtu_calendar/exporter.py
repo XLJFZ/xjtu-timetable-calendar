@@ -757,7 +757,7 @@ def build_ics_for_semester(
     if not calendar_path.is_file():
         raise SemesterNotConfigured(
             f"未找到学期 {semester} 的教学日历：{calendar_path}",
-            hint="请参考 examples/academic_calendar.example.json 创建该文件。"
+            hint="请参考 README「必须由你配置的内容 → 1. 教学日历（校历）」小节的模板创建该文件。"
             "注意：第 1 教学周的星期一等日期必须来自官方校历，不要凭空填写。",
         )
     academic = AcademicCalendar.from_file(calendar_path)
@@ -768,7 +768,7 @@ def build_ics_for_semester(
     if not schedule_path.is_file():
         raise ScheduleNotConfigured(
             f"未找到作息表配置：{schedule_path}",
-            hint="请参考 examples/schedule.example.json 创建该文件。"
+            hint="请参考 README「必须由你配置的内容 → 2. 作息表」小节的模板创建该文件。"
             "注意：本项目不内置任何未经官方确认的作息时间，必须由你提供。",
         )
     schedules = ScheduleTable.from_file(schedule_path)

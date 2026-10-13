@@ -149,7 +149,8 @@ def _check_schedule_config(cfg: Settings) -> Check:
         return Check(
             "schedule_config",
             STATUS_FAIL,
-            "作息表缺失。可用 `schedule` 子命令从官方页获取，或按 examples/ 手工填写。",
+            "作息表缺失。可用 `schedule` 子命令从官方页获取，"
+            "或按 README「必须由你配置的内容 → 2. 作息表」小节的模板手工填写。",
         )
     return Check("schedule_config", STATUS_OK, "已配置")
 

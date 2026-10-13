@@ -113,7 +113,10 @@ class ParseError(XjtuCalendarError):
 class SemesterNotConfigured(XjtuCalendarError):
     """请求的学期没有对应的校历配置。"""
 
-    hint = "请在配置目录中补充该学期的教学日历（参见 examples/academic_calendar.example.json）。"
+    hint = (
+        "请在配置目录中补充该学期的教学日历"
+        "（模板见 README「必须由你配置的内容 → 1. 教学日历（校历）」小节，内含可直接抄的 JSON）。"
+    )
 
 
 class ScheduleNotConfigured(XjtuCalendarError):

@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import ast
 import tomllib
 from pathlib import Path
 
@@ -185,3 +186,65 @@ def test_explicit_path_still_wins(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(config_module.settings, "home", tmp_path)
     endpoints = load_endpoints(explicit, cfg=config_module.settings)
     assert endpoints["timetable"].path == "/explicit/path.do"
+
+
+# --------------------------------------------------------------------------- #
+# 用户可见提示只能指向「装完之后仍然存在」的东西
+# --------------------------------------------------------------------------- #
+
+
+def _non_docstring_literals(path: Path) -> list[tuple[int, str]]:
+    """文件里所有**不是文档串**的字符串常量（行号, 文本）。
+
+    走 AST 而不是正则：注释天然不在 AST 里，文档串可以精确排除 ——
+    这两类东西的读者是开发者，指向仓库路径没问题；而会打印给用户看的
+    字符串（``hint=``、``Check(...)`` 的详情）必须对 pip 用户成立。
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    doc_ids = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            body = list(getattr(node, "body", []))
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
+                doc_ids.add(id(body[0].value))
+    return [
+        (node.lineno, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in doc_ids
+    ]
+
+
+def test_user_facing_text_never_points_at_repo_only_examples_dir() -> None:
+    """仓库根的 ``examples/`` **不在 wheel 里**（package-data 只有 ``data/*.json``，
+    解包 0.8.1 wheel 核过）。pip 安装的用户按提示去打开它会一无所获，
+    所以任何会打印给用户的字符串都不许出现这个路径 —— 改指向 README 的小节，
+    那里内联着同样完整的模板 JSON。
+    """
+    offenders = [
+        f"{py.relative_to(REPO_ROOT)}:{lineno}"
+        for py in sorted((REPO_ROOT / "src" / "xjtu_calendar").rglob("*.py"))
+        for lineno, text in _non_docstring_literals(py)
+        if "examples/" in text
+    ]
+    assert not offenders, "用户可见文本指向了 wheel 里不存在的路径 examples/：" + ", ".join(
+        offenders
+    )
+
+
+def test_readme_actually_carries_the_two_templates() -> None:
+    """上一条把用户引向 README，那 README 就必须真的内联着可抄的模板，
+    而不是也叫人再去别处找文件。
+    """
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "## 必须由你配置的内容" in readme
+    assert "### 1. 教学日历（校历）" in readme
+    assert "### 2. 作息表" in readme
+    assert "first_week_monday" in readme, "校历模板没内联"
+    assert "xjtu-summer-autumn" in readme, "作息表模板没内联"

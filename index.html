@@ -279,16 +279,21 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
   <h3>客户端行为矩阵（2026-10 真机演练；单账户单样本，别当厂商承诺）</h3>
   <div class="tablewrap">
   <table>
-    <thead><tr><th>客户端</th><th>订阅入口</th><th>收到 <code>STATUS:CANCELLED</code></th><th>自动回源</th><th>用 <code>X-WR-CALNAME</code> 命名</th></tr></thead>
+    <thead><tr><th>客户端</th><th>订阅入口</th><th>收到 <code>STATUS:CANCELLED</code></th><th>条目从 feed 静默消失</th><th>自动回源</th><th>用 <code>X-WR-CALNAME</code> 命名</th></tr></thead>
     <tbody>
-      <tr><td>Google 日历（网页）</td><td>其他日历 → 通过 URL 创建</td><td><span class="yes">移除条目</span></td><td>是<small>两次实测延迟分别 ≤3h31m、≤10h05m</small></td><td>是（添加那一刻取名）</td></tr>
-      <tr><td>Google 日历（手机 App）</td><td><span class="no">无此入口</span></td><td>不适用</td><td colspan="2">实测 App 不显示「从 URL 添加」的日历，勾 syncselect、强制同步、走代理都不行</td></tr>
-      <tr><td>Outlook.com（网页）</td><td>添加日历 → 订阅日历</td><td><span class="no">忽略</span>，当普通事件导入<small>v0.6.1 起显示为「已取消的活动」，此前是「无主题」</small></td><td>添加时立刻拉一次<small>此后实测 14 小时以上未再回源（官方口径约每 3 小时）</small></td><td>否，对话框强制手填</td></tr>
-      <tr><td>ColorOS 系统日历</td><td>我的 → 添加日历 → URL 日历</td><td><span class="no">忽略</span>，同上<small>且它整体替换字段，旧标题会被清掉</small></td><td><span class="yes">是</span><small>实测延迟 ≤2h35m，能原地更新已存在的事件</small></td><td>是</td></tr>
-      <tr><td>各类「导入日历」</td><td>选本地 .ics 文件</td><td colspan="2">不适用——不再回源，一次性快照</td><td>不适用</td></tr>
+      <tr><td>Google 日历（网页）</td><td>其他日历 → 通过 URL 创建</td><td><span class="yes">移除条目</span></td><td><span class="yes">也会移除</span><small>清理由 UID 缺席驱动，墓碑不是触发条件（2026-10-13 试验田实测）</small></td><td>是<small>两次实测延迟分别 ≤3h31m、≤10h05m</small></td><td>是（添加那一刻取名）</td></tr>
+      <tr><td>Google 日历（手机 App）</td><td><span class="no">无此入口</span></td><td>不适用</td><td>不适用</td><td colspan="2">实测 App 不显示「从 URL 添加」的日历，勾 syncselect、强制同步、走代理都不行</td></tr>
+      <tr><td>Outlook.com（网页）</td><td>添加日历 → 订阅日历</td><td><span class="no">忽略</span>，当普通事件导入<small>v0.6.1 起显示为「已取消的活动」，此前是「无主题」</small></td><td><span class="no">未验证</span><small>该面回源周期未取得</small></td><td>添加时立刻拉一次<small>此后实测 14 小时以上未再回源（官方口径约每 3 小时）</small></td><td>否，对话框强制手填</td></tr>
+      <tr><td>ColorOS 系统日历</td><td>我的 → 添加日历 → URL 日历</td><td><span class="no">忽略</span>，同上<small>且它整体替换字段，旧标题会被清掉</small></td><td><span class="no">不删</span>，永久留着<small>10-12 整学期演练：21 条过期旧项重加后仍在；退订重加也清不掉</small></td><td><span class="yes">是</span><small>实测延迟 ≤2h35m，能原地更新已存在的事件</small></td><td>是</td></tr>
+      <tr><td>各类「导入日历」</td><td>选本地 .ics 文件</td><td colspan="2">不适用——不再回源，一次性快照</td><td><span class="no">否</span></td><td>不适用</td></tr>
     </tbody>
   </table>
   </div>
+  <p class="note">「条目从 feed 静默消失」这一列是 2026-10-13 在<strong>试验田仓库</strong>（不是正式订阅）上单独测的：
+    一份 96 事件的整学期规模产物换成 91 事件，抽掉 5 条<strong>不发墓碑</strong>、URL 与标题都不动。
+    Google 网页版<strong>截至 T+14h39m 已移除其中 4 条</strong>，同批 7 处对照条目全部健在（⇒ 不是"没回源"）；
+    最后一条（当时距今 58 天的 12-10）在 <strong>T+24h58m 的周视图复核里也已消失</strong> ⇒ <strong>5 条全清、对照全在</strong>。</p>
+
   <p class="note">分辨自己走的是哪条路：订阅型入口带「上次同步时间」，导入型只有显示开关。
     另外，客户端通常在<strong>添加那一刻</strong>取一次日历名就不再更新：产物后来改了名，已加好的日历未必跟着改——
     退订再重新添加**通常**有效，但本仓库未在真机上验证过改名这一项；而且 2026-10-12 的整学期迁移演练里，ColorOS 上「删除日历 + 重新添加」并**没有**清掉本地产物里已不存在的旧条目——所以别把重加当保证，改完要让用户确认日历确实变干净了。</p>
@@ -300,7 +305,7 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     <li><strong>MIUI / 鸿蒙</strong>：若系统日历只给「导入日历」，那是一次性快照、永不自动更新；改用 <strong>ICSx⁵</strong>（<code class="inline-code">at.bitfire.icsdroid</code>）做 URL 订阅。<strong>注意不是 DAVx⁵</strong>——它只做 CalDAV 双向同步，官方 FAQ 明确把 URL 订阅指向 ICSx⁵。</li>
     <li><strong>Google 日历</strong>：订阅只能在网页版建立，手机端要上课表请走系统日历那条腿，别把希望放在 Google App 上。</li>
     <li><strong>给同步器关掉电池优化并允许自启动</strong>，否则后台查杀会伪装成「装了但从不更新」。</li>
-    <li><strong>订阅型日历通常是只读的</strong>：没有「删除单条事件」的入口；而那条「已取消的活动」占位是<strong>产物自身携带</strong>的，忽略取消字段的客户端<strong>退订重加时会再导入一遍</strong>（2026-10-12 真机实测），所以重加清不掉占位、只能清本地重复项——占位要等原定时刻过去后由下一次发布收掉。</li>
+    <li><strong>订阅型日历通常是只读的</strong>：没有「删除单条事件」的入口；而那条「已取消的活动」占位是<strong>产物自身携带</strong>的，忽略取消字段的客户端<strong>退订重加时会再导入一遍</strong>（2026-10-12 真机实测），所以重加清不掉占位、只能清本地重复项——占位要等原定时刻过去后由下一次发布收掉。反过来，Google 侧连<strong>不带墓碑</strong>的消失项也会删（2026-10-13 试验田实测）⇒ 过期条目从产物里退场，在 Google 上是一条干净的路。</li>
   </ul>
 
   <div class="callout warnbox" style="margin-top:1.3rem">

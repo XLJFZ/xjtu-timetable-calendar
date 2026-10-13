@@ -1365,9 +1365,15 @@ python -m xjtu_calendar login --force
 4. **判定成功只看两件事**：`~/.xjtu-timetable-calendar/session/storage_state.json`
    的修改时间有没有被重写，以及 `fetch` 是否不再 401。不要信 `login` 打印的「会话就绪」。
 
-如果那个窗口打开后是一片灰页、地址栏尾巴多了 `?browser=no`，是学校站点拒绝了这台浏览器：
-先在窗口地址栏手动重输终端打印的那条入口 URL；仍不行就用 `XJTU_CALENDAR_BROWSER`
-指向另一个 Chromium 系浏览器（见[环境变量](#环境变量)）。
+那个窗口打开后如果**什么都不渲染**，先在窗口地址栏手动重输终端打印的那条入口 URL；
+仍不行就用 `XJTU_CALENDAR_BROWSER` 指向另一个 Chromium 系浏览器（见[环境变量](#环境变量)）。
+
+**别拿地址栏尾巴的 `?browser=no` 当症状。** 它是学校站点在 CAS 回跳的最后一步给落地页
+拼上的固定参数（`/login?service` → 302 → `/new/index.html?browser=no`），本工具从不拼它；
+2026-10-08 一次**成功登录**的抓包里同样有它，其后课表与考试接口照样全部正常返回。
+所以带它不代表被拒绝，不带也不代表正常——判据只看第 4 条那两件事。
+灰页本身的成因**尚未证实**：现有线索都指向"被后台执行器或管道拉起时子进程 stdio 被弄坏"
+（见上面第 1 条），而不是站点拒绝了这台浏览器。
 
 **Q：每次 `fetch` 都警告「eHall 域范围内出现同名 cookie：JSESSIONID」，要不要管？**
 

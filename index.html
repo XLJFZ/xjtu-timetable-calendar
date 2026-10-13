@@ -121,6 +121,22 @@ footer{border-top:1px solid var(--line);background:#fff;margin-top:2rem}
   h1{font-size:1.9rem}
   .nav-links{display:none}
 }
+
+/* 窄屏（手机）：矩阵有 6 列，390px 视口下横向可滚动的最小宽度约 566px，
+   列会被压成「一字一行」。这里改成「一行一张卡片、每格自带列名」的堆叠布局。
+   列名来自每个 <td> 的 data-label，改表头时记得同步它。 */
+@media (max-width:680px){
+  .tablewrap{overflow:visible}
+  .tablewrap table{display:block;width:100%;box-shadow:none}
+  .tablewrap thead{display:none}
+  .tablewrap tbody{display:block}
+  .tablewrap tr{display:block;background:var(--card);border:1px solid var(--line);border-radius:12px;margin-bottom:.75rem;padding:0 .9rem}
+  .tablewrap td{display:block;border-top:1px dashed var(--line);border-bottom:none;padding:.5rem 0}
+  .tablewrap td::before{content:attr(data-label);display:block;color:var(--blue);font-size:.76rem;font-weight:700;margin-bottom:.18rem}
+  .tablewrap td:first-child{border-top:none;padding-top:.7rem;font-size:.98rem;font-weight:700;color:var(--blue)}
+  .tablewrap td:first-child::before{content:none}
+  .tablewrap td small{font-size:.8rem}
+}
 </style>
 </head>
 <body>
@@ -281,11 +297,11 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
   <table>
     <thead><tr><th>客户端</th><th>订阅入口</th><th>收到 <code>STATUS:CANCELLED</code></th><th>条目从 feed 静默消失</th><th>自动回源</th><th>用 <code>X-WR-CALNAME</code> 命名</th></tr></thead>
     <tbody>
-      <tr><td>Google 日历（网页）</td><td>其他日历 → 通过 URL 创建</td><td><span class="yes">移除条目</span></td><td><span class="yes">也会移除</span><small>清理由 UID 缺席驱动，墓碑不是触发条件（2026-10-13 试验田实测）</small></td><td>是<small>两次实测延迟分别 ≤3h31m、≤10h05m</small></td><td>是（添加那一刻取名）</td></tr>
-      <tr><td>Google 日历（手机 App）</td><td><span class="no">无此入口</span></td><td>不适用</td><td>不适用</td><td colspan="2">实测 App 不显示「从 URL 添加」的日历，勾 syncselect、强制同步、走代理都不行</td></tr>
-      <tr><td>Outlook.com（网页）</td><td>添加日历 → 订阅日历</td><td><span class="no">忽略</span>，当普通事件导入<small>v0.6.1 起显示为「已取消的活动」，此前是「无主题」</small></td><td><span class="no">未验证</span><small>该面回源周期未取得</small></td><td>添加时立刻拉一次<small>此后实测 14 小时以上未再回源（官方口径约每 3 小时）</small></td><td>否，对话框强制手填</td></tr>
-      <tr><td>ColorOS 系统日历</td><td>我的 → 添加日历 → URL 日历</td><td><span class="no">忽略</span>，同上<small>且它整体替换字段，旧标题会被清掉</small></td><td><span class="no">不删</span>，永久留着<small>10-12 整学期演练：21 条过期旧项重加后仍在；退订重加也清不掉</small></td><td><span class="yes">是</span><small>实测延迟 ≤2h35m，能原地更新已存在的事件</small></td><td>是</td></tr>
-      <tr><td>各类「导入日历」</td><td>选本地 .ics 文件</td><td colspan="2">不适用——不再回源，一次性快照</td><td><span class="no">否</span></td><td>不适用</td></tr>
+      <tr><td>Google 日历（网页）</td><td data-label="订阅入口">其他日历 → 通过 URL 创建</td><td data-label="收到 STATUS:CANCELLED"><span class="yes">移除条目</span></td><td data-label="条目从 feed 静默消失"><span class="yes">也会移除</span><small>清理由 UID 缺席驱动，墓碑不是触发条件（2026-10-13 试验田实测）</small></td><td data-label="自动回源">是<small>两次实测延迟分别 ≤3h31m、≤10h05m</small></td><td data-label="用 X-WR-CALNAME 命名">是（添加那一刻取名）</td></tr>
+      <tr><td>Google 日历（手机 App）</td><td data-label="订阅入口"><span class="no">无此入口</span></td><td data-label="收到 STATUS:CANCELLED">不适用</td><td data-label="条目从 feed 静默消失">不适用</td><td colspan="2" data-label="自动回源 · 用 X-WR-CALNAME 命名">实测 App 不显示「从 URL 添加」的日历，勾 syncselect、强制同步、走代理都不行</td></tr>
+      <tr><td>Outlook.com（网页）</td><td data-label="订阅入口">添加日历 → 订阅日历</td><td data-label="收到 STATUS:CANCELLED"><span class="no">忽略</span>，当普通事件导入<small>v0.6.1 起显示为「已取消的活动」，此前是「无主题」</small></td><td data-label="条目从 feed 静默消失"><span class="no">未验证</span><small>该面回源周期未取得</small></td><td data-label="自动回源">添加时立刻拉一次<small>此后实测 14 小时以上未再回源（官方口径约每 3 小时）</small></td><td data-label="用 X-WR-CALNAME 命名">否，对话框强制手填</td></tr>
+      <tr><td>ColorOS 系统日历</td><td data-label="订阅入口">我的 → 添加日历 → URL 日历</td><td data-label="收到 STATUS:CANCELLED"><span class="no">忽略</span>，同上<small>且它整体替换字段，旧标题会被清掉</small></td><td data-label="条目从 feed 静默消失"><span class="no">不删</span>，永久留着<small>10-12 整学期演练：21 条过期旧项重加后仍在；退订重加也清不掉</small></td><td data-label="自动回源"><span class="yes">是</span><small>实测延迟 ≤2h35m，能原地更新已存在的事件</small></td><td data-label="用 X-WR-CALNAME 命名">是</td></tr>
+      <tr><td>各类「导入日历」</td><td data-label="订阅入口">选本地 .ics 文件</td><td colspan="2" data-label="收到 STATUS:CANCELLED · 条目从 feed 消失">不适用——不再回源，一次性快照</td><td data-label="自动回源"><span class="no">否</span></td><td data-label="用 X-WR-CALNAME 命名">不适用</td></tr>
     </tbody>
   </table>
   </div>
@@ -351,20 +367,22 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
 <section id="commands">
   <div class="sec-kicker">参考</div>
   <h2>命令一览</h2>
+  <div class="tablewrap">
   <table>
     <thead><tr><th>命令</th><th>作用</th><th>联网？</th></tr></thead>
     <tbody>
-      <tr><td><code>login [--force]</code></td><td>浏览器本人登录，会话仅存本地；会话过期后必须带 <code>--force</code></td><td>认证页</td></tr>
-      <tr><td><code>status</code></td><td>查看会话与配置状态</td><td>否</td></tr>
-      <tr><td><code>fetch</code></td><td>获取课表 JSON（HTTP 路径同时抓考试安排；自动轮转上一份快照作 diff 基线）</td><td>是</td></tr>
-      <tr><td><code>export</code></td><td>解析并生成 .ics（默认并入考试事件；支持日期范围 / SEQUENCE 基线 / <code>--no-exams</code>）</td><td>否</td></tr>
-      <tr><td><code>notice</code> / <code>schedule</code></td><td>解析停课调课通知 / 官方作息页，预览或合并配置</td><td>匿名 GET</td></tr>
-      <tr><td><code>diff</code></td><td>比对新旧快照，列出课表变化与「考试变更」</td><td>否</td></tr>
-      <tr><td><code>subscribe init/push/rotate/status</code></td><td>发布到 GitHub Pages 的订阅 URL；push 与 export 共用同一条构建管线</td><td>仅 push / <code>status --verify</code></td></tr>
-      <tr><td><code>doctor</code></td><td>只读体检，退出码 0 / 5 可直接判定「部署到位没有」</td><td>默认否</td></tr>
-      <tr><td><code>inspect</code></td><td>对原始 JSON 做脱敏结构分析</td><td>否</td></tr>
+      <tr><td><code>login [--force]</code></td><td data-label="作用">浏览器本人登录，会话仅存本地；会话过期后必须带 <code>--force</code></td><td data-label="联网？">认证页</td></tr>
+      <tr><td><code>status</code></td><td data-label="作用">查看会话与配置状态</td><td data-label="联网？">否</td></tr>
+      <tr><td><code>fetch</code></td><td data-label="作用">获取课表 JSON（HTTP 路径同时抓考试安排；自动轮转上一份快照作 diff 基线）</td><td data-label="联网？">是</td></tr>
+      <tr><td><code>export</code></td><td data-label="作用">解析并生成 .ics（默认并入考试事件；支持日期范围 / SEQUENCE 基线 / <code>--no-exams</code>）</td><td data-label="联网？">否</td></tr>
+      <tr><td><code>notice</code> / <code>schedule</code></td><td data-label="作用">解析停课调课通知 / 官方作息页，预览或合并配置</td><td data-label="联网？">匿名 GET</td></tr>
+      <tr><td><code>diff</code></td><td data-label="作用">比对新旧快照，列出课表变化与「考试变更」</td><td data-label="联网？">否</td></tr>
+      <tr><td><code>subscribe init/push/rotate/status</code></td><td data-label="作用">发布到 GitHub Pages 的订阅 URL；push 与 export 共用同一条构建管线</td><td data-label="联网？">仅 push / <code>status --verify</code></td></tr>
+      <tr><td><code>doctor</code></td><td data-label="作用">只读体检，退出码 0 / 5 可直接判定「部署到位没有」</td><td data-label="联网？">默认否</td></tr>
+      <tr><td><code>inspect</code></td><td data-label="作用">对原始 JSON 做脱敏结构分析</td><td data-label="联网？">否</td></tr>
     </tbody>
   </table>
+  </div>
   <p style="color:var(--sub);font-size:.9rem;margin-top:.8rem">退出码有语义（2=未登录、3=登录失效、4=无权限、5=<code>doctor</code> 检出阻塞项），方便脚本串联。完整参数与客户端订阅入口见 <a href="https://github.com/XLJFZ/xjtu-timetable-calendar#命令参考">README · 命令参考</a>。</p>
 </section>
 

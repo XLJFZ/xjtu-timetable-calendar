@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
@@ -43,6 +44,53 @@ _SESSION_COOKIE_HINTS = (
     "ids",
     "wengine",
 )
+
+# ---------------------------------------------------------------------------
+# 教务侧（``/jwapp``）cookie 自检
+# ---------------------------------------------------------------------------
+#
+# 2026-10-14 两次真人登录（11:01 存 46 条、16:10 存 33 条）都栽在同一处：认证走完、
+# 页面停在「请选择身份」，用户点了「学生」但**课表还在跳转/渲染**中就按了 Enter，
+# `context.close()` 一执行，教务侧那条 cookie 就没机会发出来 —— 三个 ``.do`` 接口
+# 从此一律 403。用 16:10 那份会话 headless 重放（``_notes/journey/diagnose_role_click.py``）
+# 证明流程本身是通的：点「学生」→ 落到 ``/jwapp/sys/wdkb/...#/xskcb``、四条 cookie 齐。
+# 差的只是**等待**。所以 Enter 之后先数一遍教务侧 cookie，没有就别关窗口。
+
+#: 首次自检的等待窗口（秒）。真人点完「学生」到教务侧发 cookie 通常几秒内完成。
+_APP_COOKIE_WAIT_SECONDS = 20.0
+#: 用户按过 Enter、看过追问提示之后的补采窗口（秒）。
+_APP_COOKIE_RECOVER_SECONDS = 6.0
+#: 轮询间隔（秒）。
+_APP_COOKIE_POLL_SECONDS = 0.5
+
+
+def _is_app_scoped(cookie: dict[str, Any]) -> bool:
+    """cookie 的作用域是否落在教务应用（``/jwapp``）里。
+
+    与 `inspect_session` 用同一判据：eHall 给门户和教务各发一条同名 ``JSESSIONID``，
+    只有路径以 ``jwapp`` 开头的那几条代表"登录真的走完了"。
+    """
+    return str(cookie.get("path") or "/").lstrip("/").lower().startswith("jwapp")
+
+
+def _wait_for_app_cookies(
+    context: Any, *, timeout: float, poll: float = _APP_COOKIE_POLL_SECONDS
+) -> tuple[list[dict[str, Any]], float]:
+    """轮询浏览器上下文直到出现教务侧 cookie，返回 ``(全部 cookie, 实际等待秒数)``。
+
+    只等、不判断成败：调用方拿到 0 条时才决定是追问还是降级保存。窗口期内浏览器
+    上下文必须保持打开，这正是这条修复的全部意义。
+    """
+    waited = 0.0
+    while True:
+        cookies = list(context.cookies())
+        if any(_is_app_scoped(c) for c in cookies):
+            return cookies, waited
+        if waited >= timeout:
+            return cookies, waited
+        step = min(poll, timeout - waited)
+        time.sleep(step)
+        waited += step
 
 
 class SessionInfo:
@@ -161,8 +209,10 @@ def login_instructions(cfg: Settings | None = None) -> list[str]:
         "    2) 若页面让你「选择身份」，先点「学生」，再进入「我的课表」页面",
         "       并切换到你要导出的学期",
         "    3) 确认页面已正常显示课表后，回到终端按 Enter",
-        "       （停在「请选择身份」就按 Enter，会存下一份取不到课表的半截会话：",
-        "        接口一律返回 403，而不是 401）",
+        "       （按完 Enter 本工具会自动等教务侧 cookie 到位，最多 20 秒；",
+        "        没等到时窗口不会关掉，而是提示你补点一下「学生」再等一轮。",
+        "        停在「请选择身份」就按 Enter、且不肯补这一步，会存下一份",
+        "        取不到课表的半截会话：接口一律返回 403，而不是 401）",
         "",
         "  这一步要由真人完成：把本命令放进后台任务或管道里，",
         "  那个 Enter 永远等不到，表现就是「卡住」。",
@@ -238,18 +288,31 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
         # 启动 URL 不带 #/，避免 SPA 路由被破坏而卡死
         page.goto(cfg.select_role_url, wait_until="domcontentloaded", timeout=90_000)
 
+        def _abort_without_saving() -> AuthenticationRequired:
+            context.close()
+            return AuthenticationRequired(
+                "用户中止了登录流程",
+                hint="会话未保存：本地会话文件没有被改动，可直接重跑 login。",
+            )
+
         try:
             input(">>> 完成登录并确认课表已显示后，按 Enter 继续... ")
         except (EOFError, KeyboardInterrupt):
-            context.close()
-            raise AuthenticationRequired(
-                "用户中止了登录流程",
-                hint="会话未保存：本地会话文件没有被改动，可直接重跑 login。",
-            ) from None
+            raise _abort_without_saving() from None
 
-        cookies = context.cookies()
+        # 自检：教务侧 cookie 到位了才算登录走完（见 `_APP_COOKIE_WAIT_SECONDS` 处注释）
+        cookies, waited = _wait_for_app_cookies(context, timeout=_APP_COOKIE_WAIT_SECONDS)
+        if not any(_is_app_scoped(c) for c in cookies):
+            print(f"\n>>> 课表还没加载出来（已等 {waited:.0f} 秒，窗口保持打开）。")
+            print("    请在浏览器窗口里点「学生」，等课表真的渲染出来；")
+            print("    本工具会自动接着采集，也可以再按一次 Enter。")
+            try:
+                input(">>> 补做上面这一步后按 Enter（Ctrl-C 放弃，不覆盖已有会话）... ")
+            except (EOFError, KeyboardInterrupt):
+                raise _abort_without_saving() from None
+            cookies, _ = _wait_for_app_cookies(context, timeout=_APP_COOKIE_RECOVER_SECONDS)
+
         storage = context.storage_state()
-
         context.close()
 
     if not cookies:
@@ -261,6 +324,7 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
             ),
         )
 
+    app_cookie_count = sum(1 for c in cookies if _is_app_scoped(c))
     state = {
         "cookies": storage.get("cookies", []),
         "origins": storage.get("origins", []),
@@ -275,7 +339,13 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
         private=True,
     )
 
-    logger.info("登录会话已保存（%d 个 cookie）", len(cookies))
+    logger.info("登录会话已保存（%d 个 cookie，其中教务侧 %d 个）", len(cookies), app_cookie_count)
+    if not app_cookie_count:
+        logger.warning(
+            "这份会话取不到课表：教务侧（/jwapp）的 cookie 一条都没有，接口会一律返回"
+            " 403 而不是 401。处置是重跑 login --force，在窗口里点「学生」并等课表渲染"
+            "出来。仍然保存是因为门户/CAS 部分是好的，重登时能少跳一次登录页。"
+        )
     return inspect_session(cfg)
 
 

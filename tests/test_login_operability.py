@@ -93,7 +93,8 @@ def test_every_relogin_hint_names_the_force_flag(
     import builtins
 
     monkeypatch.setattr(builtins, "input", lambda *args: "")
-    fake_playwright.cookies = lambda: []  # type: ignore[method-assign]
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+    fake_playwright.set_cookies([])
 
     with pytest.raises(AuthenticationRequired) as caught:
         ensure_login(Settings.load(), force=True)
@@ -162,3 +163,141 @@ def test_login_missing_playwright_hint_names_the_install_extra(
         ensure_login(Settings.load(), force=True)
 
     assert "[browser]" in exc.value.hint
+
+
+# --------------------------------------------------------------------------
+# Enter 之后的自检：2026-10-14 两次真人登录都栽在同一处
+# --------------------------------------------------------------------------
+#
+# 11:01 与 16:10 两次 `login --force` 都由真人走完认证、都按了 Enter，
+# 存下来的会话分别是 46 / 33 个 cookie，**教务侧（/jwapp）一条都没有**，
+# 于是 `fetch` 一律 403。用 16:10 那份会话 headless 重放（`_notes/journey/
+# diagnose_role_click.py`）证明流程本身是通的：打开入口 → 身份页正常 →
+# 点「学生」→ 落到 `/jwapp/sys/wdkb/...#/xskcb`、`/jwapp` 四条 cookie 齐。
+# 差别只在**时机**：点完「学生」到课表渲染出来中间有几秒，Enter 一按
+# `context.close()` 立刻执行，窗口就没了、cookie 也就没等到。
+# 所以自检必须放在"窗口还开着、用户还在"这一刻，事后 `doctor` 只能补救。
+
+
+HALF_SESSION: list[dict[str, str]] = [
+    {"name": "SESSIONID", "value": "v", "domain": ".xjtu.edu.cn", "path": "/"}
+]
+
+
+def _jwapp_cookie() -> dict[str, str]:
+    return {
+        "name": "JSESSIONID",
+        "value": "app",
+        "domain": "ehall.xjtu.edu.cn",
+        "path": "/jwapp",
+    }
+
+
+def _input_after(eof_after: int | None = None) -> Any:
+    """假 `input()`：把调用次数记在 ``state["n"]`` 上，第 `eof_after` 次之后抛 EOFError。"""
+    state = {"n": 0}
+
+    def _fake(prompt: object = "") -> str:
+        state["n"] += 1
+        if eof_after is not None and state["n"] > eof_after:
+            raise EOFError
+        return ""
+
+    _fake.state = state  # type: ignore[attr-defined]
+    return _fake
+
+
+def test_healthy_session_does_not_get_interrogated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_playwright: Any
+) -> None:
+    """会话里有教务侧 cookie 时，Enter 之后**不该再多问一次**。
+
+    健康路径是绝大多数：多加一轮无谓的追问会把人绕晕，也是这条修复唯一的副作用。
+    """
+    fake_input = _input_after()
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    ensure_login(Settings.load(), force=True)
+
+    assert fake_input.state["n"] == 1, "只该有开头那一次「按 Enter 继续」"
+    assert fake_playwright.closed is True
+
+
+def test_half_session_gets_one_more_chance_before_the_window_closes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_playwright: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """按 Enter 时还没有教务侧 cookie ⇒ 先别关窗口，给用户补点「学生」的机会。
+
+    这里模拟真人照提示做了：第二次 Enter 之前 cookie 到位 ⇒ 保存的必须是**补全后**
+    那份，而不是第一次那半截。
+    """
+    import builtins
+
+    fake_playwright.set_cookies(HALF_SESSION)
+    fake_input = _input_after()
+
+    def _input(prompt: object = "") -> str:
+        fake_input(prompt)
+        if fake_input.state["n"] >= 2:
+            fake_playwright.set_cookies([*HALF_SESSION, _jwapp_cookie()])
+        return ""
+
+    monkeypatch.setattr(builtins, "input", _input)
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+
+    ensure_login(Settings.load(), force=True)
+
+    assert fake_input.state["n"] == 2, "半截会话必须追问一次"
+    assert fake_playwright.closed is True
+    state_file = tmp_path / "_isolated_home" / "session" / "storage_state.json"
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+    paths = {str(c.get("path", "/")) for c in state["cookies"]}
+    assert any(p.startswith("/jwapp") for p in paths), "保存的得是补全后的会话"
+    # 追问走 print（和登录前那段说明同一形态），所以断言取 stdout 而不是日志
+    out = capsys.readouterr().out
+    assert "身份" in out
+    assert "窗口保持打开" in out
+
+
+def test_timeout_still_saves_but_says_it_is_half_baked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_playwright: Any
+) -> None:
+    """补采窗口内仍拿不到教务侧 cookie ⇒ **照旧保存**（别丢真人登录的成果），
+    但必须明说这份取不到课表、接口会 403。
+    """
+    fake_playwright.set_cookies(HALF_SESSION)
+    monkeypatch.setattr("builtins.input", _input_after())
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+
+    with captured_logs() as records:
+        info = ensure_login(Settings.load(), force=True)
+
+    text = _texts(records)
+    assert info.usable, "半截会话仍然可用（CAS 侧在），不能当成登录失败"
+    assert info.jwapp_cookie_count == 0
+    assert "403" in text
+    assert "login --force" in text, "要给出出口：重跑并点「学生」"
+    assert (tmp_path / "_isolated_home" / "session" / "storage_state.json").is_file()
+
+
+def test_aborting_during_the_retry_leaves_the_old_session_untouched(
+    stale_home: Path, monkeypatch: pytest.MonkeyPatch, fake_playwright: Any
+) -> None:
+    """第二次 Enter 上 Ctrl-C / EOF ⇒ 说清未保存，并且**不许覆盖**原有会话文件。
+
+    真人此刻窗口里可能正卡在跳转中，放弃是常见选择；把旧文件写成半截会话是二次伤害。
+    """
+    before = (stale_home / "session" / "storage_state.json").read_text(encoding="utf-8")
+    fake_playwright.set_cookies(HALF_SESSION)
+    monkeypatch.setattr("builtins.input", _input_after(eof_after=1))
+    monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+
+    with pytest.raises(AuthenticationRequired) as caught:
+        ensure_login(Settings.load(), force=True)
+
+    assert "未保存" in caught.value.hint
+    assert (stale_home / "session" / "storage_state.json").read_text("utf-8") == before
+    assert fake_playwright.closed is True, "中止时也要把浏览器关掉，别占着 profile"

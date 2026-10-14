@@ -76,6 +76,9 @@ pythonpath = ["src"]
 addopts = "-ra --strict-markers --doctest-modules"
 filterwarnings = ["error::DeprecationWarning"]
 doctest_optionflags = ["NORMALIZE_WHITESPACE"]
+markers = [
+    "allow_real_home: 退出 conftest 的默认 home 隔离，用真实用户目录（目前没有用例需要）",
+]
 
 [tool.coverage.run]
 source = ["src/xjtu_calendar"]

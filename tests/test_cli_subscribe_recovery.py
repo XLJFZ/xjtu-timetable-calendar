@@ -170,7 +170,9 @@ def test_a_stale_local_baseline_is_refused_before_anything_else(
 
 
 def test_the_refusal_is_not_sticky(
-    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """补齐之后，`push` 不许再报"留底"——否则用户分不清哪次真出过事。"""
     home, origin = env
@@ -182,11 +184,29 @@ def test_the_refusal_is_not_sticky(
     assert main(["subscribe", "repair", "--semester", SEMESTER]) == 0
     capsys.readouterr()
 
+    # 顺带把"幂等跳过也清了准备稿"这件事测成**非空洞**的： spy 只观察、不改行为，
+    # 它看到的正是 discard 那一刻——准备稿确实在那儿（`write_journal` 排在 publish 之前），
+    # 而 discard 之后它必须不在。少了这一层，下面那条断言可能只是在证明"文件从没被写过"。
+    seen: dict[str, bool] = {}
+    real_discard = subscribe.discard_pending
+
+    def spy(cfg: Settings, semester: str) -> None:
+        seen["pending_before_discard"] = subscribe.pending_path(cfg, semester).is_file()
+        real_discard(cfg, semester)
+
+    monkeypatch.setattr(subscribe, "discard_pending", spy)
+
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     second = capsys.readouterr()
     assert "留底" not in second.err, "已经一致时不许再报不相容"
     assert "无变化" in second.out
     assert last_local.read_bytes() == remote
+    # 审阅者 2026-10-15 要点名确认的那一格：NO_CHANGE 提前返回，**不许**把准备稿留在原地
+    # （留着的下一次 push 会被 `pending_unresolved` 拦成 7，等于自己给自己造一个假故障）
+    assert seen.get("pending_before_discard") is True, "NO_CHANGE 这一支本来确实写过准备稿"
+    assert not subscribe.pending_path(Settings(home=home), SEMESTER).exists(), (
+        "幂等跳过也清掉了准备稿：远端没收新东西，就没有未裁决的发布"
+    )
 
 
 def test_doctor_sees_a_baseline_that_lags_the_published_bytes(

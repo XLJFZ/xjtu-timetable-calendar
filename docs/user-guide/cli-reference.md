@@ -15,7 +15,7 @@
 | `export [--semester S] [-o OUT] [--input F] [--name N] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence] [--no-exams] [--allow-mass-cancellation]` | 生成 `.ics`（默认并入考试事件；`--name` 不给时标题按课表自动推导，见上文「导出」；`--allow-mass-cancellation` 放行课程侧熔断，见「升级到 v0.8」） |
 | `notice --url U \| --from-file F [--semester S] [--apply]` | 解析停课/调课通知，预览或合并进学期配置 |
 | `schedule [--url U \| --from-file F] [--semester S] [--apply]` | 解析官方「学生作息时间表」页，预览或合并进作息表配置 |
-| `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F] [--no-exams] [--allow-mass-cancellation]` \| `subscribe rotate [--no-exams] [--allow-mass-cancellation]` \| `subscribe status [--verify]`（均可带 `--semester S`） | 把 .ics 发布到自己的 GitHub Pages，日历客户端按 URL 订阅（见上文「URL 订阅」；push/rotate 默认并入考试，`--no-exams` 同样生效；push 首次会自动做 v1→v2 UID 迁移，`--allow-mass-cancellation` 放行课程侧熔断） |
+| `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F] [--no-exams] [--allow-mass-cancellation] [--allow-unverified-baseline]` \| `subscribe rotate [--no-exams] [--allow-mass-cancellation]` \| `subscribe status [--verify]` \| `subscribe repair`（均可带 `--semester S`） | 把 .ics 发布到自己的 GitHub Pages，日历客户端按 URL 订阅（见上文「URL 订阅」；push/rotate 默认并入考试，`--no-exams` 同样生效；push 首次会自动做 v1→v2 UID 迁移，`--allow-mass-cancellation` 放行课程侧熔断；`repair` 按发布恢复快照把本地留底/台账对齐到线上那一版，不产生新发布） |
 | `inspect [--input F] [-o OUT]` | 对原始 JSON 做**脱敏**结构分析 |
 | `doctor [--semester S] [--verify]` | **只读体检**：版本 / 会话 / 校历 / 作息 / 快照 / 渲染 / 订阅留底一次看全。不写任何文件、默认不发请求（`--verify` 才对订阅 URL 做一次匿名 GET）。有阻塞项时退出码为 `5` |
 

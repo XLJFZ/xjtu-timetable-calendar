@@ -33,9 +33,14 @@ from .fileutil import atomic_write_text
 from .logging_setup import get_logger
 
 __all__ = [
+    "JOURNAL_ABSENT",
+    "JOURNAL_INVALID",
+    "JOURNAL_VALID",
     "LEDGER_KEEP",
+    "REMOTE_UNCERTAIN_ATTR",
     "TOKEN_BYTES",
     "CompatibilityCheck",
+    "JournalRead",
     "PublishJournal",
     "PublishOutcome",
     "PublishResult",
@@ -43,14 +48,17 @@ __all__ = [
     "SubscriptionState",
     "check_local_compatibility",
     "derive_url_base",
+    "discard_pending",
     "fetch_published_bytes",
     "has_unpublished_changes",
     "journal_path",
-    "load_journal",
     "load_state",
     "needs_uid_migration",
     "new_token",
+    "pending_path",
+    "promote_pending",
     "publish",
+    "read_journal",
     "rotate_token",
     "save_state",
     "snapshot_age_days",
@@ -199,6 +207,10 @@ _GIT_COMMON = ["-c", "core.autocrlf=false", "-c", "commit.gpgsign=false"]
 #: 内部中转分支名：每次发布先孤儿化到该分支再强推 refs/heads/<state.branch>。
 _ORPHAN_BRANCH = "subscribe-publish"
 
+#: `publish` 失败时挂在异常上的标记：远端**可能**已经推进（push 已开始执行）。
+#: 调用方只许在没有这个标记时才丢弃发布准备稿（2026-10-14 外部审阅 P1-①）。
+REMOTE_UNCERTAIN_ATTR = "publish_remote_uncertain"
+
 
 class PublishOutcome(Enum):
     PUSHED = "pushed"
@@ -287,6 +299,30 @@ def _enter_orphan(work: Path) -> None:
 
 
 def publish(cfg: Settings, state: SubscriptionState, ics_text: str) -> PublishResult:
+    """推送远端，并在失败时把"远端到底动没动"标在异常上。
+
+    .. warning:: 抛异常**不等于**远端没收下这一版（2026-10-14 外部审阅 P1-①）：
+       `git push` 之后还有 `save_state`，而 `git push` 自己返回非零也可能是远端已更新、
+       响应却没回到客户端。所以失败分两档：带 `REMOTE_UNCERTAIN_ATTR` 标记的**不能**当成
+       "远端没动"，调用方只许在没有该标记时丢弃发布准备稿。
+
+    签名保持三参不变：`publish` 有多处测试替身按位置接三个参数，加参数会把它们全部打挂；
+    标记挂在异常上比改公共签名便宜，也让 rotate 等既有调用零改动。
+    """
+    push_started = [False]
+    try:
+        return _publish_inner(cfg, state, ics_text, push_started)
+    except Exception as exc:
+        if push_started[0]:
+            # 挂在异常上而不是改签名：这里要标的是**任意**异常类型（护栏错、git 错、
+            # save_state 的 OSError），直接属性赋值过不了 mypy。
+            setattr(exc, REMOTE_UNCERTAIN_ATTR, True)
+        raise
+
+
+def _publish_inner(
+    cfg: Settings, state: SubscriptionState, ics_text: str, push_started: list[bool]
+) -> PublishResult:
     """把 .ics 文本以孤儿单提交强推到 state.branch。
 
     跳过条件（spec §5.1 步骤 3）：内容哈希与 token 双相同才 NO_CHANGE。
@@ -294,9 +330,9 @@ def publish(cfg: Settings, state: SubscriptionState, ics_text: str) -> PublishRe
 
     .. warning:: 本函数只保证"推送前失败不留痕"。**推送成功之后**还有两句不在这里：
        这里的 ``save_state`` 与调用方（CLI）随后写本地留底/台账。死在两句中间会留下
-       "远端与状态已推进、留底还是旧的"这一状态，由 CLI 的 NO_CHANGE 分支负责自愈
-       （见 ``cli._subscribe_push``）——本函数**不许**改成"先写本地再推送"，
-       那样推送失败反而会留下一个比远端更新的基线。
+       "远端与状态已推进、留底还是旧的"这一状态——恢复入口是 `subscribe repair`
+       （它拿远端真实字节裁决），**不是**在这里补写本地文件。也不许把本函数改成
+       "先写本地再推送"，那样推送失败反而会留下一个比远端更新的基线。
     """
     data = ics_text.encode("utf-8")
     digest = hashlib.sha256(data).hexdigest()
@@ -347,6 +383,7 @@ def publish(cfg: Settings, state: SubscriptionState, ics_text: str) -> PublishRe
     _must_git(work, "add", "-A")
     now = datetime.now(UTC)
     _must_git(work, "commit", "-q", "-m", f"publish {state.semester} {now:%Y-%m-%dT%H:%MZ}")
+    push_started[0] = True
     _must_git(work, "push", "-q", "--force", "origin", f"HEAD:refs/heads/{state.branch}")
 
     state.last_push = PushRecord(
@@ -378,19 +415,29 @@ def publish(cfg: Settings, state: SubscriptionState, ics_text: str) -> PublishRe
 # 3. 台账的 `keep` 语义必须显式记录：`--no-exams` 那次**不该**动考试台账，
 #    记成"写空文件"等于把整份考试账本清掉。
 
-#: 台账在 journal 里的"这次别动"哨兵。
+#: 台账在快照里的"这次别动"哨兵。
 LEDGER_KEEP = "keep"
 
-#: journal 文件名模板（在 `subscribe/` 下、`work-*` 之外）。
+#: 已发布状态凭据（committed）：只有确认远端收下某一版之后才推进到它。
 JOURNAL_FILENAME = "publish-journal-{semester}.json"
+#: 本次发布的准备稿（pending）：推送**之前**写，成功之后提升为 committed。
+PENDING_FILENAME = "publish-pending-{semester}.json"
+
+#: `read_journal` 的三态：从没写过 / 写得懂 / 写懂了但读不懂（损坏）。
+JOURNAL_ABSENT = "absent"
+JOURNAL_VALID = "valid"
+JOURNAL_INVALID = "invalid"
 
 
 @dataclass
 class PublishJournal:
-    """一次已发出发布的完整本地目标状态（ICS + 两份台账 + 迁移标记）。
+    """一次发布的完整本地目标状态（ICS + 两份台账 + 迁移标记）。
 
     含课程名/教师/教室/座位（台账本身就有），**永不发布**、只留本地、`private=True`
     ——与两份台账同一隐私等级（spec §8）。日志里只许出现 sha，不许出现内容。
+
+    .. note:: 2026-10-14 外部审阅把"已发布凭据"与"待发准备稿"分成两个逻辑版本
+       （物理上是两个文件）。二者共用这个结构：同一份内容写在不同路径上，语义由路径决定。
     """
 
     semester: str
@@ -401,6 +448,10 @@ class PublishJournal:
     #: ``None`` = 这次不该动该台账（`--no-exams` / 门槛没过 ⇒ 不产出文本）。
     course_ledger_b64: str | None = None
     exam_ledger_b64: str | None = None
+    #: keep 语义的另一半：那次发布**不该动的这份台账**当时的字节指纹。
+    #: 相容性检查据此发现"保留下来的台账事后被删/被改"——不检查它 ≠ 它可以随便变。
+    course_ledger_sha256: str | None = None
+    exam_ledger_sha256: str | None = None
     uid_recipe: int | None = None
     created_at: str = ""
 
@@ -421,6 +472,14 @@ class PublishJournal:
             exam_ledger_b64=(
                 None if data.get("exam_ledger_b64") is None else str(data["exam_ledger_b64"])
             ),
+            course_ledger_sha256=(
+                None
+                if data.get("course_ledger_sha256") is None
+                else str(data["course_ledger_sha256"])
+            ),
+            exam_ledger_sha256=(
+                None if data.get("exam_ledger_sha256") is None else str(data["exam_ledger_sha256"])
+            ),
             uid_recipe=None if data.get("uid_recipe") is None else int(str(data["uid_recipe"])),
             created_at=str(data.get("created_at") or ""),
         )
@@ -435,6 +494,24 @@ class PublishJournal:
         return None if self.exam_ledger_b64 is None else _b64_decode(self.exam_ledger_b64)
 
 
+@dataclass(frozen=True)
+class JournalRead:
+    """读一份快照的结果，**刻意区分**"没写过"与"读不懂"。
+
+    审阅者 P1-②：旧版本从没写过快照 ⇒ 可以退回弱判据（明确告警）；
+    新版本写过、后来损坏 ⇒ 那是"本该信任的凭据失效"，用更宽松的判据继续发布等于
+    让一份损坏的安全校验文件触发更宽松的校验。折叠成同一个 ``None`` 就丢掉了这个区别。
+    """
+
+    status: str
+    journal: PublishJournal | None = None
+    detail: str = ""
+
+    @property
+    def present(self) -> bool:
+        return self.status != JOURNAL_ABSENT
+
+
 def _b64_decode(raw: str) -> str:
     return base64.b64decode(raw).decode("utf-8")
 
@@ -444,20 +521,30 @@ def _b64_encode(text: str) -> str:
 
 
 def journal_path(cfg: Settings, semester: str) -> Path:
+    """已发布状态凭据（committed）的路径。"""
     return subscribe_dir(cfg) / JOURNAL_FILENAME.format(semester=semester)
 
 
-def load_journal(cfg: Settings, semester: str) -> PublishJournal | None:
-    """读 journal；缺文件/读不动一律 ``None``（调用方据此区分"没有依据"与"依据不符"）。"""
-    path = journal_path(cfg, semester)
+def pending_path(cfg: Settings, semester: str) -> Path:
+    """本次发布准备稿（pending）的路径。"""
+    return subscribe_dir(cfg) / PENDING_FILENAME.format(semester=semester)
+
+
+def read_journal(cfg: Settings, semester: str, *, pending: bool = False) -> JournalRead:
+    """读一份快照，**区分**"没写过"与"读不懂"（审阅 P1-②）。
+
+    只报异常种类，不报 `str(exc)`：快照里是台账级个人信息，解码失败的原文可能跟着进日志。
+    """
+    path = pending_path(cfg, semester) if pending else journal_path(cfg, semester)
     if not path.is_file():
-        return None
+        return JournalRead(JOURNAL_ABSENT)
     try:
-        return PublishJournal.from_dict(json.loads(path.read_text(encoding="utf-8")))
+        # 必须显式 utf-8：快照里的 ICS 原文带课程名，zh-Windows 上默认编码是 cp936，
+        # 用 `read_text()` 会把"读得懂"变成 UnicodeDecodeError ⇒ 误判成损坏。
+        raw = path.read_text(encoding="utf-8")
+        return JournalRead(JOURNAL_VALID, PublishJournal.from_dict(json.loads(raw)))
     except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError) as exc:
-        # 只报异常种类：journal 里是台账级个人信息，`str(exc)` 可能把原文带进日志。
-        logger.warning("发布恢复快照无法解析（%s），本次按没有依据处理", type(exc).__name__)
-        return None
+        return JournalRead(JOURNAL_INVALID, detail=type(exc).__name__)
 
 
 def write_journal(
@@ -471,7 +558,12 @@ def write_journal(
     exam_ledger_text: str | None,
     uid_recipe: int | None,
 ) -> PublishJournal:
-    """在**推送远端之前**落定这次的恢复依据；写不进去就不许开始推送。"""
+    """在**推送远端之前**把这次的目标状态落成「准备稿」（pending）。
+
+    写不进去就不该开始推送：宁可远端停在上一版，也不要发一次事后无从恢复的发布。
+    `keep`（文本为 ``None``）那份台账在这里记下**当时的字节指纹**，于是"这次不动它"
+    仍然是一个日后可核验的事实，而不是一句免检承诺（审阅 P1-③）。
+    """
     journal = PublishJournal(
         semester=semester,
         token=token,
@@ -480,15 +572,50 @@ def write_journal(
         ics_text=ics_text,
         course_ledger_b64=(None if course_ledger_text is None else _b64_encode(course_ledger_text)),
         exam_ledger_b64=None if exam_ledger_text is None else _b64_encode(exam_ledger_text),
+        course_ledger_sha256=(
+            None if course_ledger_text is not None else _sha_of(cfg.course_ledger_path(semester))
+        ),
+        exam_ledger_sha256=(
+            None if exam_ledger_text is not None else _sha_of(cfg.exam_ledger_path(semester))
+        ),
         uid_recipe=uid_recipe,
         created_at=datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
     )
-    path = journal_path(cfg, semester)
+    _dump_journal(pending_path(cfg, semester), journal)
+    return journal
+
+
+def _dump_journal(path: Path, journal: PublishJournal) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(
         path, json.dumps(journal.to_dict(), ensure_ascii=False, indent=2) + "\n", private=True
     )
+
+
+def promote_pending(cfg: Settings, semester: str) -> PublishJournal | None:
+    """确认远端收下之后，把准备稿提升为「已发布凭据」（committed）。
+
+    顺序要紧：**先推进凭据，再写本地留底/台账**。反过来（先本地后凭据）一旦死在中间，
+    留底会比凭据新 ⇒ `repair` 拿远端一比对就发现凭据落后、拒绝恢复，只剩人工出口。
+    提升失败（磁盘满等）不推翻发布：远端已经是新版，而准备稿还在，下一次
+    `subscribe repair` 能按远端字节把它认出来并补做这一步。
+    """
+    read = read_journal(cfg, semester, pending=True)
+    if read.status != JOURNAL_VALID or read.journal is None:
+        return None
+    journal = read.journal
+    _dump_journal(journal_path(cfg, semester), journal)
+    pending_path(cfg, semester).unlink(missing_ok=True)
     return journal
+
+
+def discard_pending(cfg: Settings, semester: str) -> None:
+    """丢掉一份**已确认远端没收下**的准备稿。
+
+    只允许在"还没执行到 push"这个前提下调用；push 之后失败留着它才有意义
+    （到底是哪一版由 `subscribe repair` 拿远端字节裁决）。
+    """
+    pending_path(cfg, semester).unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)
@@ -519,7 +646,16 @@ def check_local_compatibility(
     if state.last_push is None:
         return CompatibilityCheck(True, "consistent", "尚未发布过，没有需要相容的旧版本")
     baseline = subscribe_dir(cfg) / f"last-{semester}.ics"
-    journal = load_journal(cfg, semester)
+    read = read_journal(cfg, semester)
+    if read.status == JOURNAL_INVALID:
+        # 与"从没写过"分开（审阅 P1-②）：这份凭据本来是在的、现在读不懂 ⇒ 不能退回更宽松的
+        # 弱判据继续发布。人工出口仍然给（旗标），但默认停手。
+        return CompatibilityCheck(
+            False,
+            "journal_invalid",
+            f"本地发布恢复快照读不懂（{read.detail}），不能按没有依据降级放行",
+        )
+    journal = read.journal
     if journal is not None and journal.token != state.last_push.token:
         return CompatibilityCheck(
             False,
@@ -527,7 +663,7 @@ def check_local_compatibility(
             f"恢复快照属于另一个 token（{journal.token[:8]}…），与当前订阅记录不符，不能拿它当依据",
         )
     if journal is None:
-        # 没有依据可查（0.8.5 之前发布过的状态、或快照被删）。退回一条**不依赖快照**的
+        # 没有依据可查（0.8.5 之前发布过的状态、或凭据被删）。退回一条**不依赖快照**的
         # 弱判据：`last_push` 只在 push 成功后写，所以留底字节 sha 与它相符就说明留底
         # 正是线上那一版。不放行的话，每个老用户升级后第一次 push 都会被自己的保险丝
         # 拦住（与 v0.8 那次"门 2 误拦老用户几周"同型，2026-10-14 拿真实 home 实测过）。
@@ -552,14 +688,39 @@ def check_local_compatibility(
             "baseline",
             f"本地留底与最后一次已发布的 ICS 不一致（{baseline.name}）",
         )
-    for label, path_key, want in (
-        ("course_ledger", cfg.course_ledger_path(semester), journal.course_ledger_text),
-        ("exam_ledger", cfg.exam_ledger_path(semester), journal.exam_ledger_text),
+    for label, human, path_key, want, keep_sha in (
+        (
+            "course_ledger",
+            "课程台账",
+            cfg.course_ledger_path(semester),
+            journal.course_ledger_text,
+            journal.course_ledger_sha256,
+        ),
+        (
+            "exam_ledger",
+            "考试台账",
+            cfg.exam_ledger_path(semester),
+            journal.exam_ledger_text,
+            journal.exam_ledger_sha256,
+        ),
     ):
         if want is None:
-            continue  # keep 语义：那次发布没产出这份台账，今天是什么样就什么样
+            # keep 语义：那次发布没产出这份台账 ⇒ **不动它**，但它仍是撤销判定的输入。
+            # "不动"记成一个指纹，事后被删/被改就会被发现（审阅 P1-③）；不记指纹的话，
+            # 这一格与场景 2 是同一类静默失效。
+            if keep_sha is not None and _sha_of(path_key) != keep_sha:
+                return CompatibilityCheck(
+                    False,
+                    f"{label}_keep",
+                    f"{human} {path_key.name} 被保留过，却与那次发布时的字节不符（被删除或改动）",
+                )
+            continue
         if _sha_of(path_key) != hashlib.sha256(want.encode("utf-8")).hexdigest():
-            return CompatibilityCheck(False, label, f"{path_key.name} 与最后一次发布时的内容不一致")
+            return CompatibilityCheck(
+                False,
+                label,
+                f"{human} {path_key.name} 与最后一次发布时的内容不一致",
+            )
     if journal.uid_recipe is not None and state.uid_recipe != journal.uid_recipe:
         return CompatibilityCheck(
             False,

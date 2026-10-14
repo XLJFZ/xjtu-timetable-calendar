@@ -1481,16 +1481,31 @@ def _restore_from_journal(
 
 
 def _subscribe_repair(cfg: Settings, state: subscribe.SubscriptionState, semester: str) -> int:
-    """`subscribe repair`：核线上那一版，然后按发布恢复快照把本地对齐回去。
+    """`subscribe repair`：以**远端真实字节**为准，把本地对齐回线上那一版。
 
-    三条契约（2026-10-14 审查对齐）：①**不只看本地** —— 必须从发布分支拉回真实字节、
-    与快照的 sha 对上才动手；②可重复执行（幂等），中途再崩一次，第二次照样能续上；
-    ③没有快照就**不假装能反推**——产物里课程与考试事件长得一样（CD8），从 ICS 推不出
-    两份台账，此时只报判据、给手工出口，绝不静默重置订阅历史。
+    四条契约（2026-10-14 审查 + 复核对齐）：
+    ①不只看本地——必须从发布分支拉回真实字节，与凭据的 sha 对上才动手；
+    ②可重复执行（幂等），中途再崩一次，第二次照样能续上；
+    ③没有凭据就**不假装能反推**——产物里课程与考试事件长得一样（CD8），从 ICS 推不出
+    两份台账，此时只报判据、给手工出口，绝不静默重置订阅历史；
+    ④**本地有两份凭据时由远端裁决**（审阅 T1/T2）：已发布凭据（committed）之外可能还留着
+    一份准备稿（pending，死在推送途中）。远端等于准备稿 ⇒ 那一版其实发出去了，提升并恢复；
+    远端等于已发布凭据 ⇒ 准备稿从未落地，安全丢弃；两者都不是 ⇒ 冲突，拒绝自动操作。
+    同时把状态文件里的「上次发布记录」一并修对——只恢复文件不修元数据，`doctor`/`status`
+    会长期报告错误的已发布版本。
     """
     from . import subscribe
 
-    journal = subscribe.load_journal(cfg, semester)
+    committed = subscribe.read_journal(cfg, semester)
+    pending = subscribe.read_journal(cfg, semester, pending=True)
+    if committed.status == subscribe.JOURNAL_INVALID or pending.status == subscribe.JOURNAL_INVALID:
+        raise XjtuCalendarError(
+            "本地发布凭据读不懂，无法据此恢复",
+            hint="快照在 `subscribe/` 下（committed 与 pending 两份）。读不懂说明它被截断或改坏："
+            "可从订阅 URL 下载当前 .ics 原样放回留底路径，其余两份台账无法凭空重建；"
+            "确认可以接受全新订阅时删除状态文件与快照后重新 subscribe init（会清空客户端历史）。",
+        )
+    journal = committed.journal or pending.journal
     if journal is None:
         raise XjtuCalendarError(
             "本地没有发布恢复快照，无法自动对齐",
@@ -1506,24 +1521,75 @@ def _subscribe_repair(cfg: Settings, state: subscribe.SubscriptionState, semeste
 
     remote = subscribe.fetch_published_bytes(cfg, state, semester)
     remote_sha = hashlib.sha256(remote).hexdigest()
-    if remote_sha != journal.ics_sha256:
+    committed_j = committed.journal
+    pending_j = pending.journal
+    notes: list[str] = []
+    if (
+        pending_j is not None
+        and remote_sha == pending_j.ics_sha256
+        and (committed_j is None or committed_j.ics_sha256 != remote_sha)
+    ):
+        # 远端 == 准备稿 ⇒ 那一版其实发出去了，只是没登记（死在 save_state / 提升之前）。
+        # 提升它，本地就有线上那一版的完整凭据（审阅 T2）。
+        promoted = subscribe.promote_pending(cfg, semester)
+        if promoted is None:
+            raise XjtuCalendarError("准备稿提升为已发布凭据失败，未做任何改动")
+        journal = promoted
+        notes.append("线上那一版正是没登记过的准备稿，已确认为已发布并补上凭据")
+    elif committed_j is not None and remote_sha == committed_j.ics_sha256:
+        # 远端仍是已发布凭据 ⇒ 本地那份准备稿从未落地，丢掉它（审阅 T1）。
+        journal = committed_j
+        if pending_j is not None:
+            subscribe.discard_pending(cfg, semester)
+            notes.append("丢弃从未发出的准备稿")
+    else:
         raise XjtuCalendarError(
-            f"线上那版与恢复快照不符（远端 {remote_sha[:12]}… ≠ 快照 {journal.ics_sha256[:12]}…），拒绝恢复",
-            hint="快照没对上，说明中断点不在本地：先 subscribe status 核对，"
+            f"线上那版与恢复凭据不符（远端 {remote_sha[:12]}… ≠ 凭据 "
+            f"{journal.ics_sha256[:12]}…），拒绝恢复",
+            hint="凭据没对上，说明中断点不在本地：先 subscribe status 核对，"
             "确认可接受全新订阅时删除状态文件后重新 subscribe init。",
         )
 
     restored = _restore_from_journal(cfg, journal, semester)
-    marker = ""
-    if journal.uid_recipe is not None and state.uid_recipe != journal.uid_recipe:
-        subscribe.save_state(cfg, replace(state, uid_recipe=journal.uid_recipe))
-        marker = "、迁移标记"
+    new_state = state
+    if new_state.last_push is None or new_state.last_push.content_sha256 != journal.ics_sha256:
+        # 已发布状态元数据本身也得修对：只恢复文件不修它，`doctor`/`status` 会长期报错版本。
+        # 时刻取凭据自己的 created_at（准备发布那一刻，与真实推送只差几秒），不假装知道精确时间。
+        new_state = replace(
+            new_state,
+            last_push=subscribe.PushRecord(
+                pushed_at=journal.created_at,
+                content_sha256=journal.ics_sha256,
+                token=journal.token,
+            ),
+        )
+        restored.append("上次发布记录")
+    if journal.uid_recipe is not None and new_state.uid_recipe != journal.uid_recipe:
+        new_state = replace(new_state, uid_recipe=journal.uid_recipe)
         restored.append("迁移标记")
-    if not restored:
+    if new_state is not state:
+        subscribe.save_state(cfg, new_state)
+    if not restored and not notes:
         print("本地已与线上一致，无需恢复。")
-        return 0
-    print(f"已按发布恢复快照对齐：{'、'.join(restored)}（远端字节校验通过）")
-    logger.info("订阅本地状态已恢复%s；未产生任何新的发布。", marker or "。")
+    else:
+        # 只丢弃了一份过期准备稿、什么都没补的场合也必须说清楚：静默动过本地文件
+        # 是这一整套机制最不该出现的样子。
+        if restored:
+            print(f"已按发布恢复快照对齐：{'、'.join(restored)}（远端字节校验通过）")
+        for note in notes:
+            print(f"· {note}。")
+    # 收尾必须用**同一套**判定复核一遍（2026-10-14 审阅复核第 3 条）：`keep` 只记指纹不记内容，
+    # 那份被保留的台账要是被删了，repair 没有内容可以凭空重建。此时若报"已与线上一致"，
+    # 就是把"无法恢复"说成"相容"——用户会以为修好了，回头 push 照样被拦。
+    leftover = subscribe.check_local_compatibility(cfg, new_state, semester)
+    if not leftover.ok:
+        raise XjtuCalendarError(
+            f"仍有本地状态无法恢复（{leftover.detail}）",
+            hint="恢复快照对『这次不该动』的那份台账只记指纹、不记内容，删掉的内容补不回来："
+            "从备份或仓库历史找回原文件；确认可以接受丢失这段撤销历史时，"
+            "带 subscribe push --allow-unverified-baseline 继续（本次会同时补回恢复依据）。",
+        )
+    logger.info("订阅本地状态处理完毕；未产生任何新的发布。")
     return 0
 
 
@@ -1602,12 +1668,11 @@ def _subscribe_push(
     # 把几百条撤销交给一个永不回源的客户端比不迁移更糟。
     if result_ics.migration_summary:
         _print_migration_notice(result_ics.migration_summary)
-    # 推送之前先落「发布恢复快照」：它是"最后一次真正发出去的版本"的完整依据
-    # （ICS 字节 + 两份台账的目标字节 + 迁移标记）。写不进去就不该开始推送——
-    # 宁可远端停在上一版，也不要发一次**事后无法恢复**的发布。
-    # 台账为 ``None`` 时快照记成"这次别动"（`--no-exams` 那次绝不该清空考试台账）。
-    journal_file = subscribe.journal_path(cfg, semester)
-    previous_journal = journal_file.read_text(encoding="utf-8") if journal_file.is_file() else None
+    # 推送之前先落「发布准备稿」（pending）：这次要发的 ICS + 两份台账的目标字节 +
+    # 迁移标记。写不进去就不该开始推送——宁可远端停在上一版，也不要发一次事后无法恢复的发布。
+    # 台账为 ``None`` 时记成"这次别动"（`--no-exams` 那次绝不该清空考试台账），并留下它
+    # 当时的字节指纹，日后被删/被改照样能发现。**这里不推进已发布凭据（committed）**：
+    # 那份只能代表远端真正收下过的版本（审阅 P1-①）。
     subscribe.write_journal(
         cfg,
         semester=semester,
@@ -1620,24 +1685,39 @@ def _subscribe_push(
     )
     try:
         res = subscribe.publish(cfg, state, result_ics.ics)
-    except Exception:
-        # 远端没收下 ⇒ 快照必须退回上一版。它只能代表"真正发出去过"的字节：留着这一次
-        # 没发出去的内容，下次 push 会被自己的相容性检查拦住，而 `repair` 又会拒绝恢复
-        # （线上字节 ≠ 快照）——一次普通的推送失败就此变成只能手工化解的死局。
-        if previous_journal is None:
-            journal_file.unlink(missing_ok=True)
+    except Exception as exc:
+        # 只有"能证明还没执行到 push"时才丢准备稿。`git push` 返回非零也可能是远端已更新、
+        # 响应没回到客户端，或 push 之后 `save_state` 抛错——那些情况下远端**可能**已经是新版，
+        # 把准备稿留着让 `subscribe repair` 拿远端字节裁决（审阅的 T1/T2 表格）。
+        if getattr(exc, subscribe.REMOTE_UNCERTAIN_ATTR, False):
+            logger.warning(
+                "发布中断且远端可能已经推进，准备稿已保留：%s —— "
+                "subscribe repair 会用线上真实字节判定这一版究竟发出去了没有。",
+                subscribe.pending_path(cfg, semester),
+            )
         else:
-            atomic_write_text(journal_file, previous_journal, private=True)
+            subscribe.discard_pending(cfg, semester)
         raise
     if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
+        subscribe.discard_pending(cfg, semester)
         print("无变化，跳过推送。")
         # 这里**不**再顺手补写本地文件（v0.8.4 那版自愈的形态）：构建之前的相容性检查
-        # 已经保证"本地四样 == 恢复快照 == 线上那一版"，走到 NO_CHANGE 时没有东西可补；
+        # 已经保证"本地四样 == 恢复凭据 == 线上那一版"，走到 NO_CHANGE 时没有东西可补；
         # 真落后就是检查那一头拒绝（退出码 7）并让用户跑 `subscribe repair`。
         # 判据只留一处，D11「NO_CHANGE 不回写台账」也因此继续成立。
         # 幂等跳过也要给链接：用户可能第一次没记下，这一支是他唯一能看到入口的地方。
         _print_webcal_hint(state)
         return 0
+    # 远端确实收下了这一版 ⇒ 先把准备稿提升为已发布凭据，**再**落本地文件。
+    # 顺序要紧：反过来一旦死在中间，留底会比凭据新，`repair` 拿远端一比对就发现凭据落后、
+    # 拒绝恢复，只剩人工出口。提升失败不推翻发布——远端已是新版，准备稿还在，
+    # 下一次 `subscribe repair` 能把它认出来并补做这一步。
+    if subscribe.promote_pending(cfg, semester) is None:
+        logger.warning(
+            "已发布凭据没能推进（准备稿仍留在 %s）：远端已经是新版，请跑一次 "
+            "subscribe repair 让本地跟上，否则下次发布会被相容性检查拦住。",
+            subscribe.pending_path(cfg, semester),
+        )
     # newline=""：留底必须与远端产物字节一致（CRLF 完整），否则下次把它当
     # SEQUENCE 基线读回、以及 status 的 sha 比对都会错位（同 cmd_export）。
     last_local.write_text(result_ics.ics, encoding="utf-8", newline="")

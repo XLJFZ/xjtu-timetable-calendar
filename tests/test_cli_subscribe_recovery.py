@@ -113,7 +113,7 @@ def _token(home: Path) -> str:
 
 
 def _journal(home: Path) -> subscribe.PublishJournal | None:
-    return subscribe.load_journal(Settings(home=home), SEMESTER)
+    return subscribe.read_journal(Settings(home=home), SEMESTER).journal
 
 
 def _crash_between_state_and_baseline(
@@ -528,30 +528,201 @@ def test_a_snapshot_from_another_token_is_refused(
     assert "token" in capsys.readouterr().err
 
 
-def test_a_failed_publish_winds_the_journal_back(
+def test_a_failed_publish_discards_the_pending_snapshot(
     env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """**验收 4**：远端没收下 ⇒ 快照必须退回上一版，不许留着"从未发出去过"的字节。
+    """**审阅 P1-①（准备侧）**：远端**肯定没动**时，准备稿必须被清掉。
 
-    快照写在 publish **之前**（这样"推送成功、本地没落盘"才有依据可恢复），代价就是
-    这一条必须单独钉：发布被护栏拦下时若不退回去，下一次 push 会被自己的相容性检查
-    拦住，而 `repair` 又拒绝恢复（线上字节 ≠ 快照）——一次普通的推送失败就此变成死局。
+    判据只有一条：`publish()` 里"还没执行到 push"才敢说远端没推进。护栏/探测都在 push
+    之前，所以被它们拦下 ⇒ committed 不变、pending 清除，下一次 push 站在一致的地基上。
+    """
+    home, origin = env
+    cfg = Settings(home=home)
+    pending = subscribe.pending_path(cfg, SEMESTER)
+    committed = subscribe.journal_path(cfg, SEMESTER)
+
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    assert committed.is_file() and not pending.exists(), "发布成功 ⇒ 准备稿提升为凭据，不留底稿"
+    digest = hashlib.sha256(committed.read_bytes()).hexdigest()
+
+    # 往分支 tip 塞一个非 .ics ⇒ 护栏在 push **之前**拦下 ⇒ 准备稿必须被丢弃
+    _pollute_remote(origin, branch="cal")
+    _rewrite_rows(home, _rows_with_b())
+    assert main(["subscribe", "push", "--semester", SEMESTER]) != 0
+    capsys.readouterr()
+    assert not pending.exists(), "远端肯定没动，留着准备稿会让 repair 误判成'可能已发出'"
+    assert hashlib.sha256(committed.read_bytes()).hexdigest() == digest, "凭据不该被准备稿污染"
+
+
+def test_a_pushed_but_unsaved_publish_keeps_the_recovery_snapshot(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """**审阅 P1-①（危险侧）**：push 成功、`save_state` 抛 ⇒ **不许**退回凭据。
+
+    审阅者的表格：`save_state` 抛错时远端已经是 B，而唯一带着 B 的完整课程/考试台账的
+    恢复凭据被回退成 A ⇒ `repair` 从此没有 B 可恢复，A+ 的"远端推进到哪里、本地就有凭据
+    恢复到哪里"整个失效。更要命的是退回之后四样**自洽地错**（留底=committed=last_push=A），
+    门与 `doctor` 都看不见。
+
+    期望：保留 pending ⇒ `repair` 用远端字节裁决出"其实发出去了"，把 pending 提升为
+    committed、恢复留底与台账，并**把 `last_push` 本身也修对**。
     """
     home, origin = env
     assert _init(origin) == 0
     capsys.readouterr()
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
-    journal_file = subscribe.journal_path(Settings(home=home), SEMESTER)
-    digest_before = hashlib.sha256(journal_file.read_bytes()).hexdigest()
     capsys.readouterr()
 
-    _pollute_remote(origin, branch="cal")
+    # B：数据变一版，然后让 push 之后的 save_state 抛 OSError
     _rewrite_rows(home, _rows_with_b())
+    cfg = Settings(home=home)
+    real_save = subscribe.save_state
+    fuse = {"on": False}
+
+    def blow_up(_cfg: Settings, _state: object) -> None:
+        if fuse["on"]:
+            raise OSError("disk is full")
+        real_save(_cfg, _state)
+
+    monkeypatch.setattr(subscribe, "save_state", blow_up)
+    fuse["on"] = True
     assert main(["subscribe", "push", "--semester", SEMESTER]) != 0
     capsys.readouterr()
-    assert hashlib.sha256(journal_file.read_bytes()).hexdigest() == digest_before, (
-        "推送失败后快照不该指向一个从未发出去过的版本"
+    # 故障点已经过去了：关掉保险丝，否则测的是"磁盘一直满"而不是"崩过一次之后能不能恢复"
+    fuse["on"] = False
+
+    remote = _git_bytes(f"cal:{_token(home)}.ics", origin)
+    assert "示例课程乙".encode() in remote, "前提：远端确实已经是 B"
+    state = subscribe.load_state(cfg, SEMESTER)
+    assert state is not None and state.last_push is not None
+    assert hashlib.sha256(remote).hexdigest() != state.last_push.content_sha256
+
+    assert main(["subscribe", "repair", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    last_local = home / "subscribe" / f"last-{SEMESTER}.ics"
+    assert last_local.read_bytes() == remote, "留底必须补到线上那一版"
+    fixed = subscribe.load_state(cfg, SEMESTER)
+    assert fixed is not None and fixed.last_push is not None
+    assert fixed.last_push.content_sha256 == hashlib.sha256(remote).hexdigest(), (
+        "repair 必须把已发布状态元数据本身也修对，否则 doctor/status 长期报错版本"
     )
+
+    assert main(["subscribe", "repair", "--semester", SEMESTER]) == 0
+    assert "无需恢复" in capsys.readouterr().out
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert "无变化" in capsys.readouterr().out
+
+
+def test_a_corrupt_snapshot_is_not_downgraded_to_the_weak_predicate(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**审阅 P1-②**：文件存在但读不懂 ≠ 从没生成过 ⇒ 必须拒绝，不能放行。
+
+    "旧版本从没写过快照"与"新版本写过、后来损坏"不是同一种风险：后者意味着**有一份我们
+    本该信任的凭据失效了**，此时用一条更宽松的判据继续发布，等于让一份损坏的安全校验文件
+    触发更宽松的校验。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    capsys.readouterr()
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+
+    cfg = Settings(home=home)
+    subscribe.journal_path(cfg, SEMESTER).write_text("{ not json", encoding="utf-8")
+    _rewrite_rows(home, _rows_with_b())
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 7
+    err = capsys.readouterr().err
+    assert "读不懂" in err
+    assert "弱判据" not in err, "读不懂不许降级成'没有依据'再放行"
+
+
+def test_a_kept_ledger_that_disappears_is_not_silently_compatible(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**审阅 P1-③**："本次不动考试台账"不等于"以后也不检查它"。
+
+    固件里没有考试快照 ⇒ 每次发布的 `exam_ledger_text` 都是 `None`（keep）。若 keep 只记
+    "别动"、不记"该文件当时是什么字节"，那么这份台账事后被删/被改，下一次 push 照样判定相容
+    ⇒ 考试撤销候选静默少一整批，和场景 2 是同一类失效。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    cfg = Settings(home=home)
+    exam_ledger = cfg.exam_ledger_path(SEMESTER)
+    exam_ledger.parent.mkdir(parents=True, exist_ok=True)
+    # 发布**之前**就存在的一份考试台账：这次不动它 ⇒ 快照只该记下它的指纹
+    # write_bytes 而非 write_text：后者在 Windows 上会把 \n 翻成 \r\n，
+    # 让这份"保留"的台账字节与断言里的字面量不一致（用例自己咬自己）。
+    exam_ledger.write_bytes(b"BEGIN:VCALENDAR\r\nKEEP-ME\r\nEND:VCALENDAR\r\n")
+    capsys.readouterr()
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    staged = subscribe.read_journal(cfg, SEMESTER).journal
+    assert staged is not None
+    assert staged.exam_ledger_text is None, "keep：不该动就别存内容"
+    assert staged.exam_ledger_sha256, "keep 必须同时把当时的指纹记下来"
+
+    exam_ledger.unlink()
+    _rewrite_rows(home, _rows_with_b())
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 7
+    err = capsys.readouterr().err
+    assert "台账" in err
+    assert not exam_ledger.exists(), "被拦住时不许顺手重建内容我们并不知道的东西"
+    # repair 不许把"补不回来"说成"已与线上一致"：keep 只记指纹、不记内容。
+    assert main(["subscribe", "repair", "--semester", SEMESTER]) != 0
+    assert "无法恢复" in capsys.readouterr().err
+
+
+def test_repair_can_discard_a_pending_snapshot_the_remote_never_took(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**T1 那一格必须可自动恢复**：准备稿是 B、远端仍是 A ⇒ 安全放弃 B、恢复 A。
+
+    审阅者的裁决表：远端 A + 本地有"A 已提交 / B 待发"时，`repair` 应能识别 B 从未落地，
+    丢掉准备稿并把本地对齐回 A，**不需要用户带 `--allow-unverified-baseline`**。
+    判据是远端真实字节，不是本地谁新。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    capsys.readouterr()
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    cfg = Settings(home=home)
+    tip_before = _git("rev-parse", "cal", cwd=origin)
+
+    # 布置"死在写准备稿之后、推送之前"的现场：准备稿描述一个远端从没收到过的版本
+    published = _git_bytes(f"cal:{_token(home)}.ics", origin).decode("utf-8")
+    pending_text = published.replace("END:VCALENDAR", "SUMMARY:从未发出\r\nEND:VCALENDAR")
+    subscribe.write_journal(
+        cfg,
+        semester=SEMESTER,
+        token=_token(home),
+        branch="cal",
+        ics_text=pending_text,
+        course_ledger_text=None,
+        exam_ledger_text=None,
+        uid_recipe=2,
+    )
+    assert subscribe.pending_path(cfg, SEMESTER).is_file()
+    capsys.readouterr()
+
+    assert main(["subscribe", "repair", "--semester", SEMESTER]) == 0
+    out = capsys.readouterr().out
+    assert "丢弃从未发出的准备稿" in out, "清掉过期准备稿这件事必须说，不能静默动本地文件"
+    assert (home / "subscribe" / f"last-{SEMESTER}.ics").read_bytes() == published.encode("utf-8")
+    assert not subscribe.pending_path(cfg, SEMESTER).exists(), "确认没落地的准备稿必须丢弃"
+    assert _git("rev-parse", "cal", cwd=origin) == tip_before, "repair 不许动远端"
+
+    _rewrite_rows(home, _rows_with_b())
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0, "恢复完就该正常发布，不用旗标"
+    capsys.readouterr()
 
 
 def test_journal_keep_semantics_never_writes_an_empty_exam_ledger(
@@ -574,13 +745,43 @@ def test_journal_keep_semantics_never_writes_an_empty_exam_ledger(
         exam_ledger_text=None,
         uid_recipe=2,
     )
-    assert subscribe.load_journal(cfg, SEMESTER) is not None
+    assert subscribe.read_journal(cfg, SEMESTER, pending=True).journal is not None
     assert journal.exam_ledger_text is None, "keep 哨兵必须原样往返"
 
     restored = cli._restore_from_journal(cfg, journal, SEMESTER)
     assert "考试台账" not in restored
     assert not cfg.exam_ledger_path(SEMESTER).exists(), "keep 不能写成空台账文件"
     assert "课程台账" in restored
+
+
+def test_doctor_reports_the_same_incompatibility_push_refuses(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """**审阅复核第 6 条**：门会拦的事，`doctor` 不能看不见。
+
+    只比"留底 vs 最后一次发布记录"证明不了台账同步 ⇒ 体检绿灯、真发布时才发现本地散架。
+    现在两者共用 `check_local_compatibility`，所以判据天然一处。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    capsys.readouterr()
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+
+    _rewrite_rows(home, _rows_with_b())
+    fuse = _install_ledger_fuse(monkeypatch)
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    fuse["on"] = False
+
+    from xjtu_calendar.doctor import STATUS_OK, run_checks
+
+    sub = [c for c in run_checks(Settings(home=home), SEMESTER) if c.name == "subscription"]
+    assert sub and sub[0].status != STATUS_OK, "台账与已发布凭据失配时 doctor 不许给绿灯"
+    assert "台账" in sub[0].detail
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 7, "两处判据必须同进同退"
 
 
 def test_migration_marker_write_failure_leaves_no_second_sweep(

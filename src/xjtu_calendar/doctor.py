@@ -27,6 +27,7 @@ from .cancellation import load_ledger
 from .errors import XjtuCalendarError
 from .exporter import UID_RECIPE_VERSION, build_ics_for_semester
 from .subscribe import (
+    check_local_compatibility,
     has_unpublished_changes,
     load_state,
     needs_uid_migration,
@@ -256,12 +257,22 @@ def _check_subscription(cfg: Settings, semester: str, state: Any) -> Check:
     # "上次发布在写留底前中断"这个状态就完全隐身，而它是下次整学期误撤销的基线。
     published_sha = str(getattr(last_push, "content_sha256", "") or "")
     local_sha = hashlib.sha256(last_local.read_bytes()).hexdigest()
+    # 先跑与 `subscribe push` **同一套**判定（2026-10-14 审阅复核第 6 条）：
+    # 门会拦的事 doctor 不能看不见，否则体检绿灯、真正发布时才发现本地已散架。
+    compat = check_local_compatibility(cfg, state, semester)
+    if not compat.ok:
+        return Check(
+            "subscription",
+            STATUS_WARN,
+            f"本地发布状态与已发布版本不相容（{compat.detail}）："
+            "push 会被拦住（退出码 7），先运行 subscribe repair",
+        )
     if same_token and published_sha and local_sha != published_sha:
         return Check(
             "subscription",
             STATUS_WARN,
             "本地留底与最后一次已发布的字节不一致（上次发布可能在写留底前中断）："
-            "运行 subscribe push，会用远端那份原样补回，不产生新发布",
+            "运行 subscribe repair 按恢复凭据补回，不产生新发布",
         )
     if same_token and not has_unpublished_changes(cfg, state, text):
         return Check("subscription", STATUS_OK, "留底一致，无未发布变更")

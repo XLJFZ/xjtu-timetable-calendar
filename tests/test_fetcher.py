@@ -192,6 +192,22 @@ def test_fetch_403_raises_permission_denied(cfg: Settings) -> None:
     assert exc.value.exit_code == 4
 
 
+def test_fetch_403_hint_names_the_incomplete_login_as_the_cause(cfg: Settings) -> None:
+    """403 的第一嫌疑是**会话没走完登录**，不是账号没权限（2026-10-14 实测）。
+
+    真人登录停在「请选择身份」页面就按 Enter 时，会话能过 CAS、却拿不到教务侧
+    ``/jwapp`` 发的 cookie，于是三个 ``.do`` 接口全部 403（返回的是金智平台的
+    abnormalPage，不是登录页）。旧文案只说「当前账号没有访问该接口的权限」，
+    把人推向"权限被收走了"这条死路；实测同一个会话在窗口里点一下「学生」就 200。
+    """
+    with pytest.raises(PermissionDenied) as exc:
+        fetch_via_http(endpoint(), cfg=cfg, transport=transport(403, "{}"))
+    hint = exc.value.hint
+    assert "身份" in hint
+    assert "课表" in hint
+    assert "doctor" in hint
+
+
 def test_fetch_login_html_is_auth_problem_not_parse_error(cfg: Settings) -> None:
     """会话失效时 eHall 常返回 200 + 登录页 HTML。
 

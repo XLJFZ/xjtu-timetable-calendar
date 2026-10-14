@@ -113,6 +113,21 @@ def test_login_instructions_say_the_window_is_a_separate_browser() -> None:
     assert "本窗口" in lines
 
 
+def test_login_instructions_name_the_role_picker_step() -> None:
+    """说明必须点名「请选择身份」那一步——停在它上面按 Enter 会得到半截会话。
+
+    2026-10-14 真人踩过：认证通过后页面落在「请选择身份」，用户以为按 Enter 就行，
+    结果会话过得了 CAS、拿不到教务侧（/jwapp）的 cookie，三个接口一律 403，
+    而旧说明的第 2 步直接写「进入我的课表页面」，中间那一跳没人提。
+    """
+    from xjtu_calendar.auth import login_instructions
+
+    lines = "\n".join(login_instructions(Settings.load()))
+    assert "身份" in lines
+    assert "显示课表" in lines
+    assert "403" in lines
+
+
 def test_aborted_login_states_the_session_was_not_saved(
     stale_home: Path, monkeypatch: pytest.MonkeyPatch, fake_playwright: Any
 ) -> None:

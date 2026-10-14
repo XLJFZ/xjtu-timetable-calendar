@@ -121,6 +121,15 @@ def _check_session(cfg: Settings) -> Check:
         )
     if info.saved_at is None:
         return Check("session", STATUS_WARN, "会话缺少保存时间，无法判断新鲜度")
+    if info.has_storage_state and not info.has_app_session:
+        return Check(
+            "session",
+            STATUS_WARN,
+            "会话里没有教务侧（/jwapp）的 cookie，fetch 会返回 403 而不是 401。"
+            "这通常不是账号没权限，而是登录停在了「请选择身份」那一步："
+            "重跑 python -m xjtu_calendar login --force，在弹出的窗口里点「学生」"
+            "并等到课表真的显示出来，再回终端按 Enter。",
+        )
     age_days = max(0, (datetime.now(UTC) - info.saved_at).days)
     if age_days >= SESSION_AGE_WARN_DAYS:
         return Check(

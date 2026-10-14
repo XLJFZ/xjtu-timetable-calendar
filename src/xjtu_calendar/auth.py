@@ -55,15 +55,25 @@ class SessionInfo:
         has_profile: bool,
         cookie_count: int,
         saved_at: datetime | None,
+        jwapp_cookie_count: int = 0,
     ) -> None:
         self.has_storage_state = has_storage_state
         self.has_profile = has_profile
         self.cookie_count = cookie_count
         self.saved_at = saved_at
+        #: 作用域落在教务应用（``/jwapp``）里的 cookie 条数。
+        #: 0 意味着这份会话只走到了 CAS / 门户，**没在登录窗口里点进课表**，
+        #: 教务侧接口会一律回 403（2026-10-14 实测，见 doctor 的「会话」判据）。
+        self.jwapp_cookie_count = jwapp_cookie_count
 
     @property
     def usable(self) -> bool:
         return self.has_storage_state or self.has_profile
+
+    @property
+    def has_app_session(self) -> bool:
+        """会话里有没有教务侧的 cookie —— "登录走没走完"的判据。"""
+        return self.jwapp_cookie_count > 0
 
     def describe(self) -> str:
         if not self.usable:
@@ -71,6 +81,8 @@ class SessionInfo:
         parts = []
         if self.has_storage_state:
             parts.append(f"storage_state 含 {self.cookie_count} 个 cookie")
+            if self.has_app_session:
+                parts.append(f"教务侧 cookie {self.jwapp_cookie_count} 个")
         if self.has_profile:
             parts.append("浏览器 profile 已存在")
         if self.saved_at:
@@ -89,24 +101,33 @@ def inspect_session(cfg: Settings | None = None) -> SessionInfo:
     profile_dir = cfg.profile_dir()
 
     cookie_count = 0
+    jwapp_cookie_count = 0
     saved_at: datetime | None = None
 
     if state_path.is_file():
         try:
             payload = json.loads(state_path.read_text(encoding="utf-8"))
-            cookie_count = len(payload.get("cookies") or [])
+            cookies = payload.get("cookies") or []
+            cookie_count = len(cookies)
+            jwapp_cookie_count = sum(
+                1
+                for item in cookies
+                if str(item.get("path") or "/").lstrip("/").lower().startswith("jwapp")
+            )
             raw_time = payload.get("_saved_at")
             if raw_time:
                 saved_at = datetime.fromisoformat(raw_time)
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("会话文件无法解析，将视为未登录：%s", exc)
             cookie_count = 0
+            jwapp_cookie_count = 0
 
     return SessionInfo(
         has_storage_state=state_path.is_file() and cookie_count > 0,
         has_profile=profile_dir.is_dir(),
         cookie_count=cookie_count,
         saved_at=saved_at,
+        jwapp_cookie_count=jwapp_cookie_count,
     )
 
 
@@ -137,8 +158,11 @@ def login_instructions(cfg: Settings | None = None) -> list[str]:
         "  请在打开的浏览器窗口里完成以下操作：",
         "    1) 由你本人输入账号密码或扫码完成统一身份认证",
         "       （本程序不读取、不记录、不上传任何凭据）",
-        "    2) 进入「我的课表」页面，并切换到你要导出的学期",
+        "    2) 若页面让你「选择身份」，先点「学生」，再进入「我的课表」页面",
+        "       并切换到你要导出的学期",
         "    3) 确认页面已正常显示课表后，回到终端按 Enter",
+        "       （停在「请选择身份」就按 Enter，会存下一份取不到课表的半截会话：",
+        "        接口一律返回 403，而不是 401）",
         "",
         "  这一步要由真人完成：把本命令放进后台任务或管道里，",
         "  那个 Enter 永远等不到，表现就是「卡住」。",

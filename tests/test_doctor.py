@@ -27,13 +27,21 @@ from xjtu_calendar.doctor import (
 )
 
 
-def _write_session(cfg: Settings, *, age_days: int = 0) -> None:
+def _write_session(cfg: Settings, *, age_days: int = 0, with_app_cookie: bool = True) -> None:
     cfg.session_dir.mkdir(parents=True, exist_ok=True)
     saved = datetime.now(UTC) - timedelta(days=age_days)
+    cookies: list[dict[str, object]] = [
+        {"name": "JSESSIONID", "value": "v", "domain": ".example.edu.cn"}
+    ]
+    if with_app_cookie:
+        # 走到课表页之后教务侧才会发 /jwapp 作用域的 cookie（2026-10-14 实测）
+        cookies.append(
+            {"name": "_WEU", "value": "w", "domain": "ehall.xjtu.edu.cn", "path": "/jwapp/"}
+        )
     (cfg.session_dir / "storage_state.json").write_text(
         json.dumps(
             {
-                "cookies": [{"name": "JSESSIONID", "value": "v", "domain": ".example.edu.cn"}],
+                "cookies": cookies,
                 "_saved_at": saved.isoformat(),
             },
             ensure_ascii=False,
@@ -113,6 +121,23 @@ def test_fresh_session_is_ok(tmp_path: Path) -> None:
     cfg = make_home(tmp_path)
     _write_session(cfg)
     assert by_name(run_checks(cfg, SEMESTER))["session"].status == STATUS_OK
+
+
+def test_session_without_app_cookie_warns_and_names_the_login_cause(tmp_path: Path) -> None:
+    """会话过得了 CAS、却一条教务侧（``/jwapp``）cookie 都没有 ⇒ 必然 403，要当场说破。
+
+    这条判据来自 2026-10-14 的排查：真人登录停在「请选择身份」页面就按 Enter，
+    fetch 报的是 403「没有访问该接口的权限」，而同一个会话在窗口里点一下「学生」
+    就 200、18 条课程全回来。旧体检只看"有没有会话文件"，对这种"登录走了一半"
+    完全无感，用户会被"没权限"三个字支使去折腾账号权限。
+    """
+    cfg = make_home(tmp_path)
+    _write_session(cfg, with_app_cookie=False)
+    check = by_name(run_checks(cfg, SEMESTER))["session"]
+    assert check.status == STATUS_WARN
+    assert "403" in check.detail
+    assert "身份" in check.detail
+    assert "login" in check.detail
 
 
 def test_stale_session_warns_without_claiming_expiry(tmp_path: Path) -> None:

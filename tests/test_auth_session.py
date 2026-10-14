@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from xjtu_calendar.auth import ensure_login
+from xjtu_calendar.auth import ensure_login, inspect_session
 from xjtu_calendar.config import Settings
 from xjtu_calendar.fileutil import atomic_write_text
 
@@ -108,3 +108,47 @@ def test_ensure_login_writes_session_privately(
     # 同目录不留 *.tmp 残片
     leftovers = [p.name for p in (tmp_path / "session").iterdir() if p.suffix == ".tmp"]
     assert leftovers == []
+
+
+def test_inspect_session_counts_the_jwapp_scoped_cookies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """会话里有没有教务侧（``/jwapp``）的 cookie，是"登录走没走完"的判据。
+
+    2026-10-14 实测：真人登录若停在「请选择身份」页面就按 Enter，导出的会话只有
+    门户侧 cookie，教务三个 ``.do`` 接口一律 403；在窗口里点一下身份之后，服务器
+    给 ``/jwapp`` 另发 ``JSESSIONID`` / ``_WEU`` / ``THEME`` / ``EMAP_LANG``，接口立刻 200。
+    消融实验进一步表明**缺哪个都不如缺 ``_WEU`` 致命**，但按路径计数最稳，
+    所以这里数的是"有没有任何一条 ``/jwapp`` 作用域的 cookie"。
+    """
+    monkeypatch.setenv("XJTU_CALENDAR_HOME", str(tmp_path))
+    session = tmp_path / "session"
+    session.mkdir(parents=True)
+    cookies: list[dict[str, object]] = [
+        {"name": "JSESSIONID", "value": "portal", "domain": "ehall.xjtu.edu.cn", "path": "/"},
+        {"name": "CASTGC", "value": "c", "domain": "ehall.xjtu.edu.cn", "path": "/"},
+    ]
+    state = session / "storage_state.json"
+
+    def write(items: list[dict[str, object]]) -> None:
+        state.write_text(json.dumps({"cookies": items}, ensure_ascii=False), encoding="utf-8")
+
+    write(cookies)
+    info = inspect_session(Settings.load())
+    assert info.usable
+    assert info.jwapp_cookie_count == 0
+    assert "教务" not in info.describe()
+
+    app_cookies = [
+        {
+            "name": "JSESSIONID",
+            "value": "app",
+            "domain": "ehall.xjtu.edu.cn",
+            "path": "/jwapp",
+        },
+        {"name": "_WEU", "value": "w", "domain": "ehall.xjtu.edu.cn", "path": "/jwapp/"},
+    ]
+    write([*cookies, *app_cookies])
+    info = inspect_session(Settings.load())
+    assert info.jwapp_cookie_count == 2
+    assert "教务侧 cookie 2 个" in info.describe()

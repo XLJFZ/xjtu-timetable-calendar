@@ -8,7 +8,74 @@
 
 ## [未发布]
 
-暂无。当前版本号 = `pyproject.toml` 里的 `0.8.1`。
+暂无。当前版本号 = `pyproject.toml` 里的 `0.8.2`。
+
+---
+
+## [0.8.2] - 2026-10-14
+
+**补丁版，两件事：把 pip 用户会照抄的四处提示换到真实存在的位置，和把「登录只走了一半」变成可判定的状态。**
+产物字节、UID 配方、撤销与迁移判据一律不变 —— `src/` 自 0.8.1 起动的全是提示文案、只读会话摘要与
+`doctor` 的一条判定，导出通路（解析 → 展开 → 渲染）零改动（`git diff v0.8.1..HEAD -- src/` 只有
+`auth.py` / `doctor.py` / `fetcher.py` 三处新增判定与 `errors.py` / `exporter.py` 的 hint 字符串，
+`exporter.py` 那 4 行全在 `raise` 的提示参数里）。**实测对照**：同一份隔离 home（真实
+`semesters` / `schedules` / `raw` 三件套）分别用 `v0.8.1` 工作树与 main 跑 `export`，
+两份产物 **sha256 逐字节相同**（44285 B，`b48686a85e10…`，UID 集合与 `SEQUENCE` 行一致）；
+金标留底用例（`tests/fixtures/legacy_*`，0.8.0 时代提交、本版未改）同样通过。
+
+### Added
+
+- **「登录停在『请选择身份』」从此有判据**（`doctor` 的「会话」项 + `SessionInfo`）：新增
+  `jwapp_cookie_count` / `has_app_session`，数的是会话文件里 `path` 落在 `/jwapp` 的 cookie 条数，
+  `describe()` 在大于 0 时带上「教务侧 cookie N 个」（`status` 与 `doctor` 一起变可读）。
+  导出存在而该计数为 0 ⇒ `doctor` 报**警告**（不是阻塞，理由见文件头原则 2），文案直接点名
+  「这通常不是账号没权限」+ 处置。判据来自 2026-10-14 真人踩坑：`login` 打开的就是
+  `select_role.html`，在那个页面上按 Enter 会得到一份**能过 CAS、取不到课表**的半截会话，
+  三个教务接口一律回 403（金智平台的 `scenes_abnormalPage` HTML，不是登录页，所以 401 分支抓不到），
+  而旧的两条判据（会话文件 mtime 变了、`fetch` 不再 401）**对它都是绿的**。
+  只有 profile、没有导出文件时不据此判定。
+- `login` 窗口说明的第 2 步补上「若页面让你『选择身份』，先点『学生』」，并预告停在原地的后果是
+  403 而不是 401 —— 源头少一次踩坑比事后排障便宜。
+
+### Changed
+
+- **`fetch` 的 403 提示不再把人往死路上推**：原文「当前账号没有访问该接口的权限。本工具只导出本人
+  有权限的课表。」改成点名"会话没走完登录"+ 判据指向 `doctor` + 出口 `login --force`，
+  同时保留"确实无权限时只导出本人课表"的口径。当天的消融实验顺带钉住两条**别再猜**的结论并写进
+  测试文档串：去掉 `_WEU` 立刻 403、而两份同名 `JSESSIONID`（门户 `/` 与教务 `/jwapp`）少任意一份
+  都仍然 200 ⇒ 承重的是 `_WEU`，不是"压平字典留下了哪一份"，所以 `load_cookies` 的按域过滤与
+  同名取舍**都不动**；换浏览器 `User-Agent`、补 `Referer`/`Origin` 均不改变 403 ⇒ 不是站点在拦客户端。
+- **四处会打印给用户的提示不再指向 `examples/`**（`doctor` 的「作息表」阻塞项、
+  `SemesterNotConfigured.hint`、`exporter` 缺教学日历 / 缺作息表两条 hint）：仓库根的 `examples/`
+  **不在 wheel 里**（`package-data` 只有 `data/*.json`，解包 0.8.1 核过），pip 用户照提示去
+  `ls examples/` 只会一无所获。改指向 README「必须由你配置的内容 → 1. 教学日历（校历）/ 2. 作息表」
+  ——那里内联着可直接抄的完整模板 JSON，所以这是换到一个对任何人都成立的位置，不是把话术改软。
+  仓库 `examples/` 仍是权威拷贝（`tests/subscribe_support.py` 继续从那里读，避免 schema 漂移）。
+
+### Documentation
+
+- **skill 走查（对着 0.8.1 真 CLI 逐字跑）修掉四处「照抄就跑不通」**：`SKILL.md` 第 1 步版本下限
+  0.7.0 → 0.8.0（并解释两层的区别）、第 4 步补 `schedule --semester <标识> --apply`（原写法只预览不落盘）、
+  第 7 步补 `subscribe init` 的必填 `--repo`（原命令直接 argparse 报错）、第 4 步不再让用户去填
+  pip 安装里不存在的 `examples/`；同时删掉一条**虚构**的 `subscribe init --no-exams` 旗标
+  （`--no-exams` 只在 `fetch` / `export` / `subscribe push` / `subscribe rotate` 上，
+  且它既不发布考试、也不发布撤销）。
+- **`?browser=no` 从灰页判据里摘掉**：它是 eHall 服务端在 CAS 回跳时给落地页拼的固定参数，
+  2026-10-08 一次**成功登录**的抓包里同样在，其后接口全部正常 ⇒ 带它不代表被拒绝。
+  灰页本身的成因**仍未证实**（最大嫌疑是后台执行器弄坏子进程 stdio）。README / `SKILL.md` /
+  `troubleshooting.md` 三处同改。
+- **README 新增「`fetch` 报 403 而不是 401」一条**，并给原有的「同名 `JSESSIONID` 警告不用管」
+  补上**为什么**不用管（当天的消融证据）；「安全与网络行为」里那句「401/403 会提示登录失效或无权限」
+  已不成立，改成实际口径。
+- **README 日历名那条「退订再重新添加一定有效」降级为「通常会」**：它与本仓库 10-12 之后的统一口径
+  （`client-matrix.md` 写「通常会」，且 ColorOS 实测「删除后重加仍保留旧事件」）冲突，
+  按红线「真机未验证的表现不许写成事实」订正。
+- **站点 `index.html`**：① 窄屏两张表改「一行一张卡片」（矩阵已 6 列，390px 视口下横向最小宽度实测
+  566px > 可用 350px，被压成一字一行）；② 跟随系统明暗切换，纯 CSS 零 JS 零存储不闪白
+  （`:root` 补 8 个语义变量、拆出 `--brand-solid`、`color-scheme` + 第二条带 `media` 的 `theme-color`），
+  浅色回归 = 65 选择器 × 13 项颜色属性与改前基线零差异，深色 = 39 个文字/背景配对全过 WCAG AA。
+  负收益记录：`overflow-wrap:anywhere` 能把命令表压矮 43%，但会把 `subscribe` 折成 `subscri/be`，
+  命令表不能这么改。
 
 ---
 

@@ -249,13 +249,15 @@ footer{border-top:1px solid var(--line);background:var(--card);margin-top:2rem}
       <h3>登录（由真人完成）</h3>
       <p>弹出的是一次<strong>独立的浏览器实例</strong>（专用用户数据目录）。请在那个窗口里完成统一身份认证，
         确认课表正常显示后回终端按 Enter。程序不读取、不记录、不上传任何凭据。</p>
-      <pre><span class="c"># 安装（PyPI）</span>
-pip install xjtu-timetable-calendar
+      <pre><span class="c"># 安装（PyPI；login 与默认抓取路径都要带上这两个 extras）</span>
+pip install "xjtu-timetable-calendar[http,browser]"
 
 <span class="c"># 登录</span>
 python -m xjtu_calendar <span class="p">login</span></pre>
       <p style="margin:.6rem 0 0">会话过期后重登要带 <code class="inline-code">login --force</code>；
-        这一步也别丢给后台任务或管道——终端那句「按 Enter」它们永远等不到，表现就是「看起来成功、其实什么都没做」。</p>
+        窗口里认证过后还会落在「请选择身份」，要点「学生」并等到课表真的显示出来再按 Enter——
+        停在身份选择页按 Enter 会得到一份能过认证、接口全 403 的半截会话（<code class="inline-code">doctor</code>
+        的「会话」一项会指出来）。这一步也别丢给后台任务或管道——终端那句「按 Enter」它们永远等不到，表现就是「看起来成功、其实什么都没做」。</p>
     </div>
     <div class="stepcard">
       <span class="num">2</span>

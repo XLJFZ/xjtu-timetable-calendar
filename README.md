@@ -174,7 +174,18 @@ eHall
 **方式一（推荐）：从 PyPI 安装**（v0.3.0 起已发布）：
 
 ```bash
-pip install xjtu-timetable-calendar
+pip install "xjtu-timetable-calendar[http,browser]"
+```
+
+> ⚠️ **别只装裸包。** 基础依赖只有 `icalendar`（解析与渲染够用），
+> `login` 要 `playwright`、默认抓取路径要 `httpx`，两者都在 extras 里。
+> 2026-10-14 用干净虚拟环境实测：裸 `pip install` 之后跑 `login` 直接报
+> 「登录功能需要 playwright」，而 `--version` 那一步是绿的——也就是说
+> 只装裸包会在流程中段才撞上，而不是当场。只想手工补：
+
+```bash
+pip install playwright   # login 子命令（使用系统已装的 Edge/Chrome 时无需再跑 playwright install）
+pip install httpx        # 默认 HTTP 抓取路径（比浏览器路径轻量）
 ```
 
 **方式二：源码安装**（需要跟踪最新开发进度时）：
@@ -189,7 +200,7 @@ python -m venv .venv
 # macOS / Linux
 source .venv/bin/activate
 
-pip install -e .   # 开发用可编辑安装；只想使用则 `pip install .`
+pip install -e ".[http,browser]"   # 开发用可编辑安装；只想使用则 `pip install ".[http,browser]"`
 ```
 
 > **安装即自包含**：eHall 接口定义随包分发在
@@ -197,17 +208,6 @@ pip install -e .   # 开发用可编辑安装；只想使用则 `pip install .`
 > `importlib.resources` 读取），`pip install .` 与 `pip install -e .`
 > 之后都**无需手工复制任何配置文件**。CI 会在干净虚拟环境里实测这一点。
 > 需要覆盖时，把同名文件放到 `~/.xjtu-timetable-calendar/ehall_endpoints.json` 即可。
-
-可选依赖：
-
-```bash
-# 浏览器登录（login 子命令需要）
-pip install playwright
-# 若使用系统已装的 Edge / Chrome，无需再执行 playwright install
-
-# HTTP 抓取路径（比浏览器路径轻量）
-pip install httpx
-```
 
 > **提示**：本项目会自动探测本机已安装的 Edge / Chrome，不需要额外下载浏览器内核。
 > 如需指定浏览器，设置环境变量 `XJTU_CALENDAR_BROWSER`。
@@ -744,6 +744,13 @@ diff 里是静默的。收尾提示「UID 稳定，原地更新」同样只对**
 
 > 📌 上面这段是**格式示例**，其中的日期与 `total_weeks` 都不是真实校历数据，
 > 必须替换成你从官方校历抄录的值。
+
+> ⚠️ **`semester.key` 必须等于文件名里那个学期标识**（也就是 `--semester` 传的值）。
+> 它不只是个标签——它会进入**每一条事件的 UID**。2026-10-14 实测：文件名与日期都不动、
+> 只把 `key` 改掉再导出，103 个 UID **零交集**；订阅端会把这看成"旧的一整批消失 +
+> 新的一整批出现"，于是旧事件全留在日历上、再导入一份新的。
+> 上面示例里 `"key": "2026-fall"` 配的文件名就是 `2026-fall.json`；
+> 换成你自己的标识时**两处一起改**。`doctor` 的「学期校历」一项会在两者不一致时警告。
 
 **关键字段是 `first_week_monday`** —— 第 1 教学周**星期一**的日期。
 

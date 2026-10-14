@@ -265,7 +265,13 @@ def publish(cfg: Settings, state: SubscriptionState, ics_text: str) -> PublishRe
     """把 .ics 文本以孤儿单提交强推到 state.branch。
 
     跳过条件（spec §5.1 步骤 3）：内容哈希与 token 双相同才 NO_CHANGE。
-    成功才落盘 last_push；任何失败（护栏/探测/推送）远端与状态保持原样。
+    成功才落盘 last_push；推送**之前**的任何失败（护栏/探测）远端与状态保持原样。
+
+    .. warning:: 本函数只保证"推送前失败不留痕"。**推送成功之后**还有两句不在这里：
+       这里的 ``save_state`` 与调用方（CLI）随后写本地留底/台账。死在两句中间会留下
+       "远端与状态已推进、留底还是旧的"这一状态，由 CLI 的 NO_CHANGE 分支负责自愈
+       （见 ``cli._subscribe_push``）——本函数**不许**改成"先写本地再推送"，
+       那样推送失败反而会留下一个比远端更新的基线。
     """
     data = ics_text.encode("utf-8")
     digest = hashlib.sha256(data).hexdigest()

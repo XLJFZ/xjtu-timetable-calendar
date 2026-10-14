@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -257,13 +258,20 @@ def test_subscription_reads_the_ledger_without_newline_translation(
 
     cfg = make_home(tmp_path)
     _write_session(cfg)
+    baseline = b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"
     state = SubscriptionState(
         semester=SEMESTER,
         repo_url="https://example.invalid/r.git",
         branch="cal",
         token="t" * 32,
         url_base="https://example.invalid/cal",
-        last_push=PushRecord(pushed_at="2026-10-11T00:00:00Z", content_sha256="x", token="t" * 32),
+        # sha 必须是留底字节的**真实**摘要：0.8.5 起 doctor 先做一条"留底 vs 已发布字节"
+        # 的直比，假 sha 会被那条判据提前拦下，这个用例要测的换行翻译路径就走不到了。
+        last_push=PushRecord(
+            pushed_at="2026-10-11T00:00:00Z",
+            content_sha256=hashlib.sha256(baseline).hexdigest(),
+            token="t" * 32,
+        ),
     )
     monkeypatch.setattr(doctor_module, "load_state", lambda *a, **k: state)
 
@@ -276,9 +284,7 @@ def test_subscription_reads_the_ledger_without_newline_translation(
     monkeypatch.setattr(doctor_module, "has_unpublished_changes", _spy)
 
     cfg.subscribe_dir.mkdir(parents=True, exist_ok=True)
-    (cfg.subscribe_dir / f"last-{SEMESTER}.ics").write_bytes(
-        b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"
-    )
+    (cfg.subscribe_dir / f"last-{SEMESTER}.ics").write_bytes(baseline)
 
     check = by_name(run_checks(cfg, SEMESTER))["subscription"]
     assert "\r\n" in seen["text"]

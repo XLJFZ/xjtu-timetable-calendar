@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -250,6 +251,18 @@ def _check_subscription(cfg: Settings, semester: str, state: Any) -> Check:
     # 于是 sha 永远对不上，doctor 会一直误报"有未发布变更"（真机跑出来的第一个 bug）。
     text = last_local.read_bytes().decode("utf-8")
     same_token = str(getattr(last_push, "token", "")) == str(state.token)
+    # 先做一条**不依赖重建**的直比：留底应当逐字节等于最后一次发布的产物。
+    # 只比"留底 vs 当前重建结果"是不够的——数据一旦也变了，
+    # "上次发布在写留底前中断"这个状态就完全隐身，而它是下次整学期误撤销的基线。
+    published_sha = str(getattr(last_push, "content_sha256", "") or "")
+    local_sha = hashlib.sha256(last_local.read_bytes()).hexdigest()
+    if same_token and published_sha and local_sha != published_sha:
+        return Check(
+            "subscription",
+            STATUS_WARN,
+            "本地留底与最后一次已发布的字节不一致（上次发布可能在写留底前中断）："
+            "运行 subscribe push，会用远端那份原样补回，不产生新发布",
+        )
     if same_token and not has_unpublished_changes(cfg, state, text):
         return Check("subscription", STATUS_OK, "留底一致，无未发布变更")
     return Check("subscription", STATUS_WARN, "有未发布变更或 token 已轮换，运行 subscribe push")

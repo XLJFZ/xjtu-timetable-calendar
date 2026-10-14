@@ -1474,6 +1474,21 @@ def _subscribe_push(
     res = subscribe.publish(cfg, state, result_ics.ics)
     if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
         print("无变化，跳过推送。")
+        # 自愈：`publish()` 在 push 成功后先写 `last_push`，本函数才写留底 ——
+        # 死在这两句中间的话，远端与状态都是新版、留底还是旧版，而留底是下次
+        # 构建的 SEQUENCE 与撤销判定基线。旧代码在这里直接 return，那份落后
+        # **永远不会被修**，下一次真实变更会把整学期误读成"凭空消失"。
+        # 内容一致才走到这里，所以补写就是**远端那份字节**：不重新构建、
+        # 不动 SEQUENCE、不产生新发布，只是把本地对齐回去。
+        local_matches = last_local.is_file() and last_local.read_bytes() == result_ics.ics.encode(
+            "utf-8"
+        )
+        if not local_matches:
+            last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
+            logger.warning(
+                "本地留底与最后一次已发布的字节不一致（上次发布在写留底前中断过），"
+                "本次已用远端那份原样补回，未产生新的发布。"
+            )
         # 幂等跳过也要给链接：用户可能第一次没记下，这一支是他唯一能看到入口的地方。
         _print_webcal_hint(state)
         return 0

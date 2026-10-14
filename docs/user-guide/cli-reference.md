@@ -17,7 +17,7 @@
 | `schedule [--url U \| --from-file F] [--semester S] [--apply]` | 解析官方「学生作息时间表」页，预览或合并进作息表配置 |
 | `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F] [--no-exams] [--allow-mass-cancellation] [--allow-unverified-baseline]` \| `subscribe rotate [--no-exams] [--allow-mass-cancellation]` \| `subscribe status [--verify]` \| `subscribe repair`（均可带 `--semester S`） | 把 .ics 发布到自己的 GitHub Pages，日历客户端按 URL 订阅（见上文「URL 订阅」；push/rotate 默认并入考试，`--no-exams` 同样生效；push 首次会自动做 v1→v2 UID 迁移，`--allow-mass-cancellation` 放行课程侧熔断；`repair` 按发布恢复快照把本地留底/台账对齐到线上那一版，不产生新发布） |
 | `inspect [--input F] [-o OUT]` | 对原始 JSON 做**脱敏**结构分析 |
-| `doctor [--semester S] [--verify]` | **只读体检**：版本 / 会话 / 校历 / 作息 / 快照 / 渲染 / 订阅留底一次看全。不写任何文件、默认不发请求（`--verify` 才对订阅 URL 做一次匿名 GET）。有阻塞项时退出码为 `5` |
+| `doctor [--semester S] [--verify]` | **只读体检**：版本 / 会话 / 校历 / 作息 / 快照 / 渲染 / 订阅留底一次看全。不写任何文件、默认不发请求（`--verify` 才对订阅 URL 做一次匿名 GET），也**不代跑修复**。有阻塞项时退出码为 `5` |
 
 全局参数：`--debug`（详细异常）、`-q`（静默）、`--version`
 
@@ -30,7 +30,7 @@
 | `2` | 未登录，需要先跑 `login` |
 | `3` | 登录态已失效，需要重新 `login --force`（不带 `--force` 会直接沿用这份已失效的会话） |
 | `4` | 当前账号无权限访问该资源 |
-| `5` | `doctor` 检出阻塞项（警告不算，仍 `0`） |
+| `5` | `doctor` 检出阻塞项（警告不算，仍 `0`）。含「本地发布状态与已发布版本不相容」——同一状态 `subscribe push` 会返回 `7`，处置都是先跑 `subscribe repair` |
 | `6` | 课程侧疑似数据不完整的整批撤销被拒绝发布（熔断，见「升级到 v0.8」；确认无误后用 `--allow-mass-cancellation` 放行） |
 | `7` | 本地发布状态与"最后一次已发布的版本"不相容，`subscribe push` 拒绝发布（先跑 `subscribe repair`；确认远端就是那一版后可用 `--allow-unverified-baseline` 一次性放行） |
 | `130` | 用户中断 |

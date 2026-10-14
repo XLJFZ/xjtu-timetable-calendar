@@ -21,7 +21,7 @@ from typing import Any
 
 from .errors import ParseError
 from .models import CAMPUS_UNKNOWN, Course, CourseMeeting
-from .periods import PeriodParseError, parse_periods
+from .periods import PeriodOutOfRangeError, PeriodParseError, parse_periods
 from .weeks import (
     DEFAULT_EXPANSION_LIMIT,
     WeekOutOfRangeError,
@@ -384,8 +384,13 @@ class TimetableParser:
                 return []
             periods = list(range(start, end + 1))
         else:
+            # 与周次侧同一条分流（下面那段注释）：「看不懂」可以跳过，「越界」是数据/配置
+            # 错误，必须硬失败。旧行为把 `1-30节` 裁成 1..15 然后照常产出一门"上到第 15 节"
+            # 的课 —— report 干净、退出码 0，日历里全是错时间（P2-02）。
             try:
                 periods = parse_periods(_as_text(raw_periods))
+            except PeriodOutOfRangeError as exc:
+                raise ParseError(f"{label}：{exc}") from exc
             except PeriodParseError as exc:
                 self.report.skip(f"{label}：{exc}")
                 return []

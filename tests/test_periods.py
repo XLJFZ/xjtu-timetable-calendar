@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from xjtu_calendar.periods import format_periods, parse_periods
+from xjtu_calendar.periods import (
+    PeriodOutOfRangeError,
+    format_periods,
+    parse_periods,
+)
 
 
 @pytest.mark.parametrize(
@@ -48,9 +52,44 @@ def test_parse_periods(text: str, expected: list[int]) -> None:
     assert parse_periods(text) == expected
 
 
-def test_parse_periods_clips_upper_bound() -> None:
-    assert parse_periods("1-30节") == list(range(1, 16))
-    assert parse_periods("1-30节", max_period=8) == list(range(1, 9))
+def test_parse_periods_splits_space_separated_ranges() -> None:
+    """**P2-01**：空格是分隔符，``"1-2节 5-6节"`` 是 1、2、5、6 四节。
+
+    旧行为返回 1..6（凭空多上第 3、4 两节）。与周次侧同一条根因：分词只认 ``,;、``，
+    中间那段 ``2 5`` 不是纯数字就被丢弃，剩下的首尾被连成一整段。
+    """
+    assert parse_periods("1-2节 5-6节") == [1, 2, 5, 6]
+    assert parse_periods("3-4节 7-8节") == [3, 4, 7, 8]
+    assert parse_periods("1节 5节") == [1, 5]
+    # 区间内部的空格照旧收紧（顺序：先收区间，再按空格分词）
+    assert parse_periods("1 - 2节 5 - 6节") == [1, 2, 5, 6]
+
+
+@pytest.mark.parametrize(
+    ("text", "limit"),
+    [
+        ("1-30节", 15),
+        ("1-30节", 8),
+        ("20节", 15),
+        ("16-20节", 15),
+    ],
+)
+def test_parse_periods_refuses_out_of_range_instead_of_clipping(text: str, limit: int) -> None:
+    """**P2-02**：显式写出的节次越界 ⇒ 报错，不许裁到 ``1..max_period``。
+
+    旧行为是 `test_parse_periods_clips_upper_bound` 那条被钉住的"裁剪"：
+    ``1-30节`` 返回 1..15 ⇒ 一门其实上到第 30 节的课被排成前 15 节，
+    产物合法、时间却全错，而且没有任何一处提示。与周次侧的
+    :func:`xjtu_calendar.weeks._require_within` 统一成同一条契约。
+    """
+    with pytest.raises(PeriodOutOfRangeError, match="超出解析上限"):
+        parse_periods(text, max_period=limit)
+
+
+def test_parse_periods_refuses_non_positive_period() -> None:
+    """``< 1`` 同样是显式越界（第 0 节不存在），报错而不是悄悄丢掉。"""
+    with pytest.raises(PeriodOutOfRangeError, match="必须 >= 1"):
+        parse_periods("0-2节")
 
 
 def test_parse_periods_result_is_sorted_unique() -> None:

@@ -336,6 +336,37 @@ def test_parser_accepts_weeks_within_limit() -> None:
     assert meetings[0].weeks == list(range(1, 17))
 
 
+def test_parser_rejects_periods_beyond_limit_instead_of_clipping() -> None:
+    """**P2-02 的调用侧**：文本节次越界与周次越界同级 ⇒ 硬失败，不记为跳过。
+
+    旧行为是 `parse_periods` 把 ``1-30节`` 裁成 1..15，然后照常产出一门上到第 15 节的课
+    ——report 干净、退出码 0、日历里全是错时间。这里要的是与
+    `test_parser_rejects_weeks_beyond_limit_instead_of_clipping` 完全同构的行为。
+    """
+    payload = [{"courseName": "长节次课程", "weekday": 1, "periods": "1-30节", "weeks": "1-4周"}]
+    with pytest.raises(ParseError, match="超出解析上限 15"):
+        TimetableParser(expansion_limit=16).parse(payload)
+
+
+def test_parser_splits_space_separated_ranges() -> None:
+    """**P2-01 的调用侧**：走展示串/文本回退时，空格分段解析成并集。
+
+    真实接口优先给 `SKZC` 位掩码与 `KSJC/JSJC`，这两条只在缺字段的回退路径上生效
+    （例如手工整理的 `--input`，或接口换了形态）。
+    """
+    payload = [
+        {
+            "courseName": "分段课程",
+            "weekday": 1,
+            "periods": "1-2节 5-6节",
+            "weeks": "1-4周 7-8周",
+        }
+    ]
+    _, meetings = TimetableParser(expansion_limit=16).parse(payload)
+    assert meetings[0].periods == [1, 2, 5, 6]
+    assert meetings[0].weeks == [1, 2, 3, 4, 7, 8]
+
+
 def test_parser_rejects_mask_bits_beyond_limit() -> None:
     """位掩码越界同样硬失败 —— 不静默取低位，也不回退到展示串。"""
     mask = "0" * 19 + "1"  # 第 20 位为 1

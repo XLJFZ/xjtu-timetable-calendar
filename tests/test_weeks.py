@@ -120,6 +120,31 @@ def test_parse_weeks_ignores_adjacent_period_text() -> None:
     assert parse_weeks("1-16周 3学分") == list(range(1, 17))
 
 
+def test_parse_weeks_splits_space_separated_ranges() -> None:
+    """**P2-01**：空格与逗号、顿号一样是**分隔符**，不是区间的一部分。
+
+    旧行为把 ``"1-4周 7-12周"`` 读成 1..12 —— 第 5、6 周凭空多出两次课，
+    而这是"输入合法、结果也合法、但两者不是同一门课"的静默改写。
+    2026-10-14 的实跑读数：``parse_weeks("1-4周 7-12周")`` 返回 12 个周次。
+    """
+    assert parse_weeks("1-4周 7-12周") == [1, 2, 3, 4, 7, 8, 9, 10, 11, 12]
+    assert parse_weeks("1-2周 4-5周") == [1, 2, 4, 5]
+    assert parse_weeks("1周 3周 5周") == [1, 3, 5]
+    # 越界判定按**每一段**算，不按首尾连成的那一大段算
+    with pytest.raises(WeekOutOfRangeError, match="超出解析上限"):
+        parse_weeks("1-4周 20-25周", expansion_limit=16)
+
+
+def test_parse_weeks_keeps_spaced_single_range_compact() -> None:
+    """``"1 - 8 周"`` 这类"区间内部带空格"的写法必须仍然是一段，不能被上面那条改坏。
+
+    收紧（``1 - 8`` → ``1-8``）发生在按空格分词**之前**，这两条规则的先后顺序
+    就是本用例钉住的东西。
+    """
+    assert parse_weeks("1 - 8 周") == list(range(1, 9))
+    assert parse_weeks("1 -8周 10 -12周") == [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12]
+
+
 @pytest.mark.parametrize("bad", ["", "   ", None, "周", "无", "？？"])
 def test_parse_weeks_rejects_garbage(bad: object) -> None:
     with pytest.raises(ValueError):

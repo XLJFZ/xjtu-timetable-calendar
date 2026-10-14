@@ -346,7 +346,9 @@ def fetch_via_http(
         import httpx
     except ImportError as exc:
         raise TimetableFetchError(
-            "HTTP 路径需要 httpx", hint="请安装：pip install httpx；或改用浏览器路径（--browser）"
+            "HTTP 路径需要 httpx",
+            hint='请安装：pip install "xjtu-timetable-calendar[http]"（源码安装用 '
+            'pip install -e ".[http]"）；或改用浏览器路径（--browser）',
         ) from exc
 
     from .auth import load_cookies
@@ -495,7 +497,9 @@ def fetch_via_browser(
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise AuthenticationRequired(
-            "浏览器路径需要 playwright", hint="请安装：pip install playwright"
+            "浏览器路径需要 playwright",
+            hint='请安装：pip install "xjtu-timetable-calendar[browser]"'
+            '（源码安装用 pip install -e ".[browser]"）',
         ) from exc
 
     from .auth import storage_state_dict

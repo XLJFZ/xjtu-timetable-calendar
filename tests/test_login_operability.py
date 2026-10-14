@@ -143,3 +143,22 @@ def test_aborted_login_states_the_session_was_not_saved(
         ensure_login(Settings.load(), force=True)
 
     assert "未保存" in caught.value.hint
+
+
+def test_login_missing_playwright_hint_names_the_install_extra(
+    stale_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """缺 playwright 时，提示要点名 `[browser]` extra（与 httpx 那条同源的问题）。
+
+    旅程走查里这是新用户撞上的**第一个**硬阻塞：装完包跑 `login`，直接
+    「登录功能需要 playwright」。旧提示 `pip install playwright` 能用，但没告诉他
+    发布包里那条一次装全的写法。
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "playwright", None)
+
+    with pytest.raises(AuthenticationRequired) as exc:
+        ensure_login(Settings.load(), force=True)
+
+    assert "[browser]" in exc.value.hint

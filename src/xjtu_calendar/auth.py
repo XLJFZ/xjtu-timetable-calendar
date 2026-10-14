@@ -209,7 +209,11 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
     except ImportError as exc:
         raise AuthenticationRequired(
             "登录功能需要 playwright（仅本机浏览器自动化用，不涉及凭据上传）",
-            hint="请安装：pip install playwright（使用系统已装的 Edge/Chrome 时无需再跑 playwright install）",
+            hint=(
+                '请安装：pip install "xjtu-timetable-calendar[browser]"'
+                '（源码安装用 pip install -e ".[browser]"；'
+                "使用系统已装的 Edge/Chrome 时无需再跑 playwright install）"
+            ),
         ) from exc
 
     executable = find_browser()

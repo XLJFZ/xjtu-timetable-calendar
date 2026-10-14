@@ -391,3 +391,23 @@ def test_unknown_snapshot_kind_is_rejected(tmp_path):
     save_raw({"kbList": []}, cfg, "2026-2027-1")
     with pytest.raises(ValueError, match="未知的快照类型"):
         load_raw(cfg, "2026-2027-1", kind="exam")
+
+
+def test_httpx_missing_hint_names_the_install_extra(
+    cfg: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """缺 httpx 时，提示要点名 `pip install "xjtu-timetable-calendar[http]"`。
+
+    2026-10-14 新用户旅程实测：裸 `pip install xjtu-timetable-calendar` 只带来
+    `icalendar`，`httpx` 与 `playwright` 都在 extras 里，于是默认抓取路径第一步就撞
+    「HTTP 路径需要 httpx」。旧提示只说 `pip install httpx`，对**从发布包装起来的人**
+    等于让他手工补齐一个本可以由 extra 一次装全的依赖树。
+    """
+    import sys
+
+    from xjtu_calendar.errors import TimetableFetchError
+
+    monkeypatch.setitem(sys.modules, "httpx", None)
+    with pytest.raises(TimetableFetchError) as exc:
+        fetch_via_http(endpoint(), cfg=cfg)
+    assert "[http]" in exc.value.hint

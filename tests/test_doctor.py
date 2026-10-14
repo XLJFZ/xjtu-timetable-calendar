@@ -159,6 +159,55 @@ def test_missing_semester_config_is_fail(tmp_path: Path) -> None:
     assert "学期校历缺失" in check.detail
 
 
+def test_semester_config_detail_echoes_the_configured_dates(tmp_path: Path) -> None:
+    """「学期校历」通过时必须把**配置里的日期**打出来。
+
+    2026-10-14 新用户旅程走查实测：这一项原本只判"文件在不在"，而把 README 的
+    格式示例（`first_week_monday=2026-09-07`、`total_weeks=16`）逐字抄进
+    `2026-2027-1.json` 之后，doctor 通过、`export` 成功、产物看起来完全正常，
+    而真实官方值是 `2026-09-14` / 18 周 ⇒ 整学期错一周且零提示。
+    判定发生的那一刻必须让用户与 Agent 看见数字，才有机会发现它不是官方那一个。
+    """
+    cfg = make_home(tmp_path)
+    check = by_name(run_checks(cfg, SEMESTER))["semester_config"]
+    assert check.status == STATUS_OK
+    assert "2026-09-07" in check.detail
+    assert "16" in check.detail
+
+
+def test_semester_config_warns_when_inner_key_disagrees_with_the_filename(
+    tmp_path: Path,
+) -> None:
+    """配置内部的 `key` 会进入**每一条事件的 UID**，与文件名不一致要警告。
+
+    同一次走查实测：只把 `semester.key` 从 `2026-fall` 改成别的值
+    （文件名、日期一律不动）再导出，103 个 UID **零交集**；随后 `subscribe push`
+    把这批"旧 UID 凭空消失"当成退课，报出「无法安全下发撤销」的警告。
+    README 的模板恰好写的是示例 key，用户"顺手改成和文件名一致"就会踩中。
+    """
+    cfg = make_home(tmp_path)
+    path = cfg.semester_config_path(SEMESTER)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["semester"]["key"] = "2026-2027-1"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    check = by_name(run_checks(cfg, SEMESTER))["semester_config"]
+    assert check.status == STATUS_WARN
+    assert "UID" in check.detail
+    assert SEMESTER in check.detail and "2026-2027-1" in check.detail
+
+
+def test_semester_config_unparseable_warns_instead_of_crashing(tmp_path: Path) -> None:
+    """文件存在但解析不了：折成一条警告继续跑完其余项（原则 3：体检仪自己炸等于没报告）。
+
+    渲染项会把它报成阻塞，这里只负责让「学期校历」这一项不再对坏文件亮绿灯。
+    """
+    cfg = make_home(tmp_path)
+    cfg.semester_config_path(SEMESTER).write_text("{ 这不是 JSON", encoding="utf-8")
+    check = by_name(run_checks(cfg, SEMESTER))["semester_config"]
+    assert check.status == STATUS_WARN
+    assert "无法解析" in check.detail
+
+
 def test_missing_schedule_config_is_fail(tmp_path: Path) -> None:
     cfg = make_home(tmp_path)
     _write_session(cfg)

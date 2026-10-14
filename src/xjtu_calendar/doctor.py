@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -149,7 +150,37 @@ def _check_semester_config(cfg: Settings, semester: str) -> Check:
             STATUS_FAIL,
             f"学期校历缺失（{semester}）。这一项必须由你按官方校历填写，工具刻意不内置猜测值。",
         )
-    return Check("semester_config", STATUS_OK, f"已配置（{semester}）")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return Check(
+            "semester_config",
+            STATUS_WARN,
+            f"学期校历文件无法解析（{semester}）：{exc}。模板见 README"
+            "「必须由你配置的内容 → 1. 教学日历（校历）」。",
+        )
+    body = payload.get("semester") if isinstance(payload, dict) else None
+    if not isinstance(body, dict):
+        return Check(
+            "semester_config",
+            STATUS_WARN,
+            f"学期校历文件无法解析（{semester}）：缺少 semester 对象。",
+        )
+    monday = body.get("first_week_monday") or "未填"
+    weeks = body.get("total_weeks")
+    echo = f"已配置（{semester}）：第 1 教学周周一 {monday}、" + (
+        f"共 {weeks} 周" if weeks is not None else "未设总周次（按课表自身周次展开）"
+    )
+    inner_key = str(body.get("key") or "")
+    if inner_key and inner_key != semester:
+        return Check(
+            "semester_config",
+            STATUS_WARN,
+            f"校历内部的 key（{inner_key}）与学期标识（文件名 {semester}）不一致。"
+            "key 会进入每一条事件的 UID——把它改成和文件名一致，等于换掉整份日历的身份："
+            f"客户端会把旧事件全留下、再导入一份新的。{echo}",
+        )
+    return Check("semester_config", STATUS_OK, echo)
 
 
 def _check_schedule_config(cfg: Settings) -> Check:

@@ -123,6 +123,9 @@ pre .p{color:#84c3ff}
 .stepcard h3{font-size:.98rem;margin-bottom:.35rem}
 .stepcard p{color:var(--sub);font-size:.88rem;margin-bottom:.6rem}
 
+.agentband{margin-top:1.05rem}
+.agentband>p{margin:0 0 .4rem;font-size:.84rem;color:var(--sub)}
+.agentband pre{margin:0;font-size:.74rem;line-height:1.45;white-space:pre-wrap;overflow-wrap:break-word}
 .callout{border-left:4px solid var(--blue2);background:var(--chip);border-radius:0 12px 12px 0;padding:1rem 1.2rem;color:var(--ink);font-size:.94rem}
 .callout b{color:var(--blue)}
 .warnbox{border-left-color:var(--warn);background:var(--warn-soft)}
@@ -198,10 +201,24 @@ footer{border-top:1px solid var(--line);background:var(--card);margin-top:2rem}
       <a class="btn btn-ghost" href="#subscribe">手机到底订哪个客户端</a>
       <a class="btn btn-ghost" href="https://github.com/XLJFZ/xjtu-timetable-calendar#readme">完整文档</a>
     </div>
+    <div class="agentband">
+      <p><strong>想直接交给编码 Agent？</strong>整段复制下面这段，粘贴给你正在用的 Agent 即可。</p>
+      <pre>请帮我部署西安交通大学 eHall 课表（含考试安排）日历。先执行：
+
+git clone https://github.com/XLJFZ/xjtu-timetable-calendar.git
+
+然后阅读该仓库里的 skills/xjtu-timetable-setup/SKILL.md（连同它 references/ 下的两份文件），
+严格按那八步引导我完成，不要跳步、也不要自己发明流程。三条硬规则：
+① 不要猜任何校历数据（第 1 教学周周一、总周次、作息钟点）——缺什么直接问我；
+② 登录必须由我本人在前台终端执行：别放进后台任务或管道，也别读取我的凭据与会话文件内容；
+③ 每一步按 SKILL.md 写的证据验收，最后跑
+   xjtu-calendar doctor --verify --semester &lt;学期标识&gt;
+   退出码 0 才算完成；阻塞项没清完之前，不要说「应该没问题了」。</pre>
+    </div>
     <div class="badges">
       <span class="badge">Python 3.11+</span>
       <span class="badge">MIT 许可</span>
-      <span class="badge">700+ 项测试守卫</span>
+      <span class="badge">800+ 项测试守卫</span>
       <span class="badge plain">课程 + 考试，同一份 .ics</span>
       <span class="badge plain">非官方工具 · 与学校无隶属关系</span>
     </div>
@@ -383,15 +400,16 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     <div class="feature"><div class="ico">⏰</div><h3>schedule · 作息表</h3><p>从教务处公开「学生作息时间表」页直接读第 1~10 节课两季钟点，切换点取自页面原文，幂等合并。</p></div>
     <div class="feature"><div class="ico">🔍</div><h3>diff · 调课检测</h3><p>纯本地比对两次 fetch 的快照：哪门课新增删除、哪个时段改了周次/教室/教师，并列出「考试变更」（新增 / 取消 / 时间 / 教室 / 座位）。</p></div>
     <div class="feature"><div class="ico">🩺</div><h3>doctor · 只读体检</h3><p>版本 / 会话 / 校历 / 作息 / 课表快照 / 考试快照 / 渲染 / 订阅留底一次看全。不写任何文件、不触发 <code class="inline-code">fetch</code>，默认一个 HTTP 请求都不发（只有 <code class="inline-code">--verify</code> 才对订阅 URL 做一次匿名 GET）。<strong>0 = 无阻塞（警告不阻塞）、5 = 有阻塞项</strong>，脚本与 Agent 可以直接判定成败。</p></div>
-    <div class="feature"><div class="ico">🧩</div><h3>skills/ · 交给编码 Agent</h3><p>仓库根两个技能：<code class="inline-code">xjtu-timetable-setup</code>（八步部署向导，登录一步显式禁止后台执行器与管道，收尾以 <code class="inline-code">doctor</code> 退出码定成败）与 <code class="inline-code">timetable-api-archaeology</code>（给陌生学校的接口考古方法论，含「什么时候该停下来」）。整个目录复制进你所用 Agent 的 skills 目录即可，内容不假设任何特定产品。</p></div>
+    <div class="feature"><div class="ico">🧩</div><h3>skills/ · 交给编码 Agent</h3><p>仓库根两个技能：<code class="inline-code">xjtu-timetable-setup</code>（八步部署向导，登录一步显式禁止后台执行器与管道，收尾以 <code class="inline-code">doctor</code> 退出码定成败）与 <code class="inline-code">timetable-api-archaeology</code>（给陌生学校的接口考古方法论，含「什么时候该停下来」）。整个目录复制进你所用 Agent 的 skills 目录即可，内容不假设任何特定产品。只想试一次的话，<strong>页首有一段可整段复制的提示词</strong>。</p></div>
   </div>
   <pre style="margin-top:1.2rem">python -m xjtu_calendar <span class="p">notice</span>   --url &lt;通知页地址&gt; --semester 2026-2027-1 --apply
 python -m xjtu_calendar <span class="p">schedule</span> --semester 2026-2027-1 --apply
 python -m xjtu_calendar <span class="p">diff</span>     --semester 2026-2027-1
 python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 --verify</pre>
   <div class="callout" style="margin-top:1.2rem">
-    <b>如实说明一处未验证：</b>两个 skill 在<strong>已装好</strong>的环境上跑过，但「从零安装的人会不会卡住」
-    这一条<strong>新用户旅程尚未在干净机器上验证</strong>——技能文档里也写着这条边界。
+    <b>如实说明一处仍未验证：</b>2026-10-14 已在<strong>干净虚拟环境 + PyPI 发布物</strong>上把八步逐字
+    照抄走查过一轮（抓出并修好五处「照抄就跑不通 / 绿灯撒谎」），但<strong>真人从零跑第 2 步登录</strong>
+    仍未覆盖——离线环境造不出真凭据。技能文档的「已知边界」写着同一句话。
   </div>
 </section>
 

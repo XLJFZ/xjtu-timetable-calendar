@@ -818,3 +818,190 @@ def test_migration_marker_write_failure_leaves_no_second_sweep(
     cancelled = (home / "subscribe" / f"last-{SEMESTER}.ics").read_text(encoding="utf-8")
     assert cancelled.count("STATUS:CANCELLED") == 0, "不该出现重复撤销"
     assert "迁移" not in out, "数据没变时不该再发一次迁移预告"
+
+
+# --------------------------------------------------------------------------- #
+# 审阅裁决（2026-10-15）：`doctor` 对「已证实不相容的本地发布状态」判**阻塞**（退出码 5）
+#
+# 原则一句：门会拦的事，体检不许只报普通警告。但**不新增退出码**——复用 `doctor`
+# 既有的 `STATUS_FAIL` ⇒ `DOCTOR_EXIT_BLOCKED = 5`；`push` 继续用业务错误 7。
+# --------------------------------------------------------------------------- #
+
+
+def _subscription_check(home: Path) -> tuple[object, bool]:
+    """跑一次只读体检，返回（订阅那一条，整体是否阻塞）。
+
+    退出码按「除会话外」的项算：合成 home 里没有会话文件，而「无会话」本来就是
+    一条 `fail`——留着它会掩盖我们真正要断言的那一格（订阅判定的成色）。
+    """
+    from xjtu_calendar.doctor import DOCTOR_EXIT_BLOCKED, doctor_exit_code, run_checks
+
+    checks = [c for c in run_checks(Settings(home=home), SEMESTER) if c.name != "session"]
+    sub = [c for c in checks if c.name == "subscription"]
+    assert sub, "doctor 必须仍有订阅这一项"
+    return sub[0], doctor_exit_code(checks) == DOCTOR_EXIT_BLOCKED
+
+
+def _crash_after_push_is_committed(
+    home: Path,
+    origin: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> Path:
+    """把现场摆成"远端可能已经是 B、本地凭据还是 A"那一瞬，返回未裁决的准备稿路径。
+
+    做法与 `test_a_pushed_but_unsaved_publish_keeps_the_recovery_snapshot` 同一条：
+    正常发一次（A）→ 数据改成 B → 让 push 成功之后的 `save_state` 抛 OSError。
+    故障点过去就把保险丝关掉，否则测的是"磁盘一直满"而不是"崩过一次之后怎么办"。
+    """
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+
+    _rewrite_rows(home, _rows_with_b())
+    cfg = Settings(home=home)
+    real_save = subscribe.save_state
+    fuse = {"on": False}
+
+    def blow_up(_cfg: Settings, _state: object) -> None:
+        if fuse["on"]:
+            raise OSError("disk is full")
+        real_save(_cfg, _state)
+
+    monkeypatch.setattr(subscribe, "save_state", blow_up)
+    fuse["on"] = True
+    assert main(["subscribe", "push", "--semester", SEMESTER]) != 0
+    capsys.readouterr()
+    fuse["on"] = False
+
+    pending = subscribe.pending_path(cfg, SEMESTER)
+    assert pending.is_file(), "前提：这次发布的结果本地还没裁决"
+    staged = subscribe.read_journal(cfg, SEMESTER, pending=True).journal
+    assert staged is not None
+    remote_sha = hashlib.sha256(_git_bytes(f"cal:{_token(home)}.ics", origin)).hexdigest()
+    assert remote_sha == staged.ics_sha256, "前提：远端确实已经是准备稿那一版"
+    return pending
+
+
+def _private_dir_bytes(home: Path) -> dict[str, bytes]:
+    """`subscribe/` 目录的逐文件字节快照，用来证明 doctor 一个字节都没动。"""
+    sub = home / "subscribe"
+    return {p.name: p.read_bytes() for p in sorted(sub.glob("*")) if p.is_file()}
+
+
+def test_push_refuses_while_a_publish_result_is_unresolved(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """**审阅裁决表（10-15）第 7 行**：准备稿未裁决 ⇒ `push` 必须拒绝（7）。
+
+    这一格旧代码是**放行**的：本地四样与已发布凭据（A）逐样自洽，门看不见问题，
+    而线上可能已经是准备稿（B）那一版 ⇒ 下一次构建拿 A 当 SEQUENCE 与撤销基线。
+    "自洽地错"正是 P1-02 的靶心，所以未裁决的准备稿本身就是不相容。
+    裁决只能由 `subscribe repair` 做（它有远端真实字节），doctor 与 push 都没有。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    capsys.readouterr()
+
+    _crash_after_push_is_committed(home, origin, monkeypatch, capsys)
+    tip_before = _git("rev-parse", "cal", cwd=origin)
+    capsys.readouterr()
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 7
+    err = capsys.readouterr().err
+    assert "未裁决" in err and "repair" in err
+    assert _git("rev-parse", "cal", cwd=origin) == tip_before, "拒绝就不该再推进远端"
+
+    assert main(["subscribe", "repair", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert "无变化" in capsys.readouterr().out, "裁决完就恢复成一次普通发布"
+
+
+def test_doctor_blocks_a_lagging_local_copy(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """留底与已发布凭据不一致 ⇒ `doctor` 判**阻塞**（5），而不是「注意到但不阻止」。
+
+    RED 的根据：这一格 `subscribe push` 已经会返回 7（`check_local_compatibility`
+    的 `baseline`），而 doctor 早前只给 WARN ⇒ 体检绿灯、真发布时才发现本地散架。
+    """
+    from xjtu_calendar.doctor import STATUS_FAIL
+
+    home, origin = env
+    assert _init(origin) == 0
+    capsys.readouterr()
+    _crash_between_state_and_baseline(home, origin, capsys)
+
+    check, blocking = _subscription_check(home)
+    assert check.status == STATUS_FAIL, "门会拦的状态不许停在警告档"
+    assert "repair" in check.detail
+    assert blocking, "已证实不相容 ⇒ doctor 退出码 5"
+
+
+def test_doctor_blocks_an_unresolved_publish_result(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """「要远端验证才能定」⇒ 阻塞，并把人交给 `repair`；doctor 自己**不 fetch**。
+
+    现场 = push 已成功、`save_state` 抛：远端可能已经是 B，本地凭据却还是 A，
+    唯一带 B 的记录躺在未裁决的准备稿里。此时任何"本地看起来自洽"都不算证据，
+    而 doctor 的契约是纯本地只读（设计文档 §3.1），所以它只能如实报"定不下来"。
+    """
+    from xjtu_calendar.doctor import STATUS_FAIL
+
+    home, origin = env
+    assert _init(origin) == 0
+    capsys.readouterr()
+
+    pending = _crash_after_push_is_committed(home, origin, monkeypatch, capsys)
+
+    check, blocking = _subscription_check(home)
+    assert check.status == STATUS_FAIL
+    assert blocking
+    assert "repair" in check.detail
+    assert pending.is_file(), "doctor 只读：未裁决的准备稿要留给 repair 处理"
+
+
+def test_doctor_does_not_write_anything_when_it_blocks(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """doctor 提 `repair` 但**不代跑修复**：报阻塞前后 `subscribe/` 逐文件字节相同。
+
+    审阅者 2026-10-15 的边界条款：体检仪保持只读，否则它会与 repair 抢同一批文件，
+    而"警告里顺手把状态改了"是最难复现的一类事故。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    capsys.readouterr()
+    _crash_between_state_and_baseline(home, origin, capsys)
+
+    before = _private_dir_bytes(home)
+    _subscription_check(home)
+    assert _private_dir_bytes(home) == before, "doctor 判阻塞也不许动本地凭据与留底"
+
+
+def test_doctor_keeps_the_upgrade_cell_at_a_warning(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """「没有凭据、但留底与最后一次发布逐字节相符」这一格 push 是**放行**的（弱判据），
+    所以 doctor 也不许判阻塞——否则体检比门更凶，用户会去做一次根本不必的 repair。
+    """
+    from xjtu_calendar.doctor import STATUS_WARN
+
+    home, origin = env
+    assert _init(origin) == 0
+    capsys.readouterr()
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+
+    cfg = Settings(home=home)
+    subscribe.journal_path(cfg, SEMESTER).unlink()  # 摆成"0.8.5 之前发布过"的现场
+
+    check, blocking = _subscription_check(home)
+    assert not blocking, "弱判据放行的状态不许抬到阻塞档"
+    assert check.status == STATUS_WARN
+    assert "台账" in check.detail, "警告要说清这次没能校验的是哪两样"

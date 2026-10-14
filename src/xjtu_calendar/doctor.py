@@ -1,12 +1,18 @@
 """`xjtu-calendar doctor` 的判据核心：把"部署到位没有"变成结构化、只读的检查清单。
 
-设计出处见 `docs/design/2026-10-11-agent-skills.md` §3.1。三条硬约束：
+设计出处见 `docs/design/2026-10-11-agent-skills.md` §3.1。四条硬约束：
 
 1. **只读** —— 不写文件、不 fetch、不碰 git；HTTP 仅在 ``verify=True`` 时发一次匿名 GET。
 2. **警告不等于失败** —— "会话很旧"、"没有考试快照"、"还没配订阅"都是正常状态。
    判成失败会把用户推向错误的修复动作（尤其"重登"这种有成本、且需要真人配合的操作）。
+   **唯一的例外**是「本地发布状态与已发布版本不相容」（2026-10-15 审阅裁决）：那不是
+   "用户还没做某件事"，而是发布路径的凭据已经互相矛盾，`subscribe push` 对同一状态
+   会直接拒绝（退出码 7）——体检若只留一行警告，用户要等到真正发布才发现自己需要
+   ``subscribe repair``。仍不新增退出码：`fail` ⇒ ``5``。
 3. **不抛异常** —— 任何一条检查内部炸了都折成一条 ``fail`` 继续跑完其余项。
    体检仪自己炸等于没有报告，而它常常是用户卡住时最后能跑的东西。
+4. **只读到底** —— 判成阻塞也只**提示** `subscribe repair`，绝不代跑 fetch、也绝不
+   改本地凭据/留底/台账；否则体检仪会与修复命令抢同一批文件。
 
 输出不得含可识别个人信息（姓名 / 学号 / 课程名 / 考场 / 座位 / token）。
 本机路径允许打印，与 ``status`` 口径一致——那是用户自己机器上的目录，且输出不落盘。
@@ -242,9 +248,30 @@ def _check_subscription(cfg: Settings, semester: str, state: Any) -> Check:
             STATUS_WARN,
             "未配置订阅通道（只用一次性导入的话可以忽略）",
         )
+    # 先跑与 `subscribe push` **同一套**判定（2026-10-14 审阅复核第 6 条）：门会拦的事
+    # doctor 不能看不见。2026-10-15 的裁决把这一格从**警告**升成**阻塞**：
+    # 本地四样已经散架、下一次发布必被拒（退出码 7）时，体检不许只留一行"注意到但不阻止"，
+    # 否则用户要等到真正 push 才发现自己需要 `repair`。退出码不新增，复用 `5`。
+    compat = check_local_compatibility(cfg, state, semester)
+    if not compat.ok:
+        return Check(
+            "subscription",
+            STATUS_FAIL,
+            f"本地发布状态与已发布版本不相容（{compat.detail}）："
+            f"push 会被拦住（退出码 7），先运行 subscribe repair --semester {semester}",
+        )
     last_push = getattr(state, "last_push", None)
     if last_push is None:
         return Check("subscription", STATUS_WARN, "订阅已初始化但尚未发布过，运行 subscribe push")
+    if compat.reason == "no_snapshot_verified":
+        # 升级那一格：push 是**放行**的（弱判据），所以 doctor 也只能警告——
+        # 体检不许比门更凶，否则用户会去做一次根本不必的 repair。
+        return Check(
+            "subscription",
+            STATUS_WARN,
+            "本地没有发布恢复快照（0.8.5 之前发布过的状态），留底字节与最后一次发布记录相符，"
+            "但两份台账与迁移标记这次没能校验：下一次 push 会把恢复依据补落",
+        )
     last_local: Path = cfg.subscribe_dir / f"last-{semester}.ics"
     if not last_local.is_file():
         return Check("subscription", STATUS_WARN, "本地留底缺失，运行 subscribe push 重新发布")
@@ -252,21 +279,11 @@ def _check_subscription(cfg: Settings, semester: str, state: Any) -> Check:
     # 于是 sha 永远对不上，doctor 会一直误报"有未发布变更"（真机跑出来的第一个 bug）。
     text = last_local.read_bytes().decode("utf-8")
     same_token = str(getattr(last_push, "token", "")) == str(state.token)
-    # 先做一条**不依赖重建**的直比：留底应当逐字节等于最后一次发布的产物。
+    # 再做一条**不依赖重建**的直比：留底应当逐字节等于最后一次发布的产物。
     # 只比"留底 vs 当前重建结果"是不够的——数据一旦也变了，
     # "上次发布在写留底前中断"这个状态就完全隐身，而它是下次整学期误撤销的基线。
     published_sha = str(getattr(last_push, "content_sha256", "") or "")
     local_sha = hashlib.sha256(last_local.read_bytes()).hexdigest()
-    # 先跑与 `subscribe push` **同一套**判定（2026-10-14 审阅复核第 6 条）：
-    # 门会拦的事 doctor 不能看不见，否则体检绿灯、真正发布时才发现本地已散架。
-    compat = check_local_compatibility(cfg, state, semester)
-    if not compat.ok:
-        return Check(
-            "subscription",
-            STATUS_WARN,
-            f"本地发布状态与已发布版本不相容（{compat.detail}）："
-            "push 会被拦住（退出码 7），先运行 subscribe repair",
-        )
     if same_token and published_sha and local_sha != published_sha:
         return Check(
             "subscription",

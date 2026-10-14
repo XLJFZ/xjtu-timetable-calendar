@@ -627,10 +627,44 @@ class CompatibilityCheck:
     """构建前的相容性判定结果。"""
 
     ok: bool
-    #: `consistent` / `no_snapshot_verified`（弱判据放行）/ `no_journal` / `journal_token`
-    #: / `baseline` / `course_ledger` / `exam_ledger` / `uid_recipe`
+    #: `consistent` / `no_snapshot_verified`（弱判据放行）/ `pending_unresolved`（上次发布
+    #: 的结果还没裁决）/ `no_journal` / `journal_invalid` / `journal_token`
+    #: / `baseline` / `course_ledger` / `exam_ledger` / `*_keep` / `uid_recipe`
     reason: str
     detail: str
+
+
+def _pending_read(cfg: Settings, semester: str) -> JournalRead:
+    return read_journal(cfg, semester, pending=True)
+
+
+def _unresolved_pending(cfg: Settings, semester: str) -> CompatibilityCheck | None:
+    """残留的**准备稿**（pending）= 上一次发布的结果本地还没裁决 ⇒ 一律不相容。
+
+    为什么这一格必须单独判（2026-10-15 审阅裁决）：准备稿存在，说明那次推送死在
+    "远端可能已经收下"之后、`save_state` 之前（或被标了 remote-uncertain 之后）。
+    此时"本地四样 vs 已发布凭据"**完全可能逐样自洽**——因为比的是上一版凭据，而线上
+    也许已经是准备稿那一版。自洽地错，门与体检都会瞎，所以判据不能只看 committed。
+    谁来裁决：**只有** `subscribe repair` 拿远端真实字节能定（==准备稿 ⇒ 提升；
+    ==已发布凭据 ⇒ 丢弃），本地无从判断，故默认停手。
+    """
+    read = _pending_read(cfg, semester)
+    if read.status == JOURNAL_ABSENT:
+        return None
+    path_name = pending_path(cfg, semester).name
+    if read.status == JOURNAL_INVALID:
+        return CompatibilityCheck(
+            False,
+            "pending_unresolved",
+            f"残留的发布准备稿读不懂（{path_name}，{read.detail}）："
+            "上一次发布的结果既无法确认也无法放弃",
+        )
+    return CompatibilityCheck(
+        False,
+        "pending_unresolved",
+        f"上一次发布留下了未裁决的准备稿（{path_name}）："
+        "本地凭据仍是上一版，而线上可能已经是准备稿那一版",
+    )
 
 
 def _sha_of(path: Path) -> str | None:
@@ -645,8 +679,12 @@ def check_local_compatibility(
     """本地四样（留底 / 两份台账 / 迁移标记）是否与"最后一次已发布版本"相容。
 
     **不碰网络**：它回答的是"本地自不自洽、有没有依据"，远端到底是不是这一版由
-    `subscribe repair` 去核。`last_push is None` 直接通过（全新订阅，没有旧版本可对）。
+    `subscribe repair` 去核。`last_push is None` 直接通过（全新订阅，没有旧版本可对）
+    ——但**未裁决的准备稿除外**，那是"远端可能已经推进过一次"的信号，与有没有旧版本无关。
     """
+    unresolved = _unresolved_pending(cfg, semester)
+    if unresolved is not None:
+        return unresolved
     if state.last_push is None:
         return CompatibilityCheck(True, "consistent", "尚未发布过，没有需要相容的旧版本")
     baseline = subscribe_dir(cfg) / f"last-{semester}.ics"

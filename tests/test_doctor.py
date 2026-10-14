@@ -245,13 +245,19 @@ def test_render_reports_event_and_exam_counts(tmp_path: Path) -> None:
     assert "考试" in check.detail
 
 
-def test_subscription_reads_the_ledger_without_newline_translation(
+def test_subscription_reads_the_local_copy_byte_exact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """留底必须按 bytes 读。
+    """留底必须按 **bytes** 读，摘要才可能等于 `last_push.content_sha256`。
 
-    `read_text` 的通用换行翻译会把 CRLF 折成 LF，于是内容 sha 永远对不上，
-    doctor 会**永久误报**"有未发布变更"——真机上第一个跑出来的 bug 就是这个。
+    `read_text` 的通用换行翻译会把 CRLF 折成 LF ⇒ sha 变了 ⇒ 这一格从「留底与发布记录
+    逐字节相符」掉进 `no_journal`（push 返回 7、doctor 判阻塞）。所以判据本身就在为
+    字节级读取取证，不需要再 spy 内部函数。
+
+    2026-10-15 改动：期望从 OK 变成 WARN——审阅裁决把「没有恢复凭据、但留底相符」定为
+    警告级「两份台账与迁移标记没能校验」；原先那条 spy 走的是 `has_unpublished_changes`，
+    而弱判据格在它就绪前已经定了结论。真机上最早那个"永久误报有未发布变更"的 bug
+    由下面的 LF 对照组钉住。
     """
     import xjtu_calendar.doctor as doctor_module
     from xjtu_calendar.subscribe import PushRecord, SubscriptionState
@@ -275,20 +281,18 @@ def test_subscription_reads_the_ledger_without_newline_translation(
     )
     monkeypatch.setattr(doctor_module, "load_state", lambda *a, **k: state)
 
-    seen: dict[str, str] = {}
-
-    def _spy(_cfg: object, _state: object, text: str) -> bool:
-        seen["text"] = text
-        return False
-
-    monkeypatch.setattr(doctor_module, "has_unpublished_changes", _spy)
-
-    cfg.subscribe_dir.mkdir(parents=True, exist_ok=True)
-    (cfg.subscribe_dir / f"last-{SEMESTER}.ics").write_bytes(baseline)
+    local = cfg.subscribe_dir / f"last-{SEMESTER}.ics"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(baseline)
 
     check = by_name(run_checks(cfg, SEMESTER))["subscription"]
-    assert "\r\n" in seen["text"]
-    assert check.status == STATUS_OK
+    assert check.status == STATUS_WARN, "弱判据放行的一格只能警告，不许升成阻塞"
+    assert "没能校验" in check.detail, "警告要说清这次没能校验的是哪两样"
+
+    # 对照组：同一段内容只把 CRLF 翻成 LF（read_text 会犯的那个错），摘要即失配
+    local.write_bytes(baseline.replace(b"\r\n", b"\n"))
+    translated = by_name(run_checks(cfg, SEMESTER))["subscription"]
+    assert translated.status == STATUS_FAIL, "换行被翻译过 ⇒ 留底不再是线上那一版的字节"
 
 
 def test_render_failure_is_fail_and_does_not_raise(tmp_path: Path) -> None:

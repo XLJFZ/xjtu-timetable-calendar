@@ -10,7 +10,7 @@
 |---|---|
 | `login [--force]` | 浏览器手动登录，保存本地会话 |
 | `status` | 查看会话与配置状态（不发起网络请求） |
-| `fetch [--semester S] [--source auto\|http\|browser] [--from-file F] [--no-exams]` | 获取课表原始 JSON（HTTP 路径同时抓考试安排；覆盖前自动把上一份轮转为 `*.prev.json`，作为 `diff` 基线） |
+| `fetch [--semester S] [--source auto\|http\|browser] [--from-file F] [--no-exams]` | 获取课表原始 JSON（HTTP 路径同时抓考试安排；覆盖前把上一份**复制**到 `*.prev.json` 作为 `diff` 基线 —— 复制式轮转，新快照写失败时当前那份仍在原位） |
 | `diff [--semester S] [--old F] [--new F]` | 比对新旧课表快照：新增/删除课程、时段增减、周次/教室/教师变化；并列「考试变更」小节（新增/取消/时间/教室/座位；纯本地；`--old/--new` 只对课表生效） |
 | `export [--semester S] [-o OUT] [--input F] [--name N] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence] [--no-exams] [--allow-mass-cancellation]` | 生成 `.ics`（默认并入考试事件；`--name` 不给时标题按课表自动推导，见上文「导出」；`--allow-mass-cancellation` 放行课程侧熔断，见「升级到 v0.8」） |
 | `notice --url U \| --from-file F [--semester S] [--apply]` | 解析停课/调课通知，预览或合并进学期配置 |

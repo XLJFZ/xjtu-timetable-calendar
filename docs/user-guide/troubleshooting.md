@@ -25,7 +25,8 @@
 
 **Q：怎么发现课表被调过（换教室、改时间、加减课）？**
 
-重复 `fetch` 即可：每次 fetch 会把上一份快照轮转为 `timetable-<学期>.prev.json`，
+重复 `fetch` 即可：每次 fetch 会把上一份快照**复制**到 `timetable-<学期>.prev.json`
+（复制而不是搬走：新快照万一写失败，当前那份仍原地可用，`diff` 的基线不会凭空消失），
 然后 `python -m xjtu_calendar diff --semester <学期>` 列出新增/删除课程、
 时段增减与周次/教室/教师变化（纯本地比对，不发网络请求）。
 确认变化后重新 `export`，UID 稳定所以日历会原地更新。
@@ -120,10 +121,13 @@ python -m xjtu_calendar login --force
 拿那份会话 headless 重放、再点一次「学生」，立刻落到
 `/jwapp/sys/wdkb/…#/xskcb`、四条齐 —— 差的只是**等待**。所以 `login` 现在按完
 Enter 会自己轮询教务侧 cookie（最多 20 秒；提示补点后再接着等 6 秒），
-没等到**不会关掉窗口**，收尾那句也会打印「N 个 cookie，其中教务侧 M 个」。
+没等到**不会关掉窗口**，收尾那句也会打印
+「N 个 cookie，其中教务侧 M 个，含/缺 `_WEU` 票据」。
 
-- **判据**：`doctor` 的「会话」一项会直接说「会话里没有教务侧（/jwapp）的 cookie」。
-  手工判据是数会话文件里 `path` 以 `/jwapp` 开头的 cookie：正常登录有 4 条
+- **判据**：`doctor` 的「会话」一项分两格说。缺整批教务侧 cookie 时直说
+  「会话里没有教务侧（/jwapp）的 cookie」；条数够但缺那条票据时说
+  「有 M 个 cookie，却没有承重的 `_WEU` 票据」。手工判据是数会话文件里 `path`
+  以 `/jwapp` 开头的 cookie：正常登录有 4 条
   （`JSESSIONID`、`_WEU`、`THEME`、`EMAP_LANG`），半截登录是 0 条。
 - **处置**：重跑 `login --force`，在窗口里点「学生」并**等到课表真的显示出来**再按 Enter。
   新加的自检没救回来，只有一种情况：你在它追问的那一轮按了 Ctrl-C（那时会话文件

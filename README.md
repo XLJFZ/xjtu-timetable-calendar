@@ -223,30 +223,47 @@ Output:
 - 升级到 v0.8 的那一次是**一次性 UID 迁移**：旧事件整学期撤销、原地重建，
   只在 `subscribe push` 时发生，忽略 `STATUS` 的客户端会看到一次「已取消的活动」。
 - Outlook.com / ColorOS **不回源更新**已导入的条目，这类客户端只适合一次性导入。
+
+---
+
 ## 考试安排
 
 考试自 v0.5 起进产物，默认包含、`--no-exams` 关闭。只有 HTTP 接口这条通路
 拿得到考试；接口给的是**三态**（有数据 / 明确为空 / 无法判定），
 **判定不了时绝不覆盖已有快照**。撤销下发、改期与 UID、座位号在哪看、
 陈旧提示，见 [docs/user-guide/exams.md](docs/user-guide/exams.md)。
+
+---
+
 ## 必须由你配置的内容
 
 本项目**刻意不编造**任何学校信息。以下两项必须由你提供：
 
+- **学期校历** —— 第 1 教学周的星期一是哪天、本学期共几周；
+- **作息表** —— 每一节次在哪些日期区间对应什么钟点（本校有冬/夏季两套）。
 
 两份模板的完整 JSON、字段口径、以及两个可选的自动获取子命令（`notice` / `schedule`），
 见 [docs/user-guide/config-templates.md](docs/user-guide/config-templates.md)。
+
+---
+
 ## 命令参考
 
 全部子命令、参数、退出码语义与环境变量清单，
 见 [docs/user-guide/cli-reference.md](docs/user-guide/cli-reference.md)。
 日常只需三条：`login` → `fetch` → `export`（要 URL 订阅再加 `subscribe`）。
+
+---
+
 ## 项目结构 / 数据模型 / 开发
 
 模块划分、`CourseMeeting` 数据模型、支持的周次与节次写法、开发环境与测试、
 发布流程、测试覆盖重点、eHall 接口分析，
 见 [docs/user-guide/contributing.md](docs/user-guide/contributing.md)。
 跑测试只要记住四条门禁：`pytest -q`、`mypy`、`ruff check .`、`ruff format --check .`。
+
+---
+
 ## 隐私与安全
 
 ### 绝不提交的内容
@@ -327,6 +344,9 @@ URL/token、强推前有 tree 护栏（拒绝覆盖非本工具产物）。
 - **`diff` 首跑报「旧课表快照不存在」**：正常状态，第二次 `fetch` 起才有基线。
 - **改了校历内部 `key`**：它会进每一条事件的 UID，等于整学期换身份，
   `doctor` 会警告「内部 key ≠ 文件名标识」。
+
+---
+
 ## 路线图
 
 **已完成（MVP）**

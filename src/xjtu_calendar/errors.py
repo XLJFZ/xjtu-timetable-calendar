@@ -180,5 +180,23 @@ class MassCancellationBlocked(XjtuCalendarError):
         )
 
 
+class PublishStateIncompatible(XjtuCalendarError):
+    """本地四样（留底 / 两份台账 / 迁移标记）与最后一次已发布版本不相容。
+
+    为什么单独立一个退出码（`7`，与熔断的 6 并列）：这类状态**继续发布会静默改错**
+    SEQUENCE 基线或漏发撤销，症状要等到下一次真实变更才浮现，跟"规模可疑"一样
+    属于必须拦住让人看一眼的情形。默认建议是先 `subscribe repair`。
+    """
+
+    exit_code = 7
+
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(
+            message,
+            hint=hint
+            or "先跑 subscribe repair 按恢复快照对齐本地；确认无碍再带 --allow-unverified-baseline。",
+        )
+
+
 class SubscribePublishError(XjtuCalendarError):
     """git 探测/推送失败：远端保持上一版，本地状态不变。"""

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import shutil
 import subprocess
@@ -44,6 +45,7 @@ from .errors import (
     AuthenticationRequired,
     EndpointNotConfigured,
     GitNotAvailable,
+    PublishStateIncompatible,
     SemesterNotConfigured,
     SubscribeNotConfigured,
     TimetableFetchError,
@@ -225,6 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="课程侧撤销规模触发门 2 熔断时仍强行发布（默认拒绝——疑似课表没抓全时"
         "会拒绝发布并退出码 6；先确认课表真的少了一批课，再带此旗标重跑）",
     )
+    push_p.add_argument(
+        "--allow-unverified-baseline",
+        action="store_true",
+        help="本地没有『最后一次发布』的恢复依据时仍继续（默认拒绝并退出码 7——"
+        "旧版本升级上来的状态会有这一项；先跑 subscribe repair，确认远端就是那版再带此旗标）",
+    )
     rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
     rot_p.add_argument("--semester")
     rot_p.add_argument(
@@ -241,6 +249,11 @@ def build_parser() -> argparse.ArgumentParser:
     st_p = sact.add_parser("status", help="查看订阅状态、URL 与新鲜度")
     st_p.add_argument("--semester")
     st_p.add_argument("--verify", action="store_true", help="匿名 GET 自检 URL 可达性")
+    rep_p = sact.add_parser(
+        "repair",
+        help="按发布恢复快照把本地四样（留底 / 两份台账 / 迁移标记）对齐到线上那一版",
+    )
+    rep_p.add_argument("--semester")
 
     # --- doctor ---
     doctor = sub.add_parser(
@@ -1385,6 +1398,8 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
 
     if args.action == "push":
         return _subscribe_push(args, cfg, state, semester)
+    if args.action == "repair":
+        return _subscribe_repair(cfg, state, semester)
     if args.action == "rotate":
         return _subscribe_rotate(
             cfg,
@@ -1431,6 +1446,86 @@ def _subscribe_init(args: argparse.Namespace, cfg: Settings, semester: str) -> i
     return 0
 
 
+def _restore_from_journal(
+    cfg: Settings,
+    journal: subscribe.PublishJournal,
+    semester: str,
+) -> list[str]:
+    """按发布恢复快照把本地三样文件对齐到"最后一次真正发出去的版本"，返回动过的名字。
+
+    已经是目标字节的那一份**原样不动**：这让函数天然幂等（恢复中途再崩一次，第二次
+    只会补剩下的），也不会把用户手改过的东西重新盖一遍写痕，还让 `repair` 能如实说
+    "无需恢复"。台账的 `keep` 语义在这里生效：快照记 ``None`` ⇒ 那次发布本就不该动这份
+    台账，跳过而不是写空文件（写空 = 清空整份考试账本）。
+    """
+    from . import subscribe
+
+    restored: list[str] = []
+    targets: list[tuple[str, Path, str]] = [
+        ("留底", subscribe.subscribe_dir(cfg) / f"last-{semester}.ics", journal.ics_text),
+    ]
+    if journal.course_ledger_text is not None:
+        targets.append(("课程台账", cfg.course_ledger_path(semester), journal.course_ledger_text))
+    if journal.exam_ledger_text is not None:
+        targets.append(("考试台账", cfg.exam_ledger_path(semester), journal.exam_ledger_text))
+    for label, path, want in targets:
+        if path.is_file() and path.read_bytes() == want.encode("utf-8"):
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # newline=""：留底/台账都必须与快照逐字节一致（CRLF 完整），否则下次的 sha
+        # 比对与 SEQUENCE 基线读取都会错位。
+        atomic_write_text(path, want, private=True)
+        restored.append(label)
+    return restored
+
+
+def _subscribe_repair(cfg: Settings, state: subscribe.SubscriptionState, semester: str) -> int:
+    """`subscribe repair`：核线上那一版，然后按发布恢复快照把本地对齐回去。
+
+    三条契约（2026-10-14 审查对齐）：①**不只看本地** —— 必须从发布分支拉回真实字节、
+    与快照的 sha 对上才动手；②可重复执行（幂等），中途再崩一次，第二次照样能续上；
+    ③没有快照就**不假装能反推**——产物里课程与考试事件长得一样（CD8），从 ICS 推不出
+    两份台账，此时只报判据、给手工出口，绝不静默重置订阅历史。
+    """
+    from . import subscribe
+
+    journal = subscribe.load_journal(cfg, semester)
+    if journal is None:
+        raise XjtuCalendarError(
+            "本地没有发布恢复快照，无法自动对齐",
+            hint=f"快照自 0.8.5 起随每次发布写入（{subscribe.journal_path(cfg, semester)}）。"
+            "更早的发布没有依据：可从订阅 URL 下载当前 .ics 原样放回留底路径，"
+            "或确认接受全新订阅后删除状态文件重新 subscribe init（会清空客户端历史）。",
+        )
+    if journal.token != state.token:
+        raise XjtuCalendarError(
+            "发布恢复快照的 token 与当前订阅不一致，拒绝据此恢复",
+            hint="多半是 rotate 之后的残留快照。确认 state 与远端分支后重跑一次 subscribe push。",
+        )
+
+    remote = subscribe.fetch_published_bytes(cfg, state, semester)
+    remote_sha = hashlib.sha256(remote).hexdigest()
+    if remote_sha != journal.ics_sha256:
+        raise XjtuCalendarError(
+            f"线上那版与恢复快照不符（远端 {remote_sha[:12]}… ≠ 快照 {journal.ics_sha256[:12]}…），拒绝恢复",
+            hint="快照没对上，说明中断点不在本地：先 subscribe status 核对，"
+            "确认可接受全新订阅时删除状态文件后重新 subscribe init。",
+        )
+
+    restored = _restore_from_journal(cfg, journal, semester)
+    marker = ""
+    if journal.uid_recipe is not None and state.uid_recipe != journal.uid_recipe:
+        subscribe.save_state(cfg, replace(state, uid_recipe=journal.uid_recipe))
+        marker = "、迁移标记"
+        restored.append("迁移标记")
+    if not restored:
+        print("本地已与线上一致，无需恢复。")
+        return 0
+    print(f"已按发布恢复快照对齐：{'、'.join(restored)}（远端字节校验通过）")
+    logger.info("订阅本地状态已恢复%s；未产生任何新的发布。", marker or "。")
+    return 0
+
+
 def _subscribe_push(
     args: argparse.Namespace, cfg: Settings, state: subscribe.SubscriptionState, semester: str
 ) -> int:
@@ -1455,6 +1550,33 @@ def _subscribe_push(
         )
     # 迁移判据只有一处：状态文件里 `uid_recipe` 是否缺失（CD7）。留底文本是候选的唯一
     # 来源（v1 配方代码已删除，CD15 ⇒ 不重算旧 UID，只从上次发布的产物里读）。
+    #
+    # 构建之前先查"本地四样是否与最后一次已发布版本相容"。发布路径要同时推进远端 ICS、
+    # 本地留底、两份台账与迁移标记，它们**不在一个原子域里**；死在中途的话：
+    # ①留底落后而数据又变了 ⇒ 这里拿过期留底当 SEQUENCE 基线，产出的版本号从起点就错；
+    # ②留底新、课程台账旧 ⇒ `cancel_candidates` 的差集是「台账 − live」，那条 UID 根本不
+    # 成候选，退课**静默漏发**。两条都是 2026-10-14 外部审查补验、已用回归测试钉住的。
+    compat = subscribe.check_local_compatibility(cfg, state, semester)
+    if not compat.ok and not getattr(args, "allow_unverified_baseline", False):
+        raise PublishStateIncompatible(
+            f"本地发布状态不相容（{compat.detail}）",
+            hint=(
+                "先跑 xjtu-calendar subscribe repair --semester "
+                f"{semester}：它按发布恢复快照核对线上那一版，再把留底/台账/迁移标记对齐。"
+                + (
+                    ""
+                    if compat.reason != "no_journal"
+                    else " 本项依据是 0.8.5 才引入的，旧版本升级上来的状态一律报这一项；"
+                    "确认远端就是状态里记的那一版后，可带 --allow-unverified-baseline 继续。"
+                )
+            ),
+        )
+    if not compat.ok:
+        logger.warning(
+            "本地发布状态不相容（%s），已按 --allow-unverified-baseline 强行继续："
+            "本次的 SEQUENCE 基线与撤销判定可能建立在过期留底上。",
+            compat.detail,
+        )
     migrating = subscribe.needs_uid_migration(state)
     baseline_text = last_local.read_text(encoding="utf-8") if last_local.is_file() else None
     result_ics = build_ics_for_semester(
@@ -1471,24 +1593,39 @@ def _subscribe_push(
     # 把几百条撤销交给一个永不回源的客户端比不迁移更糟。
     if result_ics.migration_summary:
         _print_migration_notice(result_ics.migration_summary)
-    res = subscribe.publish(cfg, state, result_ics.ics)
+    # 推送之前先落「发布恢复快照」：它是"最后一次真正发出去的版本"的完整依据
+    # （ICS 字节 + 两份台账的目标字节 + 迁移标记）。写不进去就不该开始推送——
+    # 宁可远端停在上一版，也不要发一次**事后无法恢复**的发布。
+    # 台账为 ``None`` 时快照记成"这次别动"（`--no-exams` 那次绝不该清空考试台账）。
+    journal_file = subscribe.journal_path(cfg, semester)
+    previous_journal = journal_file.read_text(encoding="utf-8") if journal_file.is_file() else None
+    subscribe.write_journal(
+        cfg,
+        semester=semester,
+        token=state.token,
+        branch=state.branch,
+        ics_text=result_ics.ics,
+        course_ledger_text=result_ics.course_ledger_text,
+        exam_ledger_text=result_ics.exam_ledger_text,
+        uid_recipe=UID_RECIPE_VERSION if migrating else state.uid_recipe,
+    )
+    try:
+        res = subscribe.publish(cfg, state, result_ics.ics)
+    except Exception:
+        # 远端没收下 ⇒ 快照必须退回上一版。它只能代表"真正发出去过"的字节：留着这一次
+        # 没发出去的内容，下次 push 会被自己的相容性检查拦住，而 `repair` 又会拒绝恢复
+        # （线上字节 ≠ 快照）——一次普通的推送失败就此变成只能手工化解的死局。
+        if previous_journal is None:
+            journal_file.unlink(missing_ok=True)
+        else:
+            atomic_write_text(journal_file, previous_journal, private=True)
+        raise
     if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
         print("无变化，跳过推送。")
-        # 自愈：`publish()` 在 push 成功后先写 `last_push`，本函数才写留底 ——
-        # 死在这两句中间的话，远端与状态都是新版、留底还是旧版，而留底是下次
-        # 构建的 SEQUENCE 与撤销判定基线。旧代码在这里直接 return，那份落后
-        # **永远不会被修**，下一次真实变更会把整学期误读成"凭空消失"。
-        # 内容一致才走到这里，所以补写就是**远端那份字节**：不重新构建、
-        # 不动 SEQUENCE、不产生新发布，只是把本地对齐回去。
-        local_matches = last_local.is_file() and last_local.read_bytes() == result_ics.ics.encode(
-            "utf-8"
-        )
-        if not local_matches:
-            last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
-            logger.warning(
-                "本地留底与最后一次已发布的字节不一致（上次发布在写留底前中断过），"
-                "本次已用远端那份原样补回，未产生新的发布。"
-            )
+        # 这里**不**再顺手补写本地文件（v0.8.4 那版自愈的形态）：构建之前的相容性检查
+        # 已经保证"本地四样 == 恢复快照 == 线上那一版"，走到 NO_CHANGE 时没有东西可补；
+        # 真落后就是检查那一头拒绝（退出码 7）并让用户跑 `subscribe repair`。
+        # 判据只留一处，D11「NO_CHANGE 不回写台账」也因此继续成立。
         # 幂等跳过也要给链接：用户可能第一次没记下，这一支是他唯一能看到入口的地方。
         _print_webcal_hint(state)
         return 0
@@ -1497,7 +1634,8 @@ def _subscribe_push(
     last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
     # 台账与留底**同一时刻**更新（spec D11）：publish 失败或 NO_CHANGE 都在上面
     # 提前离开，走不到这里；`None`（门槛没过 / --no-exams）不创建也不改写文件。
-    # 写失败只 warning（D24①），不改 push 的退出码。
+    # 写失败只 warning（D24①），不改 push 的退出码——但**不再是无人发现的失配**：
+    # 快照记着这次应当落什么，下次 push 的相容性检查会拦住、`subscribe repair` 能补回。
     if result_ics.exam_ledger_text is not None:
         _write_exam_ledger(cfg, semester, result_ics.exam_ledger_text)
     if result_ics.course_ledger_text is not None:

@@ -457,14 +457,17 @@ def test_repair_is_idempotent_and_never_touches_the_remote(
     assert _git("rev-parse", "cal", cwd=origin) == tip_before, "repair 不许动远端"
 
 
-def test_push_without_any_journal_fails_closed_but_can_be_waived(
+def test_an_upgrade_without_a_snapshot_glues_itself_back_on(
     env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """**验收 5（旧版本兼容）**：有发布记录却没有恢复快照 ⇒ 拒绝，但给显式出口。
+    """**验收 5（旧版本兼容）**：没有快照，但留底字节 == 最后一次发布记录 ⇒ **放行**。
 
-    0.8.5 之前发布过的状态一律落在这一格。判据不许"假装能从 ICS 反推台账"
-    （产物里课程与考试事件长得一样，CD8），所以默认 fail-closed；用户确认远端
-    就是状态里记的那一版后，可以带 `--allow-unverified-baseline` 继续。
+    真实升级现场：2026-10-14 拿用户的 home 原样拷贝后跑判定，读数就是
+    `reason=no_journal` —— 每个 0.8.5 之前的老用户第一次 push 都会被自己的新保险丝
+    拦住（与 v0.8 那次"门 2 误拦老用户几周"同型）。所以退回一条**不依赖快照**的弱判据：
+    `last_push` 只在 push 成功后写，`sha256(留底) == last_push.content_sha256` 就证明
+    留底正是线上那一版。此时两份台账与迁移标记**无法**证明（没有依据可查），所以必须
+    警告；而推送前本来就会落新快照，于是这一次同时把依据补回来。
     """
     home, origin = env
     assert _init(origin) == 0
@@ -473,17 +476,56 @@ def test_push_without_any_journal_fails_closed_but_can_be_waived(
     capsys.readouterr()
     (home / "subscribe" / f"publish-journal-{SEMESTER}.json").unlink()
 
+    _rewrite_rows(home, _rows_with_b())  # 数据也变了 ⇒ 一定走真实推送分支
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    err = capsys.readouterr().err
+    assert "台账" in err and "恢复快照" in err, "放行必须说明台账未校验、依据已补回"
+    assert subscribe.journal_path(Settings(home=home), SEMESTER).is_file(), "依据当场补落"
+
+    # 依据已在 ⇒ 回到强判据：留底再落后就会被拦
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+
+
+def test_no_snapshot_and_a_lagging_baseline_is_still_refused(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """弱判据的边界：留底**也**对不上最后一次发布记录 ⇒ 仍然拒绝，且给得出人工出口。
+
+    这一格与上一格的差别只在"有没有依据可查"之外，还"留底自己就不对"——那正是场景 1
+    要拦的形态，弱判据不许把它放过去。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    capsys.readouterr()
+    _crash_between_state_and_baseline(home, origin, capsys)  # 留底落后
+    (home / "subscribe" / f"publish-journal-{SEMESTER}.json").unlink()  # 又没有快照
+
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 7
     err = capsys.readouterr().err
-    assert "恢复快照" in err and "--allow-unverified-baseline" in err
+    assert "留底" in err and "--allow-unverified-baseline" in err
 
     assert main(["subscribe", "push", "--semester", SEMESTER, "--allow-unverified-baseline"]) == 0
     assert "强行继续" in capsys.readouterr().err
-    # 放行一次就把快照重新落下来：这是**一次性**出口，不是长期降级开关。
-    assert subscribe.journal_path(Settings(home=home), SEMESTER).is_file()
+
+
+def test_a_snapshot_from_another_token_is_refused(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """rotate 之后残留的旧快照**不能**当依据——它描述的是另一份订阅的字节。"""
+    home, origin = env
+    assert _init(origin) == 0
     capsys.readouterr()
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     capsys.readouterr()
+
+    path = subscribe.journal_path(Settings(home=home), SEMESTER)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["token"] = "0" * 32
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 7
+    assert "token" in capsys.readouterr().err
 
 
 def test_a_failed_publish_winds_the_journal_back(

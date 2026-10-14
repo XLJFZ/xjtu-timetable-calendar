@@ -230,8 +230,9 @@ def build_parser() -> argparse.ArgumentParser:
     push_p.add_argument(
         "--allow-unverified-baseline",
         action="store_true",
-        help="本地没有『最后一次发布』的恢复依据时仍继续（默认拒绝并退出码 7——"
-        "旧版本升级上来的状态会有这一项；先跑 subscribe repair，确认远端就是那版再带此旗标）",
+        help="本地既没有『最后一次发布』的恢复依据、留底与发布记录也对不上时仍继续"
+        "（默认拒绝并退出码 7；先跑 subscribe repair。升级过来的老状态只要留底与发布记录"
+        "逐字节相符就会自动放行，不需要这个旗标）",
     )
     rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
     rot_p.add_argument("--semester")
@@ -1565,9 +1566,10 @@ def _subscribe_push(
                 f"{semester}：它按发布恢复快照核对线上那一版，再把留底/台账/迁移标记对齐。"
                 + (
                     ""
-                    if compat.reason != "no_journal"
-                    else " 本项依据是 0.8.5 才引入的，旧版本升级上来的状态一律报这一项；"
-                    "确认远端就是状态里记的那一版后，可带 --allow-unverified-baseline 继续。"
+                    if compat.reason not in {"no_journal", "journal_token"}
+                    else " 这一格**没有可用的恢复依据**（快照缺失，或快照属于别的 token），"
+                    "repair 同样无能为力：确认远端就是状态里记的那一版后，"
+                    "带 --allow-unverified-baseline 继续，本次会把恢复依据重新落下。"
                 )
             ),
         )
@@ -1576,6 +1578,13 @@ def _subscribe_push(
             "本地发布状态不相容（%s），已按 --allow-unverified-baseline 强行继续："
             "本次的 SEQUENCE 基线与撤销判定可能建立在过期留底上。",
             compat.detail,
+        )
+    elif compat.reason == "no_snapshot_verified":
+        # 升级路径（0.8.5 之前发布过的状态）：留底与发布记录逐字节相符 ⇒ 放行，
+        # 但必须说清"台账与迁移标记这次没能校验"，别让人以为四样都查过了。
+        logger.warning(
+            "本地没有发布恢复快照，按弱判据放行：留底字节与最后一次发布记录相符，"
+            "但两份台账与迁移标记未能校验；本次会在推送前把恢复依据补落。"
         )
     migrating = subscribe.needs_uid_migration(state)
     baseline_text = last_local.read_text(encoding="utf-8") if last_local.is_file() else None

@@ -496,7 +496,8 @@ class CompatibilityCheck:
     """构建前的相容性判定结果。"""
 
     ok: bool
-    #: `consistent` / `no_journal` / `baseline` / `course_ledger` / `exam_ledger` / `uid_recipe`
+    #: `consistent` / `no_snapshot_verified`（弱判据放行）/ `no_journal` / `journal_token`
+    #: / `baseline` / `course_ledger` / `exam_ledger` / `uid_recipe`
     reason: str
     detail: str
 
@@ -517,14 +518,34 @@ def check_local_compatibility(
     """
     if state.last_push is None:
         return CompatibilityCheck(True, "consistent", "尚未发布过，没有需要相容的旧版本")
+    baseline = subscribe_dir(cfg) / f"last-{semester}.ics"
     journal = load_journal(cfg, semester)
-    if journal is None or journal.token != state.last_push.token:
+    if journal is not None and journal.token != state.last_push.token:
+        return CompatibilityCheck(
+            False,
+            "journal_token",
+            f"恢复快照属于另一个 token（{journal.token[:8]}…），与当前订阅记录不符，不能拿它当依据",
+        )
+    if journal is None:
+        # 没有依据可查（0.8.5 之前发布过的状态、或快照被删）。退回一条**不依赖快照**的
+        # 弱判据：`last_push` 只在 push 成功后写，所以留底字节 sha 与它相符就说明留底
+        # 正是线上那一版。不放行的话，每个老用户升级后第一次 push 都会被自己的保险丝
+        # 拦住（与 v0.8 那次"门 2 误拦老用户几周"同型，2026-10-14 拿真实 home 实测过）。
+        # 弱判据**证明不了**两份台账与迁移标记，只能交给调用方警告；本次推送前会重新
+        # 落快照，依据就此补回。
+        if _sha_of(baseline) == state.last_push.content_sha256:
+            return CompatibilityCheck(
+                True,
+                "no_snapshot_verified",
+                "本地没有发布恢复快照，但留底字节与最后一次发布记录逐字节相符；"
+                "两份台账与迁移标记未能校验",
+            )
         return CompatibilityCheck(
             False,
             "no_journal",
-            "已有一次发布记录，但本地没有对应的发布恢复快照（可能出自尚未引入该机制的旧版本）",
+            f"已有一次发布记录，但本地既没有恢复快照，留底也与最后一次发布的字节不一致"
+            f"（{baseline.name}）",
         )
-    baseline = subscribe_dir(cfg) / f"last-{semester}.ics"
     if _sha_of(baseline) != journal.ics_sha256:
         return CompatibilityCheck(
             False,

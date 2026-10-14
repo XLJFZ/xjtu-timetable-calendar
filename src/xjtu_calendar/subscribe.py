@@ -298,6 +298,29 @@ def _enter_orphan(work: Path) -> None:
     _must_git(work, "checkout", "-q", "--orphan", _ORPHAN_BRANCH)
 
 
+def _stage_only(work: Path, filename: str) -> None:
+    """索引里**只**放这一个文件，并把索引核对一遍（P2-03，隐私护栏）。
+
+    旧实现是不带 pathspec 的 `git add -A`：`work-<学期>/` 里任何残留（用户手工放进去的
+    笔记、上次中断留下的临时文件、别的工具写的日志）都会被一并提交、强推进那个
+    **公开**分支。订阅分支的读者是"知道 URL 的人"，多发布一个文件就是本地文件外泄。
+
+    做法：先把继承自上一分支的索引清空，再只加这一个文件。rotate 需要的"旧 token
+    文件从 tip 消失"照样成立，而且比原来更彻底——旧注释里"删除也必须入索引"的麻烦，
+    根源就是那份继承来的索引，清空它等于一次性解决。
+    """
+    # 空索引时 `git rm --cached` 会以「pathspec 不匹配」报错 ⇒ 用不抛错的 _git
+    _git(work, "rm", "-r", "--cached", "-q", "--", ".")
+    _must_git(work, "add", "--", filename)
+    staged = _must_git(work, "ls-files", "--cached").split()
+    if staged != [filename]:
+        extra = "、".join(sorted(set(staged) - {filename})) or "（索引里连该发的文件都没有）"
+        raise SubscribeGuardError(
+            f"发布索引除了 {filename} 还出现了：{extra}。拒绝把多余的内容推上公开分支。",
+            hint=f"检查发布工作目录 {work}：除了 <token>.ics 不该有别的成员，删掉多余文件后重试。",
+        )
+
+
 def publish(cfg: Settings, state: SubscriptionState, ics_text: str) -> PublishResult:
     """推送远端，并在失败时把"远端到底动没动"标在异常上。
 
@@ -378,9 +401,7 @@ def _publish_inner(
     for stale in work.glob("*.ics"):
         stale.unlink()
     (work / f"{state.token}.ics").write_bytes(data)
-    # 不带 pathspec 的 add -A：孤儿分支的索引仍带着旧 token 文件，
-    # 必须让删除也入索引，否则 tip 会出现两个 .ics（rotate 语义失效）。
-    _must_git(work, "add", "-A")
+    _stage_only(work, f"{state.token}.ics")
     now = datetime.now(UTC)
     _must_git(work, "commit", "-q", "-m", f"publish {state.semester} {now:%Y-%m-%dT%H:%MZ}")
     push_started[0] = True
@@ -415,7 +436,9 @@ def _publish_inner(
 #    死在中间，留底会比凭据新，`repair` 拿远端一比对就发现凭据落后、拒绝恢复。
 # 3. 抛异常**不等于**远端没推进（`save_state` 排在 `git push` 之后，push 返回非零也可能
 #    远端已更新）。只有没被标 `REMOTE_UNCERTAIN_ATTR` 的失败才允许丢弃准备稿。
-# 4. 落在发布工作目录**之外**（`work-<学期>/` 里 `git add -A` 会吞掉任何文件）。
+# 4. 落在发布工作目录**之外**（`work-<学期>/` 里的任何文件都可能被发布出去：
+#    2026-10-15 起 staging 改成 `_stage_only`，索引里只放那一个 `<token>.ics`，
+#    但"别往那儿放东西"仍然是对的——公开分支多一个文件就是本地文件外泄）。
 # 5. 台账的 `keep` 语义要**同时**记两件事：这次别动 + 它当时的字节指纹。
 #    记成"写空文件"等于把整份考试账本清掉；只记"别动"则那份台账事后被删/被改无人发现。
 

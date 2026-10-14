@@ -514,3 +514,68 @@ def test_webcal_hint_absent_for_non_https_and_before_init(
     captured = capsys.readouterr()
     assert not _webcal_lines(captured.out)
     assert "尚未登记订阅" in captured.err and "Traceback" not in captured.err
+
+
+def test_publish_never_carries_a_stray_file_from_the_work_dir(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**P2-03（隐私）**：发布工作目录里的残留文件**绝不**能上公开分支。
+
+    旧实现用不带 pathspec 的 `git add -A`：`work-<学期>/` 里只要有任何不是 `.ics`
+    的东西（手工放进去的笔记、上一次中断留下的临时文件、别的工具写的日志），
+    都会被一并提交并强推上那个**公开**分支——订阅分支的读者是"知道 URL 的人"，
+    这等于把本地文件发布出去。远端 tip 的护栏只查"进来之前长什么样"，管不了
+    "这一次要发出去的东西长什么样"。
+
+    期望：只发布 `<token>.ics` 这一个文件，多余的东西既不进 tip 也不必让用户打扫。
+    """
+    home, origin = env
+    cfg = Settings(home=home)
+    assert _init(origin) == 0
+    capsys.readouterr()
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    token = subscribe.load_state(cfg, SEMESTER).token
+
+    work = subscribe.work_dir(cfg, SEMESTER)
+    (work / "私人笔记.txt").write_text("绝不该出现在公开分支上\n", encoding="utf-8")
+    (work / "nested").mkdir(exist_ok=True)
+    (work / "nested" / "scratch.log").write_text("中断残留\n", encoding="utf-8")
+
+    # 改一点数据，逼它走真正的发布分支（不是 NO_CHANGE）
+    cfg.raw_timetable_path(SEMESTER).write_text(
+        json.dumps({"kbList": [payload_row(JASMC="B-2002")]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+
+    tip = _git("ls-tree", "-r", "--name-only", "cal", cwd=origin).split()
+    assert tip == [f"{token}.ics"], "发布分支上只许有那一个 ICS：多一个文件就是隐私外泄"
+    blob = _git_bytes(f"cal:{token}.ics", origin)
+    assert b"B-2002" in blob, "护栏不是靠少发内容实现的：该发的照发"
+    assert (home / "subscribe" / f"last-{SEMESTER}.ics").read_bytes() == blob
+
+
+def test_publish_still_replaces_the_old_token_file(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """P2-03 的反面：收紧 staging **不许**把 rotate 语义弄坏。
+
+    旧注释解释过 `add -A` 的存在理由：孤儿分支的索引带着上一份 token 文件，
+    删除不入索引 ⇒ tip 出现两个 `.ics`，旧 URL 还能读到课表。现在改成
+    「清空索引 + 只加这一个文件」，结果必须仍是**恰好一个文件**。
+    """
+    home, origin = env
+    cfg = Settings(home=home)
+    assert _init(origin) == 0
+    capsys.readouterr()
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    new_token = subscribe.load_state(cfg, SEMESTER).token
+
+    tip = _git("ls-tree", "-r", "--name-only", "cal", cwd=origin).split()
+    assert tip == [f"{new_token}.ics"], "rotate 之后 tip 必须只剩新 token 那一份"

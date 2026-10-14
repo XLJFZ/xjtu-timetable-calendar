@@ -104,6 +104,7 @@ class SessionInfo:
         cookie_count: int,
         saved_at: datetime | None,
         jwapp_cookie_count: int = 0,
+        weu_present: bool = False,
     ) -> None:
         self.has_storage_state = has_storage_state
         self.has_profile = has_profile
@@ -113,6 +114,12 @@ class SessionInfo:
         #: 0 意味着这份会话只走到了 CAS / 门户，**没在登录窗口里点进课表**，
         #: 教务侧接口会一律回 403（2026-10-14 实测，见 doctor 的「会话」判据）。
         self.jwapp_cookie_count = jwapp_cookie_count
+        #: 教务侧那份会话票据 ``_WEU`` 在不在。**"有条数"与"票据在"不是一回事**：
+        #: 2026-10-14 的消融实验（``_notes/probe-403/``）证明只去掉 ``_WEU``，三个 ``.do``
+        #: 接口立刻回金智的异常页（403）；而门户 ``/`` 与教务 ``/jwapp`` 那两份同名
+        #: ``JSESSIONID`` 少掉任意一份都仍然 200。所以承重的判据是这一条，
+        #: 条数只是它的前置——**别把 403 归因到同名 cookie 的取舍上**，那条已被实测否定。
+        self.weu_present = weu_present
 
     @property
     def usable(self) -> bool:
@@ -130,7 +137,10 @@ class SessionInfo:
         if self.has_storage_state:
             parts.append(f"storage_state 含 {self.cookie_count} 个 cookie")
             if self.has_app_session:
-                parts.append(f"教务侧 cookie {self.jwapp_cookie_count} 个")
+                parts.append(
+                    f"教务侧 cookie {self.jwapp_cookie_count} 个"
+                    + f"（{'含' if self.weu_present else '缺'} _WEU 票据）"
+                )
         if self.has_profile:
             parts.append("浏览器 profile 已存在")
         if self.saved_at:
@@ -150,6 +160,7 @@ def inspect_session(cfg: Settings | None = None) -> SessionInfo:
 
     cookie_count = 0
     jwapp_cookie_count = 0
+    weu_present = False
     saved_at: datetime | None = None
 
     if state_path.is_file():
@@ -157,11 +168,14 @@ def inspect_session(cfg: Settings | None = None) -> SessionInfo:
             payload = json.loads(state_path.read_text(encoding="utf-8"))
             cookies = payload.get("cookies") or []
             cookie_count = len(cookies)
-            jwapp_cookie_count = sum(
-                1
+            app_cookies = [
+                item
                 for item in cookies
                 if str(item.get("path") or "/").lstrip("/").lower().startswith("jwapp")
-            )
+            ]
+            jwapp_cookie_count = len(app_cookies)
+            #: 承重的会话票据（消融实验见 `SessionInfo.weu_present` 的注释）
+            weu_present = any(str(item.get("name")) == "_WEU" for item in app_cookies)
             raw_time = payload.get("_saved_at")
             if raw_time:
                 saved_at = datetime.fromisoformat(raw_time)
@@ -169,6 +183,7 @@ def inspect_session(cfg: Settings | None = None) -> SessionInfo:
             logger.warning("会话文件无法解析，将视为未登录：%s", exc)
             cookie_count = 0
             jwapp_cookie_count = 0
+            weu_present = False
 
     return SessionInfo(
         has_storage_state=state_path.is_file() and cookie_count > 0,
@@ -176,6 +191,7 @@ def inspect_session(cfg: Settings | None = None) -> SessionInfo:
         cookie_count=cookie_count,
         saved_at=saved_at,
         jwapp_cookie_count=jwapp_cookie_count,
+        weu_present=weu_present,
     )
 
 
@@ -325,6 +341,7 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
         )
 
     app_cookie_count = sum(1 for c in cookies if _is_app_scoped(c))
+    has_weu = any(_is_app_scoped(c) and str(c.get("name")) == "_WEU" for c in cookies)
     state = {
         "cookies": storage.get("cookies", []),
         "origins": storage.get("origins", []),
@@ -339,12 +356,26 @@ def ensure_login(cfg: Settings | None = None, *, force: bool = False) -> Session
         private=True,
     )
 
-    logger.info("登录会话已保存（%d 个 cookie，其中教务侧 %d 个）", len(cookies), app_cookie_count)
+    logger.info(
+        "登录会话已保存（%d 个 cookie，其中教务侧 %d 个，%s承重的 `_WEU` 票据）",
+        len(cookies),
+        app_cookie_count,
+        "含" if has_weu else "缺",
+    )
     if not app_cookie_count:
         logger.warning(
             "这份会话取不到课表：教务侧（/jwapp）的 cookie 一条都没有，接口会一律返回"
             " 403 而不是 401。处置是重跑 login --force，在窗口里点「学生」并等课表渲染"
             "出来。仍然保存是因为门户/CAS 部分是好的，重登时能少跳一次登录页。"
+        )
+    elif not has_weu:
+        # 判据来自 2026-10-14 的消融实验：只去掉 `_WEU` 就 403；两份同名 JSESSIONID
+        # 少任一份都还是 200。所以这一格要说的是"票据没到"，不是"哪份 cookie 被留下了"。
+        logger.warning(
+            "教务侧有 %d 个 cookie，却没有承重的 `_WEU` 票据：接口很可能仍回 403。"
+            "重跑 login --force，在窗口里等到课表页真正渲染出来再按 Enter。"
+            "（不是同名 JSESSIONID 被覆盖——那条已被实测排除。）",
+            app_cookie_count,
         )
     return inspect_session(cfg)
 

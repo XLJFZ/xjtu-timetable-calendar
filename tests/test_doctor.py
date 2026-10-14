@@ -470,3 +470,44 @@ def test_doctor_uid_recipe_never_blocks_even_with_unreadable_ledger(
     got = by_name(run_checks(cfg, SEMESTER))["uid_recipe"]
     assert got.status == STATUS_WARN, "读不出台账降级为警告，不升级为阻塞项"
     assert doctor_exit_code(run_checks(cfg, SEMESTER)) == 0
+
+
+def test_session_that_has_app_cookies_but_no_weu_still_warns(tmp_path: Path) -> None:
+    """**`_WEU` 判据**：教务侧有 cookie 但承重的 `_WEU` 不在 ⇒ 警告，别说"会话通过"。
+
+    今天的判据是"`/jwapp` 作用域的条数 > 0"，而 2026-10-14 的消融实测给出的更 precise
+    的事实是：**只去掉 `_WEU`** 三个 ``.do`` 接口就立刻 403；两份同名 ``JSESSIONID``
+    少掉任意一份都还是 200。所以 ``THEME``/``EMAP_LANG`` 到了、``_WEU`` 没到这一格，
+    旧体检会给出绿灯，用户接着就在 `fetch` 上撞 403。
+    警告不阻塞（他手上那份课表快照还能导出），但必须说清去重登。
+    """
+    cfg = make_home(tmp_path)
+    cfg.session_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.session_dir / "storage_state.json").write_text(
+        json.dumps(
+            {
+                "cookies": [
+                    {
+                        "name": "JSESSIONID",
+                        "value": "a",
+                        "domain": "ehall.xjtu.edu.cn",
+                        "path": "/jwapp",
+                    },
+                    {
+                        "name": "THEME",
+                        "value": "t",
+                        "domain": "ehall.xjtu.edu.cn",
+                        "path": "/jwapp/",
+                    },
+                ],
+                "_saved_at": datetime.now(UTC).isoformat(),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    check = by_name(run_checks(cfg, SEMESTER))["session"]
+    assert check.status == STATUS_WARN, "缺承重 cookie 不许报成 OK"
+    assert "_WEU" in check.detail
+    assert "403" in check.detail

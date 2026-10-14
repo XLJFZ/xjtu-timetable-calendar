@@ -139,6 +139,19 @@ def _check_session(cfg: Settings) -> Check:
             "重跑 python -m xjtu_calendar login --force，在弹出的窗口里点「学生」"
             "并等到课表真的显示出来，再回终端按 Enter。",
         )
+    if info.has_app_session and not info.weu_present:
+        # 「有 /jwapp 的条数」与「承重的票据在不在」不是一回事：2026-10-14 的消融实验
+        # 只去掉 `_WEU`，三个 .do 接口立刻回金智异常页（403）；而两份同名 JSESSIONID
+        # 少掉任意一份都仍然 200 ⇒ 别把这一格归因到同名 cookie 的取舍上。
+        return Check(
+            "session",
+            STATUS_WARN,
+            f"教务侧有 {info.jwapp_cookie_count} 个 cookie，却没有承重的 `_WEU` 票据："
+            "fetch 仍会返回 403（实测去掉这一条接口立刻回金智的异常页，"
+            "而同名 JSESSIONID 少任一份都还能取到数，所以问题不在同名 cookie 的取舍）。"
+            "处置：python -m xjtu_calendar login --force，在窗口里等到课表页真正渲染出来"
+            "再按 Enter。",
+        )
     age_days = max(0, (datetime.now(UTC) - info.saved_at).days)
     if age_days >= SESSION_AGE_WARN_DAYS:
         return Check(

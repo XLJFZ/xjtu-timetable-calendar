@@ -152,3 +152,43 @@ def test_inspect_session_counts_the_jwapp_scoped_cookies(
     info = inspect_session(Settings.load())
     assert info.jwapp_cookie_count == 2
     assert "教务侧 cookie 2 个" in info.describe()
+
+
+def test_inspect_session_names_the_load_bearing_weu_cookie(tmp_path: Path) -> None:
+    """**`_WEU` 判据**：教务侧有 cookie ≠ 那条承重的在里面。
+
+    2026-10-14 的消融实验（`_notes/probe-403/`）：从一份可用会话里**只去掉 `_WEU`**，
+    三个 ``.do`` 接口立刻回金智的异常页（403）；而门户 ``/`` 与教务 ``/jwapp`` 那两份
+    同名 ``JSESSIONID`` 少掉任意一份都仍然 200。所以"数一数 /jwapp 有几条"这条判据
+    有一个已知的空档：``THEME``/``EMAP_LANG`` 之类到了、``_WEU`` 却没到。
+    本用例钉的就是这个空档 —— **不**把结论重新挂回 JSESSIONID 的取舍上。
+    """
+    from xjtu_calendar.auth import inspect_session
+
+    session = tmp_path / "session"
+    session.mkdir(parents=True)
+    state = session / "storage_state.json"
+
+    def write(cookies: list[dict[str, str]]) -> None:
+        state.write_text(json.dumps({"cookies": cookies}, ensure_ascii=False), encoding="utf-8")
+
+    write(
+        [
+            {"name": "JSESSIONID", "value": "a", "domain": "ehall.xjtu.edu.cn", "path": "/jwapp"},
+            {"name": "THEME", "value": "t", "domain": "ehall.xjtu.edu.cn", "path": "/jwapp/"},
+        ]
+    )
+    info = inspect_session(Settings(home=tmp_path))
+    assert info.has_app_session, "判据不许收紧成「只有 _WEU 才算登录走完」——那是另一种误拦"
+    assert not info.weu_present, "教务侧有 cookie、却没有 _WEU，这一格今天看不见"
+    assert "_WEU" in info.describe()
+
+    write(
+        [
+            {"name": "JSESSIONID", "value": "a", "domain": "ehall.xjtu.edu.cn", "path": "/jwapp"},
+            {"name": "_WEU", "value": "w", "domain": "ehall.xjtu.edu.cn", "path": "/jwapp/"},
+        ]
+    )
+    info = inspect_session(Settings(home=tmp_path))
+    assert info.weu_present
+    assert "含 _WEU" in info.describe()

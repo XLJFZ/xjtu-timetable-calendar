@@ -578,12 +578,21 @@ def save_raw(payload: Any, cfg: Settings, semester_key: str, *, kind: str = "tim
 
     ``kind`` 决定落在课表还是考试路径；单代轮转语义两者一致。
     两个文件都含个人信息，**必须留在 .gitignore 排除目录内**，绝不可提交。
+
+    **写入顺序是这条函数的契约**（P2-04，2026-10-15）：先序列化，再把旧内容**复制**到
+    ``.prev``，最后才原子覆盖当前文件。旧实现是 ``current.replace(prev)`` 之后再写新文件
+    ——那是 move：新内容写失败（磁盘满、权限、杀软占住）时，当前路径上什么都没有了，
+    ``load_raw`` 报「本地没有原始缓存」、``diff`` 的比较基线一起消失，而那份好数据其实只是
+    躺在了另一个文件名上。现在的顺序下任何一步失败，当前文件要么是旧内容、要么还是旧内容，
+    绝不会缺失。
     """
     cfg.ensure_dirs()
     path, previous = _raw_paths(cfg, semester_key, kind)
+    # 序列化放在最前面：它炸掉时一个字节都还没动（集合之类的脏 payload 不该留下半成品状态）
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     if path.is_file():
-        path.replace(previous)  # 同目录 os.replace，原子
-    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n", private=True)
+        atomic_write_text(previous, path.read_text(encoding="utf-8"), private=True)
+    atomic_write_text(path, text, private=True)
     label = "考试" if kind == "exams" else "课表"
     logger.debug("原始%s已缓存到 %s（含个人信息，请勿提交）", label, path)
     if previous.is_file():

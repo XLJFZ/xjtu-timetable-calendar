@@ -411,3 +411,49 @@ def test_httpx_missing_hint_names_the_install_extra(
     with pytest.raises(TimetableFetchError) as exc:
         fetch_via_http(endpoint(), cfg=cfg)
     assert "[http]" in exc.value.hint
+
+
+def test_a_failed_new_write_keeps_the_usable_current_snapshot(
+    cfg: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**P2-04**：写新快照失败时，原本可用那份必须还在**原位**，而不是只剩 `.prev`。
+
+    旧顺序是 `current → prev` 的 move，然后才写新文件；第二步炸掉（磁盘满、权限、
+    杀软占住）之后 `load_raw` 直接报「本地没有原始缓存」，`diff` 的比较基线同时消失，
+    用户手上明明还有一份好数据，只是躺在另一个文件名上。
+    """
+    from xjtu_calendar import fetcher as fetcher_module
+
+    save_raw({"v": 1}, cfg, "2026-fall")
+    real_write = fetcher_module.atomic_write_text
+
+    def fuse(path: Path, text: str, **kwargs: object) -> None:
+        if '"v": 2' in text:
+            raise OSError("模拟：写新快照时磁盘炸了")
+        real_write(path, text, **kwargs)
+
+    monkeypatch.setattr(fetcher_module, "atomic_write_text", fuse)
+    with pytest.raises(OSError):
+        save_raw({"v": 2}, cfg, "2026-fall")
+    monkeypatch.setattr(fetcher_module, "atomic_write_text", real_write)
+
+    assert load_raw(cfg, "2026-fall") == {"v": 1}, "新的一份没写进去 ⇒ 当前快照必须还是旧的"
+    assert json.loads(cfg.raw_timetable_prev_path("2026-fall").read_text(encoding="utf-8")) == {
+        "v": 1
+    }
+
+
+def test_unserializable_payload_leaves_both_snapshots_untouched(cfg: Settings) -> None:
+    """**P2-04 的另一半**：连序列化都失败时，一个字节都不该动（含不造 `.prev`）。
+
+    序列化放在最前面，所以这条失败形态根本不碰文件系统；旧顺序先 move 再 dumps，
+    一个不可序列化的 payload 就足以把当前快照搬走。
+    """
+    save_raw({"v": 1}, cfg, "2026-fall")
+    previous = cfg.raw_timetable_prev_path("2026-fall")
+
+    with pytest.raises(TypeError):
+        save_raw({"不可序列化", "的集合"}, cfg, "2026-fall")
+
+    assert load_raw(cfg, "2026-fall") == {"v": 1}
+    assert not previous.exists(), "没写成功就不该留下轮转过的痕迹"

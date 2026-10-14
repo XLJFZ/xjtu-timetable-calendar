@@ -239,12 +239,18 @@ def test_user_facing_text_never_points_at_repo_only_examples_dir() -> None:
 
 
 def test_readme_actually_carries_the_two_templates() -> None:
-    """上一条把用户引向 README，那 README 就必须真的内联着可抄的模板，
-    而不是也叫人再去别处找文件。
+    """上一条把用户引向 README，那 README 就必须真的能一步到可抄的模板。
+
+    2026-10-14 README 瘦身：模板本体搬到了
+    ``docs/user-guide/config-templates.md``（README 保留同名小节作入口）。
+    本用例的原意是**不许出现"叫用户去别处找文件"的断链**，所以改成两级检查：
+    ① README 里那个小节还在、且明确指向该文档；② 那份文档里两份模板真的内联着。
     """
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "## 必须由你配置的内容" in readme
-    assert "### 1. 教学日历（校历）" in readme
-    assert "### 2. 作息表" in readme
-    assert "first_week_monday" in readme, "校历模板没内联"
-    assert "xjtu-summer-autumn" in readme, "作息表模板没内联"
+    templates = readme + (REPO_ROOT / "docs" / "user-guide" / "config-templates.md").read_text(
+        encoding="utf-8"
+    )
+    assert "config-templates.md" in readme, "README 的小节没了指路，用户按 CLI 提示找不到模板"
+    assert "first_week_monday" in templates, "校历模板没内联"
+    assert "xjtu-summer-autumn" in templates, "作息表模板没内联"

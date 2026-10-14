@@ -85,8 +85,9 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
   **不带 `--apply` 时它只预览、不写任何文件**（它会自己打印「以上为解析结果预览
   （未写入任何文件）」），照抄不带 `--apply` 的写法永远拿不到本步的证据；
   `--apply` 还必须带 `--semester`（生效区间的覆盖范围来自该学期校历）。
-  抓不到就让用户按 README「必须由你配置的内容 → 2. 作息表」小节的模板手工填写——
-  那里内联着可直接抄的完整 JSON；仓库根的 `examples/` 只是它的权威拷贝，
+  抓不到就让用户按「必须由你配置的内容 → 2. 作息表」的模板手工填写
+  （README 留同名小节作入口，模板内联在 `docs/user-guide/config-templates.md`）——
+  那里有可直接抄的完整 JSON；仓库根的 `examples/` 只是它的权威拷贝，
   **`pip install` 出来的环境里没有那个目录**，别把它当成本地路径报给用户。
 - 证据：`doctor` 的「作息表」一项为通过。
 - 注意夏秋季 / 冬春季两套钟点会在学期中间切换，这是本校的既有事实，不是异常。
@@ -123,8 +124,8 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 - iOS / macOS 用户可以**试** init / push / rotate / status 四处打印的那条 `webcal://` 链接
   （它只是把同一行 `https://` URL 换个 scheme）。「点开就弹订阅确认」**没有在本项目真机验证过**，
   只能说「通常」，失败就回手动路径：iOS「设置 → 日历 → 账户 → 添加账户 → 其他 →
-  添加已订阅的日历」、macOS 日历 App「文件 → 新建订阅日历」（README「iOS / macOS：
-  `webcal://` 订阅链接」有完整版）。rotate 之后要用**新** token 的那条重订。
+  添加已订阅的日历」、macOS 日历 App「文件 → 新建订阅日历」（「iOS / macOS：`webcal://` 订阅链接」
+  一节有完整版，在 `docs/user-guide/subscription.md`）。rotate 之后要用**新** token 的那条重订。
 - **这一条不改变发布物形态**：`webcal://` 是 URL scheme 而不是文件，发布分支的 tip
   仍然只有**一个** `<token>.ics`。**不要**因为看到 webcal 就去多发布一个 `<token>.webcal`
   文件——那会撞 `subscribe` 的 tree 护栏（根目录恰好一个 `*.ics`）与 rotate 只清 `*.ics`

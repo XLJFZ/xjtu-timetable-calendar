@@ -33,6 +33,7 @@ from .fileutil import atomic_write_text
 from .logging_setup import get_logger
 
 __all__ = [
+    "BYPASSABLE_INCOMPATIBILITY_REASONS",
     "JOURNAL_ABSENT",
     "JOURNAL_INVALID",
     "JOURNAL_VALID",
@@ -49,8 +50,9 @@ __all__ = [
     "check_local_compatibility",
     "derive_url_base",
     "discard_pending",
-    "fetch_published_bytes",
+    "fetch_published_file",
     "has_unpublished_changes",
+    "has_unresolved_pending",
     "journal_path",
     "load_state",
     "needs_uid_migration",
@@ -441,6 +443,8 @@ def _publish_inner(
 #    但"别往那儿放东西"仍然是对的——公开分支多一个文件就是本地文件外泄）。
 # 5. 台账的 `keep` 语义要**同时**记两件事：这次别动 + 它当时的字节指纹。
 #    记成"写空文件"等于把整份考试账本清掉；只记"别动"则那份台账事后被删/被改无人发现。
+#    指纹为 `None` 记录的是"当时这份文件不存在"，于是"事后凭空冒出来一份"同样会被发现
+#    （2026-10-15 审阅 P1-04）——keep 核对的是内容**与存在状态**两件事。
 
 #: 台账在快照里的"这次别动"哨兵。
 LEDGER_KEEP = "keep"
@@ -477,6 +481,8 @@ class PublishJournal:
     exam_ledger_b64: str | None = None
     #: keep 语义的另一半：那次发布**不该动的这份台账**当时的字节指纹。
     #: 相容性检查据此发现"保留下来的台账事后被删/被改"——不检查它 ≠ 它可以随便变。
+    #: ``None`` 也是有意义的读数：那份文件**当时不存在**（P1-04），于是后来出现的一份
+    #: 同样算状态改变，而不是"没有指纹 ⇒ 免检"。
     course_ledger_sha256: str | None = None
     exam_ledger_sha256: str | None = None
     uid_recipe: int | None = None
@@ -547,6 +553,59 @@ def _b64_encode(text: str) -> str:
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
 
+def _b64_decode_strict(raw: str) -> str | None:
+    """严格解码：非法字符、填充错误、非 UTF-8 一律返回 ``None``。
+
+    `b64decode` 默认**丢弃**非法字符（`b64decode("!!!")` → `b""`，2026-10-15 实测），
+    所以"能解"和"解出来的是当初写进去的东西"是两件事——见 :func:`_journal_problem`。
+    """
+    try:
+        return base64.b64decode(raw, validate=True).decode("utf-8")
+    except ValueError:
+        return None
+
+
+_SHA_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _journal_problem(journal: PublishJournal) -> str | None:
+    """快照**自不自洽**的判据；返回一句不含内容的说明，``None`` 表示各项都对得上。
+
+    为什么要在"读"这一层就判死（2026-10-15 审阅 P1-03）：恢复写盘用的是 `ics_text`
+    与解码后的台账文本，相容性检查比的却是 `ics_sha256` 与台账 sha。两份读数来自不同
+    版本时，`_restore_from_journal` 会先把三样文件写下去、再由收尾复核发现不对——本地
+    被推进一个"既不等于线上、也不等于任何一份凭据"的第四态，比原地不动糟得多。
+    台账那一项还有更凶的一层：坏掉的 Base64 会"成功地解码成空台账"，照写等于把整份
+    撤销历史静默清零（用户红线：不得静默重置订阅历史）。
+
+    说明文本只含字段名与判据，绝不带正文——快照里是台账级个人信息（spec §8）。
+    """
+    for label, value in (
+        ("semester", journal.semester),
+        ("token", journal.token),
+        ("branch", journal.branch),
+        ("ics_text", journal.ics_text),
+    ):
+        if not value:
+            return f"快照字段 {label} 为空"
+    for label, digest in (
+        ("ics_sha256", journal.ics_sha256),
+        ("course_ledger_sha256", journal.course_ledger_sha256),
+        ("exam_ledger_sha256", journal.exam_ledger_sha256),
+    ):
+        if digest is not None and not _SHA_PATTERN.match(digest):
+            return f"快照字段 {label} 不是合法的 sha256 十六进制"
+    if hashlib.sha256(journal.ics_text.encode("utf-8")).hexdigest() != journal.ics_sha256:
+        return "快照正文与自身哈希不符（ics_text 与 ics_sha256 自相矛盾）"
+    for label, raw in (
+        ("课程台账", journal.course_ledger_b64),
+        ("考试台账", journal.exam_ledger_b64),
+    ):
+        if raw is not None and _b64_decode_strict(raw) is None:
+            return f"快照里的{label}不是合法的 Base64 文本"
+    return None
+
+
 def journal_path(cfg: Settings, semester: str) -> Path:
     """已发布状态凭据（committed）的路径。"""
     return subscribe_dir(cfg) / JOURNAL_FILENAME.format(semester=semester)
@@ -558,9 +617,10 @@ def pending_path(cfg: Settings, semester: str) -> Path:
 
 
 def read_journal(cfg: Settings, semester: str, *, pending: bool = False) -> JournalRead:
-    """读一份快照，**区分**"没写过"与"读不懂"（审阅 P1-②）。
+    """读一份快照，**区分**"没写过"与"读不懂"（审阅 P1-②），并校验其自洽性（P1-03）。
 
-    只报异常种类，不报 `str(exc)`：快照里是台账级个人信息，解码失败的原文可能跟着进日志。
+    只报异常种类或判据名，不报 `str(exc)`：快照里是台账级个人信息，
+    解码失败的原文可能跟着进日志。
     """
     path = pending_path(cfg, semester) if pending else journal_path(cfg, semester)
     if not path.is_file():
@@ -569,9 +629,13 @@ def read_journal(cfg: Settings, semester: str, *, pending: bool = False) -> Jour
         # 必须显式 utf-8：快照里的 ICS 原文带课程名，zh-Windows 上默认编码是 cp936，
         # 用 `read_text()` 会把"读得懂"变成 UnicodeDecodeError ⇒ 误判成损坏。
         raw = path.read_text(encoding="utf-8")
-        return JournalRead(JOURNAL_VALID, PublishJournal.from_dict(json.loads(raw)))
+        journal = PublishJournal.from_dict(json.loads(raw))
     except (json.JSONDecodeError, OSError, KeyError, TypeError, ValueError) as exc:
         return JournalRead(JOURNAL_INVALID, detail=type(exc).__name__)
+    problem = _journal_problem(journal)
+    if problem is not None:
+        return JournalRead(JOURNAL_INVALID, detail=problem)
+    return JournalRead(JOURNAL_VALID, journal)
 
 
 def write_journal(
@@ -651,10 +715,40 @@ class CompatibilityCheck:
 
     ok: bool
     #: `consistent` / `no_snapshot_verified`（弱判据放行）/ `pending_unresolved`（上次发布
-    #: 的结果还没裁决）/ `no_journal` / `journal_invalid` / `journal_token`
+    #: 的结果还没裁决）/ `no_journal` / `journal_invalid` / `journal_token` / `journal_sha`
+    #: / `journal_branch`（后三格＝凭据与状态里的发布记录交叉核对不上）
     #: / `baseline` / `course_ledger` / `exam_ledger` / `*_keep` / `uid_recipe`
     reason: str
     detail: str
+
+    @property
+    def bypassable(self) -> bool:
+        """这一格能不能被 `--allow-unverified-baseline` 人工覆盖（见下面的白名单）。"""
+        return self.ok or self.reason in BYPASSABLE_INCOMPATIBILITY_REASONS
+
+
+#: `--allow-unverified-baseline` 允许人工覆盖的不相容原因——**显式白名单**
+#: （2026-10-15 审阅 P1-02）。白名单之外的任何 reason（包括今后新增的）一律不放行。
+#: 判据不是"用户想不想强行发布"，而是"强行继续会不会销毁裁决所需的证据"：
+#:
+#: - `pending_unresolved`：门一过，构建照跑，`write_journal` 第一件事就把那份未裁决的
+#:   准备稿原地覆盖掉 ⇒ `repair` 此后再也答不出线上究竟是哪一版。能裁决它的只有远端字节。
+#: - `journal_invalid`：本该信任的校验文件坏了，降级成"当作没有校验"等于让损坏触发
+#:   更宽松的校验（与 P1-② 同一个理由）。
+BYPASSABLE_INCOMPATIBILITY_REASONS = frozenset(
+    {
+        "no_journal",
+        "journal_token",
+        "journal_sha",
+        "journal_branch",
+        "baseline",
+        "course_ledger",
+        "exam_ledger",
+        "course_ledger_keep",
+        "exam_ledger_keep",
+        "uid_recipe",
+    }
+)
 
 
 def _pending_read(cfg: Settings, semester: str) -> JournalRead:
@@ -688,6 +782,17 @@ def _unresolved_pending(cfg: Settings, semester: str) -> CompatibilityCheck | No
         f"上一次发布留下了未裁决的准备稿（{path_name}）："
         "本地凭据仍是上一版，而线上可能已经是准备稿那一版",
     )
+
+
+def has_unresolved_pending(cfg: Settings, semester: str) -> bool:
+    """有没有一份**尚未裁决的准备稿**（CLI 的 rotate 用它决定是否必须先过门）。
+
+    与 `check_local_compatibility` 的第一格同源，单独暴露是因为 rotate 有一条例外的早退
+    路径：本地留底缺失时它压根不构建、不发布，只换 token——那道门保护的"拿过期留底当
+    SEQUENCE 基线"在这一支不发生。但**未裁决的准备稿**不一样：换 token 会让那两份凭据
+    全都属于旧 token，`repair` 此后无从裁决，所以这一格不看留底在不在。
+    """
+    return _unresolved_pending(cfg, semester) is not None
 
 
 def _sha_of(path: Path) -> str | None:
@@ -726,6 +831,25 @@ def check_local_compatibility(
             False,
             "journal_token",
             f"恢复快照属于另一个 token（{journal.token[:8]}…），与当前订阅记录不符，不能拿它当依据",
+        )
+    # 凭据与状态里那条发布记录的**完整**交叉核对（2026-10-15 审阅 P1-05）。上面那格只看
+    # token，这里补上字节与分支：三者任意一项对不上，凭据描述的就不是"当前订阅最后一次
+    # 发出去的那一版"，拿它当依据等于拿别的版本的字节做 SEQUENCE 基线。
+    # 这两格现有崩溃序列走不到（`journal_token` 与 `pending_unresolved` 先接住），能到的
+    # 是手工改动与今后新增的形态——成本各一行，按 fail-closed 收下。
+    if journal is not None and journal.ics_sha256 != state.last_push.content_sha256:
+        return CompatibilityCheck(
+            False,
+            "journal_sha",
+            f"恢复快照记录的字节哈希（{journal.ics_sha256[:12]}…）与状态里最后一次发布记录"
+            f"（{state.last_push.content_sha256[:12]}…）不是同一版",
+        )
+    if journal is not None and journal.branch != state.branch:
+        return CompatibilityCheck(
+            False,
+            "journal_branch",
+            f"恢复快照记录的发布分支是 {journal.branch}，与当前订阅的 {state.branch} 不符，"
+            "它描述的是另一条发布通道上的产物",
         )
     if journal is None:
         # 没有依据可查（0.8.5 之前发布过的状态、或凭据被删）。退回一条**不依赖快照**的
@@ -773,12 +897,23 @@ def check_local_compatibility(
             # keep 语义：那次发布没产出这份台账 ⇒ **不动它**，但它仍是撤销判定的输入。
             # "不动"记成一个指纹，事后被删/被改就会被发现（审阅 P1-③）；不记指纹的话，
             # 这一格与场景 2 是同一类静默失效。
-            if keep_sha is not None and _sha_of(path_key) != keep_sha:
-                return CompatibilityCheck(
-                    False,
-                    f"{label}_keep",
-                    f"{human} {path_key.name} 被保留过，却与那次发布时的字节不符（被删除或改动）",
-                )
+            # 指纹为 `None` 不是"免检"，它记录的是**当时这份文件不存在**（审阅 P1-04）：
+            # 半路冒出来的一份台账同样会改写撤销候选的差集——`cancel_candidates` 把它当
+            # "上次发过什么"的凭据，凭空多出来的一批候选要么撤出从没上线过的事件，
+            # 要么让真该撤的因为"内容对不上"被丢弃，两种都静默。所以 keep 的完整陈述是
+            # 两件事：**内容指纹 + 在不在**。
+            now_sha = _sha_of(path_key)
+            if now_sha != keep_sha:
+                if keep_sha is None:
+                    detail = (
+                        f"{human} {path_key.name} 在那次发布时并不存在，现在却出现了："
+                        "这份台账是撤销判定的输入，内容无从核对"
+                    )
+                elif now_sha is None:
+                    detail = f"{human} {path_key.name} 被保留过，事后却被删除（快照只记指纹、补不回内容）"
+                else:
+                    detail = f"{human} {path_key.name} 被保留过，却与那次发布时的字节不符（被改动）"
+                return CompatibilityCheck(False, f"{label}_keep", detail)
             continue
         if _sha_of(path_key) != hashlib.sha256(want.encode("utf-8")).hexdigest():
             return CompatibilityCheck(
@@ -795,11 +930,20 @@ def check_local_compatibility(
     return CompatibilityCheck(True, "consistent", "留底、两份台账与迁移标记均与已发布版本相容")
 
 
-def fetch_published_bytes(cfg: Settings, state: SubscriptionState, semester: str) -> bytes:
-    """从发布分支拉回**当前线上**那份 .ics 的字节（离线、零凭据外泄）。
+def fetch_published_file(
+    cfg: Settings, state: SubscriptionState, semester: str
+) -> tuple[str, bytes]:
+    """拉回发布分支 tip 上那份 .ics 的**文件名与字节**（离线、零凭据外泄）。
 
     刻意走 work 仓库的 `git fetch` + `git show` 而不是 HTTP：`url_base` 可能是
     `file://`（彩排远端），也可能 CDN 还在吐旧文件；git 侧拿到的就是 tip 的真实字节。
+
+    文件名**不假设等于 `state.token`**，而且要把它一并交回（P0-01 之后必须如此）：
+    `rotate` 的崩溃窗口里「状态里的新 token」与「远端那个旧文件名」正好分家，按
+    `state.token.ics` 读会报"读不到"，让 `repair` 在唯一需要它的场合失灵。反过来，
+    只比内容哈希也不够——rotate 补发常常内容一字未改、**只有文件名换了**，此时
+    「远端等于准备稿」还是「远端等于上一版」只能靠文件名区分。读取判据与 `publish`
+    的护栏同一条：tip 上恰好一个根目录 `.ics`。
     """
     work = work_dir(cfg, semester)
     _ensure_work_repo(work, state.repo_url)
@@ -810,13 +954,27 @@ def fetch_published_bytes(cfg: Settings, state: SubscriptionState, semester: str
         "origin",
         f"+refs/heads/{state.branch}:refs/remotes/origin/{state.branch}",
     )
-    proc = _git_bytes(work, "show", f"refs/remotes/origin/{state.branch}:{state.token}.ics")
+    ref = f"refs/remotes/origin/{state.branch}"
+    proc = _git(work, "ls-tree", "-r", "--name-only", ref)
     if proc.returncode != 0:
         raise SubscribePublishError(
-            f"无法从远端分支 {state.branch} 读取 {state.token}.ics",
+            f"无法列出远端分支 {state.branch} 的 tip：{(proc.stderr or proc.stdout).strip()}",
             hint="确认订阅仓库与分支无误后重试；远端不可达时 repair 也无能为力。",
         )
-    return bytes(proc.stdout or b"")
+    listing = (proc.stdout or "").split()
+    if len(listing) != 1 or "/" in listing[0] or not listing[0].endswith(".ics"):
+        raise SubscribePublishError(
+            f"远端分支 {state.branch} 的 tip 含 {len(listing)} 个文件，不是本工具的发布产物，"
+            "无法据此恢复",
+            hint="先看 subscribe status 核对仓库与分支；确认线上产物后重试。",
+        )
+    show = _git_bytes(work, "show", f"{ref}:{listing[0]}")
+    if show.returncode != 0:
+        raise SubscribePublishError(
+            f"无法从远端分支 {state.branch} 读取 {listing[0]}",
+            hint="确认订阅仓库与分支无误后重试；远端不可达时 repair 也无能为力。",
+        )
+    return listing[0], bytes(show.stdout or b"")
 
 
 # --------------------------------------------------------------------------- #

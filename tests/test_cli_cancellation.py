@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import logging
 from pathlib import Path
 
@@ -326,7 +327,24 @@ def _ready_for_rotate(
     last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
     last.parent.mkdir(parents=True, exist_ok=True)
     last.write_text(_published_artifact(cfg), encoding="utf-8", newline="")
+    if published:
+        _sync_last_push_to_baseline(cfg)
     return cfg
+
+
+def _sync_last_push_to_baseline(cfg: Settings) -> None:
+    """把状态里的「最后一次发布的字节哈希」对齐到当前留底。
+
+    P0-01 之后 rotate 与 push 共用相容性那道门，这批用例的现场就得自洽：`_register`
+    里那颗占位 sha 换成留底字节的真哈希 ⇒ 走「没有恢复快照、但留底与最后一次发布逐字节
+    相符」那条弱判据（0.8.5 之前发布过的老状态），带一句警告放行，而不是被门拦下。
+    留底被改写过的小节（`--no-exams` 那份产物）同样要在改完后重新同步一次。
+    """
+    state = subscribe.load_state(cfg, SEMESTER)
+    assert state is not None and state.last_push is not None
+    last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
+    state.last_push.content_sha256 = hashlib.sha256(last.read_bytes()).hexdigest()
+    subscribe.save_state(cfg, state)
 
 
 def test_rotate_warns_before_changing_token(tmp_path, monkeypatch, capsys):
@@ -386,6 +404,7 @@ def test_rotate_warning_tracks_the_retained_artifact(tmp_path, monkeypatch, caps
     cfg = _ready_for_rotate(tmp_path, monkeypatch)
     last = subscribe.subscribe_dir(cfg) / f"last-{SEMESTER}.ics"
     last.write_text(_published_artifact(cfg, include_exam=False), encoding="utf-8", newline="")
+    _sync_last_push_to_baseline(cfg)  # 留底换了一份产物，状态里那条哈希跟着对齐（P0-01）
     shipped: list[str] = []
     _stub_publish(monkeypatch, shipped=shipped)
     uid = exam_uids(cfg, exam_row(WID="WID-A"))[0]

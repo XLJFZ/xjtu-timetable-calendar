@@ -579,20 +579,27 @@ def save_raw(payload: Any, cfg: Settings, semester_key: str, *, kind: str = "tim
     ``kind`` 决定落在课表还是考试路径；单代轮转语义两者一致。
     两个文件都含个人信息，**必须留在 .gitignore 排除目录内**，绝不可提交。
 
-    **写入顺序是这条函数的契约**（P2-04，2026-10-15）：先序列化，再把旧内容**复制**到
-    ``.prev``，最后才原子覆盖当前文件。旧实现是 ``current.replace(prev)`` 之后再写新文件
-    ——那是 move：新内容写失败（磁盘满、权限、杀软占住）时，当前路径上什么都没有了，
-    ``load_raw`` 报「本地没有原始缓存」、``diff`` 的比较基线一起消失，而那份好数据其实只是
-    躺在了另一个文件名上。现在的顺序下任何一步失败，当前文件要么是旧内容、要么还是旧内容，
-    绝不会缺失。
+    **写入顺序是这条函数的契约**（P2-04 + P2-01，2026-10-15）：先序列化，再把当前内容
+    **读进内存**，然后原子覆盖当前文件，**最后**才把那份内存里的旧内容轮转到 `.prev`。
+
+    - 旧实现是 ``current.replace(prev)`` 之后再写新文件——那是 move：新内容写失败
+      （磁盘满、权限、杀软占住）时，当前路径上什么都没有了，``load_raw`` 报「本地没有
+      原始缓存」、``diff`` 的比较基线一起消失，而那份好数据其实只是躺在了另一个文件名上。
+    - 只把它改成"先 copy 到 prev、再写新文件"仍不够（P2-01）：那次 copy 会把**上一代**
+      ``.prev`` 冲掉，于是一次写失败的代价变成"少一整代历史"，``diff`` 退化成和自己比。
+      旧内容先拿在内存里，轮转排在新内容落盘**之后**，同一次失败就一个字节都不动。
+
+    剩下的唯一窄缝是"新内容已落盘、写 ``.prev`` 又失败"：那时当前是新的、``.prev`` 还是
+    上上代——保留较旧的、可读的快照，比为了对齐而先毁掉它更符合这条链路的用途。
     """
     cfg.ensure_dirs()
     path, previous = _raw_paths(cfg, semester_key, kind)
     # 序列化放在最前面：它炸掉时一个字节都还没动（集合之类的脏 payload 不该留下半成品状态）
     text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    if path.is_file():
-        atomic_write_text(previous, path.read_text(encoding="utf-8"), private=True)
+    carry = path.read_text(encoding="utf-8") if path.is_file() else None
     atomic_write_text(path, text, private=True)
+    if carry is not None:
+        atomic_write_text(previous, carry, private=True)
     label = "考试" if kind == "exams" else "课表"
     logger.debug("原始%s已缓存到 %s（含个人信息，请勿提交）", label, path)
     if previous.is_file():

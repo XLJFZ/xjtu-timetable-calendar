@@ -231,6 +231,3 @@ python scripts/probe_ehall.py
 `fetch` 会明确报 `EndpointNotConfigured` 而不是拿模板去发请求。
 
 > **不要猜接口。** 以网页实际网络请求为准。学校改版后需重新运行 probe 校准。
-
----
-

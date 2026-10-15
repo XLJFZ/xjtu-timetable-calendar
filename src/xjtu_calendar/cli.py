@@ -232,7 +232,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="本地既没有『最后一次发布』的恢复依据、留底与发布记录也对不上时仍继续"
         "（默认拒绝并退出码 7；先跑 subscribe repair。升级过来的老状态只要留底与发布记录"
-        "逐字节相符就会自动放行，不需要这个旗标）",
+        "逐字节相符就会自动放行，不需要这个旗标。注意：上一次发布结果**未裁决**、"
+        "或恢复凭据**读不懂**这两格不在本旗标范围内，只能由 subscribe repair 处理）",
     )
     rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
     rot_p.add_argument("--semester")
@@ -246,6 +247,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="课程侧撤销规模触发门 2 熔断时仍强行发布（默认拒绝——疑似课表没抓全时"
         "会拒绝发布并退出码 6；与 push 同一判据、同一旗标）",
+    )
+    rot_p.add_argument(
+        "--allow-unverified-baseline",
+        action="store_true",
+        help="本地发布状态与恢复凭据不相容时仍继续补发（默认拒绝并退出码 7，且**在换 token"
+        "之前**就停手；与 push 同一道门、同一判据，先跑 subscribe repair）",
     )
     st_p = sact.add_parser("status", help="查看订阅状态、URL 与新鲜度")
     st_p.add_argument("--semester")
@@ -1410,6 +1417,8 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
             # Task 9 已在 rot_p 上声明该旗标；`getattr` 保留为对直接调用方的兜底，缺省即 False
             # （门 2 默认收紧）。
             allow_mass_cancellation=getattr(args, "allow_mass_cancellation", False),
+            # P0-01：相容性那道门与 push 同判据，旗标也必须两侧都接得住（缺省收紧）。
+            allow_unverified_baseline=getattr(args, "allow_unverified_baseline", False),
         )
     return _subscribe_status(args, cfg, state, semester)
 
@@ -1505,30 +1514,42 @@ def _subscribe_repair(cfg: Settings, state: subscribe.SubscriptionState, semeste
             "可从订阅 URL 下载当前 .ics 原样放回留底路径，其余两份台账无法凭空重建；"
             "确认可以接受全新订阅时删除状态文件与快照后重新 subscribe init（会清空客户端历史）。",
         )
-    journal = committed.journal or pending.journal
-    if journal is None:
+    committed_j = committed.journal
+    pending_j = pending.journal
+    candidates = [j for j in (committed_j, pending_j) if j is not None]
+    if not candidates:
         raise XjtuCalendarError(
             "本地没有发布恢复快照，无法自动对齐",
             hint=f"快照自 0.8.5 起随每次发布写入（{subscribe.journal_path(cfg, semester)}）。"
             "更早的发布没有依据：可从订阅 URL 下载当前 .ics 原样放回留底路径，"
             "或确认接受全新订阅后删除状态文件重新 subscribe init（会清空客户端历史）。",
         )
-    if journal.token != state.token:
+    # token 判据放宽到"**任一份**凭据属于当前订阅"（P0-01）：`rotate` 崩在推送途中时，
+    # 已发布凭据必然是旧 token、准备稿才是新 token，按旧实现那句 `journal.token !=
+    # state.token` 会在唯一需要它的场合直接拒绝。两凭据都属于别的 token 才叫无从恢复。
+    journal = next((j for j in candidates if j.token == state.token), None)
+    if journal is None:
         raise XjtuCalendarError(
             "发布恢复快照的 token 与当前订阅不一致，拒绝据此恢复",
-            hint="多半是 rotate 之后的残留快照。确认 state 与远端分支后重跑一次 subscribe push。",
+            hint="多半是 rotate 之后的残留快照。确认 state 与远端分支后重跑一次 subscribe push。"
+            "确认可接受全新订阅时删除状态文件与快照后重新 subscribe init。",
         )
 
-    remote = subscribe.fetch_published_bytes(cfg, state, semester)
+    remote_name, remote = subscribe.fetch_published_file(cfg, state, semester)
     remote_sha = hashlib.sha256(remote).hexdigest()
-    committed_j = committed.journal
-    pending_j = pending.journal
     notes: list[str] = []
-    if (
+    pending_matches = pending_j is not None and remote_sha == pending_j.ics_sha256
+    committed_matches = committed_j is not None and remote_sha == committed_j.ics_sha256
+    # 「远端等于哪一版」先看字节，字节平票时**用文件名破平**（P0-01）：`rotate` 的补发
+    # 经常内容一字未改、只换了文件名，此时准备稿与已发布凭据哈希相同，单比字节会把
+    # "新文件名的那一版已经上线"误判成"准备稿从未落地"，用户只好再推一次同样的字节。
+    pending_is_remote = bool(
         pending_j is not None
         and remote_sha == pending_j.ics_sha256
-        and (committed_j is None or committed_j.ics_sha256 != remote_sha)
-    ):
+        and remote_name == f"{pending_j.token}.ics"
+    )
+    if pending_matches and (not committed_matches or pending_is_remote):
+        assert pending_j is not None
         # 远端 == 准备稿 ⇒ 那一版其实发出去了，只是没登记（死在 save_state / 提升之前）。
         # 提升它，本地就有线上那一版的完整凭据（审阅 T2）。
         promoted = subscribe.promote_pending(cfg, semester)
@@ -1536,15 +1557,16 @@ def _subscribe_repair(cfg: Settings, state: subscribe.SubscriptionState, semeste
             raise XjtuCalendarError("准备稿提升为已发布凭据失败，未做任何改动")
         journal = promoted
         notes.append("线上那一版正是没登记过的准备稿，已确认为已发布并补上凭据")
-    elif committed_j is not None and remote_sha == committed_j.ics_sha256:
+    elif committed_matches:
         # 远端仍是已发布凭据 ⇒ 本地那份准备稿从未落地，丢掉它（审阅 T1）。
+        assert committed_j is not None
         journal = committed_j
         if pending_j is not None:
             subscribe.discard_pending(cfg, semester)
             notes.append("丢弃从未发出的准备稿")
     else:
         raise XjtuCalendarError(
-            f"线上那版与恢复凭据不符（远端 {remote_sha[:12]}… ≠ 凭据 "
+            f"线上那版与恢复凭据不符（远端 {remote_name[:8]}… {remote_sha[:12]}… ≠ 凭据 "
             f"{journal.ics_sha256[:12]}…），拒绝恢复",
             hint="凭据没对上，说明中断点不在本地：先 subscribe status 核对，"
             "确认可接受全新订阅时删除状态文件后重新 subscribe init。",
@@ -1552,7 +1574,14 @@ def _subscribe_repair(cfg: Settings, state: subscribe.SubscriptionState, semeste
 
     restored = _restore_from_journal(cfg, journal, semester)
     new_state = state
-    if new_state.last_push is None or new_state.last_push.content_sha256 != journal.ics_sha256:
+    if (
+        new_state.last_push is None
+        or new_state.last_push.content_sha256 != journal.ics_sha256
+        # token 也在判据里（P1-05 同一口径）：rotate 崩过一次的现场，字节可能一字未改而
+        # 文件名已换新 token——只比哈希会把"上次发布记录"留在旧 token 上，与刚提升的
+        # 凭据不符，收尾复核立刻命中 `journal_token`，repair 自己把自己判成失败。
+        or new_state.last_push.token != journal.token
+    ):
         # 已发布状态元数据本身也得修对：只恢复文件不修它，`doctor`/`status` 会长期报错版本。
         # 时刻取凭据自己的 created_at（准备发布那一刻，与真实推送只差几秒），不假装知道精确时间。
         new_state = replace(
@@ -1593,38 +1622,24 @@ def _subscribe_repair(cfg: Settings, state: subscribe.SubscriptionState, semeste
     return 0
 
 
-def _subscribe_push(
-    args: argparse.Namespace, cfg: Settings, state: subscribe.SubscriptionState, semester: str
-) -> int:
+def _require_compatible_local_state(
+    cfg: Settings,
+    state: subscribe.SubscriptionState,
+    semester: str,
+    *,
+    allow_unverified: bool,
+) -> subscribe.CompatibilityCheck:
+    """构建之前先查"本地四样是否与最后一次已发布版本相容"（`push` 与 `rotate` 同一道门）。
+    发布路径要同时推进远端 ICS、本地留底、两份台账与迁移标记，它们**不在一个原子域里**；
+    死在中途的话：
+    ①留底落后而数据又变了 ⇒ 这里拿过期留底当 SEQUENCE 基线，产出的版本号从起点就错；
+    ②留底新、课程台账旧 ⇒ `cancel_candidates` 的差集是「台账 − live」，那条 UID 根本不
+    成候选，退课**静默漏发**。两条都是 2026-10-14 外部审查补验、已用回归测试钉住的。
+    """
     from . import subscribe
 
-    _validate_publish_branch(state.branch)
-    age = subscribe.snapshot_age_days(cfg, semester)
-    if age is not None and age > 7:
-        logger.warning("raw 快照已 %.0f 天未更新，建议先 fetch 再 push（本次继续）", age)
-    # 留底 last-<semester>.ics：publish 成功后才更新，且是下次构建的 SEQUENCE 基线。
-    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
-    if state.last_push is not None and not last_local.is_file():
-        # 有上次发布记录却没了留底 = 没有 SEQUENCE 基线。放任重建的话所有事件
-        # 打回 SEQUENCE:0，客户端把整份课表当新日历重新收，旧事件历史被静默重置。
-        # fail-closed：拒绝重建，让用户先找回留底（远端上就有）。
-        raise XjtuCalendarError(
-            f"本地留底缺失：无法安全重发布（{last_local} 不存在，但已有过成功推送）",
-            hint="没有留底作基线，重建会把全部事件重置为 SEQUENCE:0，客户端历史被清空。"
-            "请从远端订阅 URL 下载当前 .ics 原样放回上述路径后重试；"
-            f"确认可接受全新订阅的话，删除 {subscribe.state_path(cfg, semester)} "
-            "后重新 subscribe init。",
-        )
-    # 迁移判据只有一处：状态文件里 `uid_recipe` 是否缺失（CD7）。留底文本是候选的唯一
-    # 来源（v1 配方代码已删除，CD15 ⇒ 不重算旧 UID，只从上次发布的产物里读）。
-    #
-    # 构建之前先查"本地四样是否与最后一次已发布版本相容"。发布路径要同时推进远端 ICS、
-    # 本地留底、两份台账与迁移标记，它们**不在一个原子域里**；死在中途的话：
-    # ①留底落后而数据又变了 ⇒ 这里拿过期留底当 SEQUENCE 基线，产出的版本号从起点就错；
-    # ②留底新、课程台账旧 ⇒ `cancel_candidates` 的差集是「台账 − live」，那条 UID 根本不
-    # 成候选，退课**静默漏发**。两条都是 2026-10-14 外部审查补验、已用回归测试钉住的。
     compat = subscribe.check_local_compatibility(cfg, state, semester)
-    if not compat.ok and not getattr(args, "allow_unverified_baseline", False):
+    if not compat.ok and not (allow_unverified and compat.bypassable):
         raise PublishStateIncompatible(
             f"本地发布状态不相容（{compat.detail}）",
             hint=(
@@ -1632,10 +1647,18 @@ def _subscribe_push(
                 f"{semester}：它按发布恢复快照核对线上那一版，再把留底/台账/迁移标记对齐。"
                 + (
                     ""
-                    if compat.reason not in {"no_journal", "journal_token"}
-                    else " 这一格**没有可用的恢复依据**（快照缺失，或快照属于别的 token），"
-                    "repair 同样无能为力：确认远端就是状态里记的那一版后，"
-                    "带 --allow-unverified-baseline 继续，本次会把恢复依据重新落下。"
+                    if compat.reason
+                    not in {"no_journal", "journal_token", "journal_sha", "journal_branch"}
+                    else " 这一格**没有可用的恢复依据**：快照缺失、属于别的 token，"
+                    "或与你确认过的线上那一版对不上。repair 同样核不出该按哪一版对齐："
+                    "确认远端就是状态里记的那一版后，带 --allow-unverified-baseline 继续，"
+                    "本次会把恢复依据重新落下。"
+                )
+                + (
+                    ""
+                    if compat.bypassable
+                    else " 这一格**不在旗标的放行范围内**：`--allow-unverified-baseline` "
+                    "不能替你裁决上一次发布的结果，也不能把读不懂的凭据当作没有凭据。"
                 )
             ),
         )
@@ -1652,22 +1675,30 @@ def _subscribe_push(
             "本地没有发布恢复快照，按弱判据放行：留底字节与最后一次发布记录相符，"
             "但两份台账与迁移标记未能校验；本次会在推送前把恢复依据补落。"
         )
-    migrating = subscribe.needs_uid_migration(state)
-    baseline_text = last_local.read_text(encoding="utf-8") if last_local.is_file() else None
-    result_ics = build_ics_for_semester(
-        cfg,
-        semester,
-        input_path=getattr(args, "input", None),
-        baseline_probe=str(last_local) if last_local.is_file() else None,
-        include_exams=not args.no_exams,
-        published_baseline_text=baseline_text if migrating else None,
-        allow_mass_cancellation=getattr(args, "allow_mass_cancellation", False),
-    )
-    # 自动但不静默（CD11）：迁移豁免门 2，但规模必须在这一刻、**发布之前**说清楚。
-    # `published_baseline_text` 只有 push 会传（CD3）：`export` 的产物是手工导入的，
-    # 把几百条撤销交给一个永不回源的客户端比不迁移更糟。
-    if result_ics.migration_summary:
-        _print_migration_notice(result_ics.migration_summary)
+    return compat
+
+
+def _publish_with_journal(
+    cfg: Settings,
+    state: subscribe.SubscriptionState,
+    semester: str,
+    result_ics: ExportResult,
+    migrating: bool,
+) -> subscribe.PublishResult:
+    """`push` 与 `rotate` **共用**的那一条发布事务（2026-10-15 审阅 P0-01）。
+
+    顺序就是全部契约（spec §5 不变量 1—3）：准备稿 → 推送 → 提升已发布凭据 → 回写本地
+    四样。rotate 过去直接调 `publish()` 再自己回写，等于绕过前两步：换 token 补发成功后
+    `last_push.token` 已经是新的，凭据还停在旧 token ⇒ 下一次 `push` 被自己的
+    `journal_token` 拦死（7），`repair` 又拒绝恢复，正常操作把订阅永久锁住。
+    收尾补一份快照也**不够**——那解决不了"推送成功、本地写入失败"的崩溃窗口，
+    必须让准备稿先落盘、由 `subscribe repair` 拿远端字节裁决。
+
+    返回 `PublishResult` 让调用方按各自措辞打印（`NO_CHANGE` 只有 push 走得到：
+    rotate 刚换 token，`publish` 的跳过条件要求 token 一致，必然重推）。
+    """
+    from . import subscribe
+
     # 推送之前先落「发布准备稿」（pending）：这次要发的 ICS + 两份台账的目标字节 +
     # 迁移标记。写不进去就不该开始推送——宁可远端停在上一版，也不要发一次事后无法恢复的发布。
     # 台账为 ``None`` 时记成"这次别动"（`--no-exams` 那次绝不该清空考试台账），并留下它
@@ -1700,14 +1731,11 @@ def _subscribe_push(
         raise
     if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
         subscribe.discard_pending(cfg, semester)
-        print("无变化，跳过推送。")
         # 这里**不**再顺手补写本地文件（v0.8.4 那版自愈的形态）：构建之前的相容性检查
         # 已经保证"本地四样 == 恢复凭据 == 线上那一版"，走到 NO_CHANGE 时没有东西可补；
         # 真落后就是检查那一头拒绝（退出码 7）并让用户跑 `subscribe repair`。
         # 判据只留一处，D11「NO_CHANGE 不回写台账」也因此继续成立。
-        # 幂等跳过也要给链接：用户可能第一次没记下，这一支是他唯一能看到入口的地方。
-        _print_webcal_hint(state)
-        return 0
+        return res
     # 远端确实收下了这一版 ⇒ 先把准备稿提升为已发布凭据，**再**落本地文件。
     # 顺序要紧：反过来一旦死在中间，留底会比凭据新，`repair` 拿远端一比对就发现凭据落后、
     # 拒绝恢复，只剩人工出口。提升失败不推翻发布——远端已是新版，准备稿还在，
@@ -1718,6 +1746,7 @@ def _subscribe_push(
             "subscribe repair 让本地跟上，否则下次发布会被相容性检查拦住。",
             subscribe.pending_path(cfg, semester),
         )
+    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
     # newline=""：留底必须与远端产物字节一致（CRLF 完整），否则下次把它当
     # SEQUENCE 基线读回、以及 status 的 sha 比对都会错位（同 cmd_export）。
     last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
@@ -1734,6 +1763,59 @@ def _subscribe_push(
     # 也要写上标记（§7：直接 `uid_recipe: 2`、无撤销），否则下次 push 还会重走迁移分支。
     if migrating:
         subscribe.save_state(cfg, replace(state, uid_recipe=UID_RECIPE_VERSION))
+    return res
+
+
+def _subscribe_push(
+    args: argparse.Namespace, cfg: Settings, state: subscribe.SubscriptionState, semester: str
+) -> int:
+    from . import subscribe
+
+    _validate_publish_branch(state.branch)
+    age = subscribe.snapshot_age_days(cfg, semester)
+    if age is not None and age > 7:
+        logger.warning("raw 快照已 %.0f 天未更新，建议先 fetch 再 push（本次继续）", age)
+    # 留底 last-<semester>.ics：publish 成功后才更新，且是下次构建的 SEQUENCE 基线。
+    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
+    if state.last_push is not None and not last_local.is_file():
+        # 有上次发布记录却没了留底 = 没有 SEQUENCE 基线。放任重建的话所有事件
+        # 打回 SEQUENCE:0，客户端把整份课表当新日历重新收，旧事件历史被静默重置。
+        # fail-closed：拒绝重建，让用户先找回留底（远端上就有）。
+        raise XjtuCalendarError(
+            f"本地留底缺失：无法安全重发布（{last_local} 不存在，但已有过成功推送）",
+            hint="没有留底作基线，重建会把全部事件重置为 SEQUENCE:0，客户端历史被清空。"
+            "请从远端订阅 URL 下载当前 .ics 原样放回上述路径后重试；"
+            f"确认可接受全新订阅的话，删除 {subscribe.state_path(cfg, semester)} "
+            "后重新 subscribe init。",
+        )
+    # 构建之前那道门，与 rotate 共用一个函数（P0-01 之后两条发布路径口径必须一致）。
+    _require_compatible_local_state(
+        cfg, state, semester, allow_unverified=getattr(args, "allow_unverified_baseline", False)
+    )
+    # 迁移判据只有一处：状态文件里 `uid_recipe` 是否缺失（CD7）。留底文本是候选的唯一
+    # 来源（v1 配方代码已删除，CD15 ⇒ 不重算旧 UID，只从上次发布的产物里读）。
+    migrating = subscribe.needs_uid_migration(state)
+    baseline_text = last_local.read_text(encoding="utf-8") if last_local.is_file() else None
+    result_ics = build_ics_for_semester(
+        cfg,
+        semester,
+        input_path=getattr(args, "input", None),
+        baseline_probe=str(last_local) if last_local.is_file() else None,
+        include_exams=not args.no_exams,
+        published_baseline_text=baseline_text if migrating else None,
+        allow_mass_cancellation=getattr(args, "allow_mass_cancellation", False),
+    )
+    # 自动但不静默（CD11）：迁移豁免门 2，但规模必须在这一刻、**发布之前**说清楚。
+    # `published_baseline_text` 只有 push 会传（CD3）：`export` 的产物是手工导入的，
+    # 把几百条撤销交给一个永不回源的客户端比不迁移更糟。
+    if result_ics.migration_summary:
+        _print_migration_notice(result_ics.migration_summary)
+    res = _publish_with_journal(cfg, state, semester, result_ics, migrating)
+    if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
+        print("无变化，跳过推送。")
+        # 幂等跳过也要给链接：用户可能第一次没记下，这一支是他唯一能看到入口的地方。
+        _print_webcal_hint(state)
+        return 0
     print(f"已发布：{res.url}")
     _print_webcal_hint(state)
     _print_publish_cancellation_summary(result_ics)
@@ -1747,6 +1829,7 @@ def _subscribe_rotate(
     *,
     include_exams: bool = True,
     allow_mass_cancellation: bool = False,
+    allow_unverified_baseline: bool = False,
 ) -> int:
     """换 token 并在有本地留底时重新发布。
 
@@ -1756,9 +1839,15 @@ def _subscribe_rotate(
     ``allow_mass_cancellation``：门 2（CD12）的显式放行旗标，与 push 同义（换 token 后
     的补发同样要撤课程事件，保险丝没有理由在这里松开）。
 
+    ``allow_unverified_baseline``：相容性那道门的人工出口，与 push 同义、同一判据
+    （P0-01）。补发走的必须是**同一条**发布事务，所以这道门也不能只装在一侧。
+
     行为（spec D12 / §6.8）：换 token **之前**先跑一次探针渲染，有已发布却尚未撤销的
     考试时打印警告；探针只算不写（台账文本一律丢弃），且与随后的真实渲染读**同一份**
     SEQUENCE 基线，所以警告条数就等于真正发出去的撤销条数。
+    补发本身走 :func:`_publish_with_journal`——与 push 同一条发布事务（准备稿 → 推送 →
+    提升凭据 → 回写本地四样），所以「换完 token 才崩」和「推送成功但本地没落盘」都还有
+    `subscribe repair` 这个出口（P0-01）。
 
     v1→v2 迁移（CD7/CD11）：判据同样只看状态文件，预告走**同一条探针**——探针要拿到
     与真实渲染一样的留底文本，报出的 N 才等于补发真正带出去的条数（D24 的"警告=实发"）；
@@ -1767,6 +1856,17 @@ def _subscribe_rotate(
     from . import subscribe
 
     _validate_publish_branch(state.branch)
+    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
+    # 构建之前那道门，与 push 同一个函数（P0-01）。位置要紧：**必须在换 token 之前**——
+    # 本地四样落后时 rotate 同样会拿过期留底重发布，而 token 一旦换掉，旧 URL 就再也
+    # 拿不回上一版字节了；这里停手，用户还有 repair / push 两条路可走。
+    # 唯一的例外是"留底根本不在场"：那一支下面直接早退、不构建也不发布，门要防的事
+    # 不发生（spec §6.8 的早退文案保持原样）。但未裁决的准备稿不看这个例外——换 token
+    # 会让两份凭据都变成旧 token 的，`repair` 从此无从裁决。
+    if last_local.is_file() or subscribe.has_unresolved_pending(cfg, semester):
+        _require_compatible_local_state(
+            cfg, state, semester, allow_unverified=allow_unverified_baseline
+        )
     old = state.token
     # 留底既是真实渲染的 SEQUENCE 基线，也**必须**是探针的基线——两个分支读同一份证据，
     # 量出来的撤销数才等于实际下发的撤销数。探针若不带基线就走 exporter
@@ -1774,7 +1874,6 @@ def _subscribe_rotate(
     # `push --no-exams` 之后（D21：留底里没有考试 UID、台账还记着）rotate 会警告 N 条，
     # 真实渲染却把这 N 条全判成 D20 `unresolvable`——一条不发、还当场把它们永久移出台账，
     # 报给用户的与实际发生的正相反（虚报只朝"多报"这一侧偏）。
-    last_local = subscribe.subscribe_dir(cfg) / f"last-{semester}.ics"
     migrating = subscribe.needs_uid_migration(state)
     baseline_text = last_local.read_text(encoding="utf-8") if last_local.is_file() else None
     # rotate 会换新 token = 换订阅 URL，旧地址此后永远收不到撤销（spec D12）。
@@ -1841,30 +1940,37 @@ def _subscribe_rotate(
             published_baseline_text=baseline_text if migrating else None,
             allow_mass_cancellation=allow_mass_cancellation,
         )
-        subscribe.publish(cfg, state, result_ics.ics)
-    except XjtuCalendarError as exc:
-        # token 已落盘换新、发布却失败：不能报成功。远端还挂在旧文件名上
-        # （补发成功前旧 URL 仍可读取），按指引修好后 push 即可补发。
+        # P0-01：补发走的是与 push **同一条**事务——先落准备稿、再推送、成功后提升凭据，
+        # 最后才回写留底/台账/迁移标记。探针渲染的那份台账文本在这里**不参与**：
+        # 只有随产物真正发布出去的才算撤销过（D24②）。
+        res = _publish_with_journal(cfg, state, semester, result_ics, migrating)
+    except Exception as exc:
+        # 三种收尾，措辞必须分开（P0-01 的"推送结果不确定性"那一档以前在 rotate 里没有）：
+        # ①带 REMOTE_UNCERTAIN_ATTR——远端可能已经挂上新文件名，本地准备稿就是它的字节，
+        #   此时唯一正确的下一步是让 repair 拿线上真实字节裁决，直接 push 只会先撞上
+        #   未裁决的准备稿；②业务错误——远端还在旧文件名上（补发成功前旧 URL 仍可读取），
+        #   修好后 push 即可补发；③其余异常照旧向上抛，不在这里吞。
         reloaded = _load_subscribe_state(cfg, semester)
         if reloaded is not None:
             state = reloaded
+        if getattr(exc, subscribe.REMOTE_UNCERTAIN_ATTR, False):
+            print(f"⚠️ token 已换、发布结果待裁决：{type(exc).__name__}")
+            print(
+                f"   建议：subscribe repair --semester {semester}——它会用线上真实字节判定"
+                "这一版究竟发出去了没有（准备稿已保留，未做裁决前 push 会被拦住）。"
+            )
+            return 7
+        if not isinstance(exc, XjtuCalendarError):
+            raise  # 其余异常照旧向上抛，不在这里吞掉（与修复前的行为一致）
+        # token 已落盘换新、发布却失败：不能报成功。
         print(f"⚠️ token 已换但尚未重新发布：{exc}")
         if exc.hint:
             print(f"   建议：{exc.hint}")
         print(f"修复后运行 subscribe push --semester {semester} 完成发布。")
         return exc.exit_code
-    last_local.write_text(result_ics.ics, encoding="utf-8", newline="")
-    # 台账与留底**同一时刻**更新（D11 / spec §6.8：push 与 rotate 同口径）：能走到
-    # 这里说明 publish 已成功；`None`（门槛没过 / --no-exams）不创建也不改写文件。
-    # 探针渲染的那份文本在这里**不参与**——只有随产物真正发布出去的才算撤销过（D24②）。
-    # 写失败只 warning（D24①），不改 rotate 的退出码。
-    if result_ics.exam_ledger_text is not None:
-        _write_exam_ledger(cfg, semester, result_ics.exam_ledger_text)
-    if result_ics.course_ledger_text is not None:
-        _write_course_ledger(cfg, semester, result_ics.course_ledger_text)
-    # 标记的回写与 push 同一条铁律：补发成功才算迁移过（CD7/§5 不变量 3）。
-    if migrating:
-        subscribe.save_state(cfg, replace(state, uid_recipe=UID_RECIPE_VERSION))
+    if res.outcome is subscribe.PublishOutcome.NO_CHANGE:  # pragma: no cover - 换 token 后必推
+        print("无变化，跳过推送。")
+        return 0
     print("已用新文件名重新发布。")
     # 与 push 同口径的撤销摘要（评审统一口径：两条发布路径报数一致）；同样只在
     # publish 成功之后打印（D11），`N == 0` 时整行不打印。

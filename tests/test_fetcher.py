@@ -438,9 +438,11 @@ def test_a_failed_new_write_keeps_the_usable_current_snapshot(
     monkeypatch.setattr(fetcher_module, "atomic_write_text", real_write)
 
     assert load_raw(cfg, "2026-fall") == {"v": 1}, "新的一份没写进去 ⇒ 当前快照必须还是旧的"
-    assert json.loads(cfg.raw_timetable_prev_path("2026-fall").read_text(encoding="utf-8")) == {
-        "v": 1
-    }
+    # P2-01 之后这里改为「`.prev` 根本不该出现」：轮转是一次**成功保存**的副作用，
+    # 保存都没发生就没有可轮转的东西；先造 `.prev` 再写新文件正是上一代被冲掉的原因。
+    assert not cfg.raw_timetable_prev_path("2026-fall").exists(), (
+        "写失败的那一次不该留下轮转过的痕迹"
+    )
 
 
 def test_unserializable_payload_leaves_both_snapshots_untouched(cfg: Settings) -> None:
@@ -457,3 +459,38 @@ def test_unserializable_payload_leaves_both_snapshots_untouched(cfg: Settings) -
 
     assert load_raw(cfg, "2026-fall") == {"v": 1}
     assert not previous.exists(), "没写成功就不该留下轮转过的痕迹"
+
+
+def test_a_failed_write_keeps_both_older_snapshot_generations(
+    cfg: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**P2-01**：A → B → C（C 写失败）⇒ 必须还是「当前 = B、`.prev` = A」，两代都在。
+
+    上一轮（P2-04）把 `current → prev` 的 move 改成 copy，救回了"当前文件不会消失"，
+    但轮转仍然排在新内容落盘**之前**：那次 copy 会把 A 从 `.prev` 上冲成 B。于是
+    "写失败"这一格的真实代价是**少掉一整代历史**——`diff` 的比较基线退化成"和自己比"，
+    而那份 A 明明只是还没被 C 顶替而已。顺序换成"新内容先落盘、旧内容再轮转"，
+    同一次失败就一个字节都不动。
+    """
+    from xjtu_calendar import fetcher as fetcher_module
+
+    save_raw({"v": 1}, cfg, "2026-fall")
+    save_raw({"v": 2}, cfg, "2026-fall")
+    previous = cfg.raw_timetable_prev_path("2026-fall")
+    assert load_raw(cfg, "2026-fall") == {"v": 2}
+    assert json.loads(previous.read_text(encoding="utf-8")) == {"v": 1}, "前提：A 还在 .prev"
+
+    real_write = fetcher_module.atomic_write_text
+
+    def fuse(path: Path, text: str, **kwargs: object) -> None:
+        if '"v": 3' in text:
+            raise OSError("模拟：写新快照时磁盘炸了")
+        real_write(path, text, **kwargs)
+
+    monkeypatch.setattr(fetcher_module, "atomic_write_text", fuse)
+    with pytest.raises(OSError):
+        save_raw({"v": 3}, cfg, "2026-fall")
+    monkeypatch.setattr(fetcher_module, "atomic_write_text", real_write)
+
+    assert load_raw(cfg, "2026-fall") == {"v": 2}, "新的没写进去 ⇒ 当前必须还是 B"
+    assert json.loads(previous.read_text(encoding="utf-8")) == {"v": 1}, "A 这一代不许被冲掉"

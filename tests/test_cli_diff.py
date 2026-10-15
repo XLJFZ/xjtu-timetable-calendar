@@ -23,7 +23,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from exam_support import exam_payload, exam_row
+from exam_support import (
+    DEMO_DAY,
+    MARK_TIME,
+    captured_logs,
+    exam_payload,
+    exam_row,
+    leaked,
+    marker_row,
+)
 
 from xjtu_calendar.cli import main
 from xjtu_calendar.config import Settings
@@ -401,3 +409,26 @@ def test_diff_omits_the_cancellation_summary_when_nothing_is_cancelled(
     out = capsys.readouterr().out
     assert "考试变更" in out and "座位变更" in out
     assert "将撤销" not in out
+
+
+def test_diff_exam_skip_logs_carry_no_original_text(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§8：`cli._exam_rows` 逐字打 `report.skipped` 的那条通路也不许出现考试原文。
+
+    与 `test_exam_log_lines_never_carry_original_text`（导出侧）成对：两处吃的是**同一批**
+    字符串，所以修复落在 `exams.parse_exam_rows` 的文案上，两条用例各自守一条通路。
+    打破红：把跳过文案恢复成带「考试「{name}」」的旧写法，`leaked()` 立即非空。
+
+    口径边界：`diff` 的**标准输出**照旧写考试名（那是给本人看的本地报告，不是日志），
+    本用例只扫日志记录。
+    """
+    _write_timetable_snapshots(home, _row("示例课程甲", "D-1"))
+    _write_exam_snapshots(home, [marker_row(KSSJMS=f"{DEMO_DAY} {MARK_TIME}待定")], [exam_row()])
+    # `main()` 里的 setup_logging 会清掉 captured_logs 的 handler，临时停成 no-op。
+    monkeypatch.setattr("xjtu_calendar.cli.setup_logging", lambda **_kw: None)
+    with captured_logs() as records:
+        assert main(["diff", "--semester", SEMESTER]) == 0
+    messages = [rec.getMessage() for rec in records]
+    assert any("快照解析跳过" in msg for msg in messages), messages  # 脱敏不许变成静音
+    assert not leaked(messages), messages

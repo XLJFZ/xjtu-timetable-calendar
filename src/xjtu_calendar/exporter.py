@@ -845,6 +845,9 @@ def build_ics_for_semester(
                     report=report,
                 )
                 for line in report.skipped:
+                    # 逐条打印的是**已在源头脱敏**的文案（只有行号 + 字段名，§8）：
+                    # 保留逐条是因为用户要按行号回本地快照定位坏掉的是哪一场。
+                    # 看守：`tests/test_exporter_exams.py::test_exam_log_lines_never_carry_original_text`。
                     logger.warning("考试安排跳过一条：%s", line)
                 for line in report.warnings:  # 星期与日期不一致这类"保留但可疑"的提示
                     logger.warning("考试安排提醒：%s", line)
@@ -915,7 +918,8 @@ def build_ics_for_semester(
         seen = {event.uid for event in events}
         for event in exam_events:
             if event.uid in seen:
-                logger.warning("考试事件 UID 与已有事件冲突，已丢弃：%s", event.summary)
+                # 只报 UID（§8，与课程侧撤销的丢弃日志同口径）：`event.summary` 是考试原名。
+                logger.warning("考试事件 UID 与已有事件冲突，已丢弃：%s", event.uid)
                 continue
             seen.add(event.uid)
             kept_exam.append(event)

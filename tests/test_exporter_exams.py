@@ -17,10 +17,13 @@ from pathlib import Path
 import pytest
 from exam_support import (
     DEMO_DAY,
+    MARK_TIME,
     SEMESTER,
     captured_logs,
     exam_payload,
     exam_row,
+    leaked,
+    marker_row,
     timetable_envelope,
 )
 from icalendar import Calendar
@@ -352,3 +355,32 @@ def test_exam_only_in_range_does_not_warn_about_no_events(tmp_path):
     assert result.info["events"] == 0  # 课程口径：窗口里确实一次课都没有
     assert result.info["exam_events"] == 1
     assert not any("没有生成任何事件" in rec.getMessage() for rec in records)
+
+
+def test_exam_log_lines_never_carry_original_text(tmp_path):
+    """§8 收口：导出这条通路上**任何**级别的日志都不许出现考试原文（名称/考场/座位/时间描述）。
+
+    三条逐条打印的通道一次跑齐 —— 跳过（`report.skipped`）、提醒（`report.warnings`）、
+    UID 碰撞丢弃。打破红：把 `exams.parse_exam_rows` 的跳过文案恢复成带「考试「{name}」」，
+    或把 `exporter` 碰撞那行的 `event.uid` 换回 `event.summary`，本用例立刻红。
+
+    边界（有意不覆盖）：`_uid_token` 的「缺少 WID，UID 降级」文案仍带课程名，那是 v0.8 由
+    `tests/test_diff_exams.py` 逐字钉住的可诊断性取舍，收紧它需要单独决策 —— 所以这里的行
+    一律带 `WID`，不走进那一格。
+    """
+    cfg = _home_with_exams(
+        tmp_path,
+        marker_row(WID="W-SKIP", KSSJMS=f"{DEMO_DAY} {MARK_TIME}待定"),  # 跳过
+        marker_row(WID="W-WARN", KSSJMS=f"{DEMO_DAY} 09:00-11:00(星期五)"),  # 提醒
+        marker_row(WID="DUP"),  # 同 WID 两行 → UID 碰撞丢弃
+        marker_row(WID="DUP"),
+    )
+    with captured_logs() as records:
+        result = build_ics_for_semester(cfg, SEMESTER)
+    messages = [rec.getMessage() for rec in records]
+    assert not leaked(messages), messages
+    # 脱敏不等于静音：三条通道都得留下痕迹（级别与措辞由各自用例钉，这里只证「说了」）。
+    assert any("考试安排跳过一条" in msg for msg in messages), messages
+    assert any("考试安排提醒" in msg for msg in messages), messages
+    assert any("UID" in msg and "冲突" in msg for msg in messages), messages
+    assert result.info["exam_events"] == 2  # 4 行 → 跳过 1 → 构建 3 → UID 碰撞再丢 1

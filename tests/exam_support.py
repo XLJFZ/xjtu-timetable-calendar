@@ -82,6 +82,28 @@ def exam_row(**over: str) -> dict[str, str]:
     return row
 
 
+#: 泄漏看守（`docs/design/2026-10-09-exam-cancellation.md` §8）用的**原文标记串**。
+#: 用法：把考试行里每一类可能进日志的原文字段换成这些唯一串，跑真实管线（解析 → 构建 →
+#: 导出 / diff），再断言**任何**日志记录与任何报告文本里都不出现它。合成值，形态照真实字段。
+MARK_COURSE = "标记课程名绝不进日志"  # KCM
+MARK_ROOM = "标记考场绝不进日志"  # JASMC
+MARK_SEAT = "标记座位绝不进日志"  # ZWH
+MARK_TIME = "标记时间描述绝不进日志"  # KSSJMS（只放进解析不出的形态里）
+#: 超过 10 字符、熬过 `parse_exam_rows` 的长度检查、直达 `date.fromisoformat` 的坏日期原文。
+BROKEN_DATE = "2030-13-45"
+MARKERS: tuple[str, ...] = (MARK_COURSE, MARK_ROOM, MARK_SEAT, MARK_TIME, BROKEN_DATE)
+
+
+def marker_row(**over: str) -> dict[str, str]:
+    """原文字段**全部带标记**的一行考试记录；`over` 用来把它推进某条跳过／提醒分支。"""
+    return exam_row(KCM=MARK_COURSE, JASMC=MARK_ROOM, ZWH=MARK_SEAT, **over)
+
+
+def leaked(messages: Sequence[str]) -> list[str]:
+    """`messages` 里含任一原文标记的那些条——看守用例断言它为空，非空时直接当失败信息打出。"""
+    return [msg for msg in messages if any(marker in msg for marker in MARKERS)]
+
+
 def timetable_envelope(rows: list[dict[str, str]]) -> dict[str, object]:
     """课表快照的**真实信封**形态（`datas.xskcb.rows`），不是 `{"kbList": ...}` 那种简写。
 

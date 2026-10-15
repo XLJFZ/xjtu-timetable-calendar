@@ -1,8 +1,18 @@
+import re
 from dataclasses import FrozenInstanceError, replace
 from datetime import timedelta
 
 import pytest
-from exam_support import DEMO_DAY, captured_logs, exam_payload, exam_row
+from exam_support import (
+    BROKEN_DATE,
+    DEMO_DAY,
+    MARK_TIME,
+    captured_logs,
+    exam_payload,
+    exam_row,
+    leaked,
+    marker_row,
+)
 
 from xjtu_calendar.exams import (
     ExamState,
@@ -305,3 +315,60 @@ def test_broken_date_reaching_build_is_dropped_with_warning():
     with captured_logs() as records:
         assert build_exam_events([exam], "2026-2027-1") == []
     assert any("无法解析" in r.getMessage() and r.levelname == "WARNING" for r in records)
+
+
+# --------------------------------------------------------------------------- #
+# 考试侧日志不得带原文（§8）：跳过 / 提醒 / 构建丢弃三条逐条打印的通道
+# --------------------------------------------------------------------------- #
+
+
+def test_parse_skip_lines_carry_row_position_not_original_text():
+    """三条跳过文案只给「第 N 行 + 坏在哪个字段」，不许带 KCM / KSSJMS 原文。
+
+    打破红：把 `exams.parse_exam_rows` 里任一条 `rep.skip(...)` 恢复成带「考试「{name}」」
+    或 `{time_text!r}` 的旧写法，`leaked()` 立刻返回那一条。
+    """
+    rows = [
+        exam_row(WID="W-1", KCM=""),  # 缺课程名
+        marker_row(WID="W-2", KSSJMS=f"{DEMO_DAY} {MARK_TIME}待定"),  # 时间文本解析不出
+        marker_row(WID="W-3", KSRQ="缺日期"),  # 缺考试日期（不足 10 字符）
+    ]
+    report = ParseReport()
+    assert parse_exam_rows(exam_payload(rows), report=report) == []
+    assert len(report.skipped) == 3
+    assert not leaked(report.skipped), report.skipped
+    # 不静音：每条要交代是哪一行、坏在哪个字段，用户拿行号回本地快照定位。
+    assert [re.search(r"第 (\d+) 行", line).group(1) for line in report.skipped] == ["1", "2", "3"]
+    for token, line in zip(("KCM", "KSSJMS", "KSRQ"), report.skipped, strict=True):
+        assert token in line, line
+
+
+def test_weekday_mismatch_warning_carries_no_original_text():
+    """星期不一致的「保留但可疑」提醒同样只许给行号：原文里的考试日期与课程名都不进日志。"""
+    report = ParseReport()
+    parse_exam_rows(
+        exam_payload([marker_row(KSSJMS=f"{DEMO_DAY} 09:00-11:00(星期五)")]),  # 2030-06-17 是星期一
+        report=report,
+    )
+    assert len(report.warnings) == 1
+    line = report.warnings[0]
+    assert not leaked([line]), line
+    assert DEMO_DAY not in line, line  # 考试日期原文也不许进日志
+    assert "第 1 行" in line and "星期" in line, line
+
+
+def test_broken_date_skip_log_carries_no_original_text():
+    """`build_exam_events` 的丢弃日志：行号 + 异常类名，不带课程名，也不带坏日期原文。
+
+    与 `exporter.py` 里「考试快照无法处理只记异常类名」同口径：`str(exc)` 会逐字引用
+    `date.fromisoformat` 拒绝的那个值（§8 禁止进日志的原文）。
+    """
+    exam = _exams(marker_row(KSRQ=f"{BROKEN_DATE} 00:00:00", KSSJMS=f"{BROKEN_DATE} 09:00-11:30"))[
+        0
+    ]
+    assert exam.date_str == BROKEN_DATE  # 前提确认：解析层确实放行了
+    with captured_logs() as records:
+        assert build_exam_events([exam], "2026-2027-1") == []
+    lines = [rec.getMessage() for rec in records if rec.levelname == "WARNING"]
+    assert any("无法解析" in line for line in lines), lines
+    assert not leaked(lines), lines

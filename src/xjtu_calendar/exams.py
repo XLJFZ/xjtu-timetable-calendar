@@ -212,25 +212,31 @@ def parse_exam_rows(
     campus_names: Mapping[str, str] | None = None,
     report: ParseReport | None = None,
 ) -> list[ExamSchedule]:
-    """把考试行转成 :class:`ExamSchedule`。不可用的行跳过并计入 ``report``，绝不造 00:00 假事件。"""
+    """把考试行转成 :class:`ExamSchedule`。不可用的行跳过并计入 ``report``，绝不造 00:00 假事件。
+
+    ``report`` 里的跳过/提醒文案**只给行号与字段名**，绝不带考试原名、时间描述或日期原文
+    （§8：这些是个人数据，而 `report` 的两批字符串会被 `exporter` 与 `cli` 的 diff **逐条打进
+    日志**）。看守：`tests/test_exams.py`、`tests/test_exporter_exams.py`、`tests/test_cli_diff.py`
+    三条 `*_carry_no_original_text` 用例把原文换成唯一标记串断言零命中。
+    """
     rep = report or ParseReport()
     out: list[ExamSchedule] = []
-    for row in _rows_for_parse(payload):
+    for index, row in enumerate(_rows_for_parse(payload), start=1):
         rep.total_candidates += 1
         name = _text(row, "course_name")
         raw_date = _text(row, "date")
         pair = parse_exam_time_text(_text(row, "time_text"))
         if not name:
-            rep.skip("考试行缺少课程名（KCM），已跳过")
+            rep.skip(f"第 {index} 行考试缺少课程名（KCM），已跳过")
             continue
         if pair is None:
-            rep.skip(f"考试「{name}」的时间描述无法解析：{_text(row, 'time_text')!r}")
+            rep.skip(f"第 {index} 行考试的时间描述无法解析（KSSJMS），已跳过")
             continue
         if len(raw_date) < 10:
-            rep.skip(f"考试「{name}」缺少考试日期（KSRQ），已跳过")
+            rep.skip(f"第 {index} 行考试缺少考试日期（KSRQ），已跳过")
             continue
         day = raw_date[:10]
-        _check_weekday_consistency(rep, name, day, _text(row, "time_text"))
+        _check_weekday_consistency(rep, index, day, _text(row, "time_text"))
         code = _text(row, "campus_code")
         credits_raw = _text(row, "credits")
         out.append(
@@ -260,12 +266,15 @@ _WEEKDAY_IN_TEXT = re.compile(r"星期([一二三四五六日天])")
 _WEEKDAY_CHARS = "一二三四五六日"  # 下标 0 = 星期一，与 date.isoweekday() 对齐
 
 
-def _check_weekday_consistency(rep: ParseReport, name: str, day: str, time_text: str) -> None:
+def _check_weekday_consistency(rep: ParseReport, index: int, day: str, time_text: str) -> None:
     """`KSRQ` 推出来的星期 vs `KSSJMS(星期X)`：不一致只 warning，**不丢行**。
 
     §4.1 的 22 行真样本逐行核对过，两处**全部一致**；这条是防御性的（两个独立字段，
     谁先腐化不可知）。取舍方向：以 `KSRQ` 为准（客户端显示的就是它推出来的那天），
     丢掉整行等于把一次真实考试信息抹掉，比一条噪音严重得多。
+
+    文案只报行号（参数 `day`/`time_text` 是原文，一个字都不进 `rep`，理由见
+    :func:`parse_exam_rows` 的 §8 说明）。
     """
     match = _WEEKDAY_IN_TEXT.search(time_text)
     if match is None:
@@ -276,10 +285,7 @@ def _check_weekday_consistency(rep: ParseReport, name: str, day: str, time_text:
         return  # 日期本身有问题，交给下游 build_exam_events 的跳过分支
     claimed = _WEEKDAY_CHARS.index(match.group(1).replace("天", "日"))
     if claimed != actual.isoweekday() - 1:
-        rep.warn(
-            f"考试「{name}」的时间文本写的是星期{match.group(1)}，"
-            f"但考试日期 {day} 是星期{actual.isoweekday()}；按日期为准"
-        )
+        rep.warn(f"第 {index} 行考试的时间文本写的星期与 KSRQ 推出的星期不一致，按 KSRQ 为准")
 
 
 def _uid_token(exam: ExamSchedule, *, announce: bool = True) -> str:
@@ -540,13 +546,16 @@ def describe_exam_change(change: ExamChange) -> str:
 def build_exam_events(exams: Sequence[ExamSchedule], semester_key: str) -> list[CalendarEvent]:
     """考试 → 单场、绝对时刻、无 RRULE / 无 VALARM 的 VEVENT。"""
     events: list[CalendarEvent] = []
-    for exam in exams:
+    for index, exam in enumerate(exams, start=1):
         try:
             day = date.fromisoformat(exam.date_str)
             start = combine(day, exam.start_time)
             end = combine(day, exam.end_time)
         except ValueError as exc:
-            logger.warning("考试「%s」日期无法解析（%s），已跳过", exam.course_name, exc)
+            # §8：丢弃日志不带考试原名，也不带 `str(exc)`（异常原文会逐字引用那个坏掉的
+            # 日期），只给「本次构建序列里第几场」+ 异常类名——与 `exporter` 的
+            # 「考试快照无法处理只记类名」同口径。
+            logger.warning("第 %d 场考试的日期无法解析（%s），已跳过", index, type(exc).__name__)
             continue
         location = " ".join(part for part in (exam.campus, exam.location) if part) or None
         description_lines = [

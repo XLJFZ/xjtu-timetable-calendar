@@ -320,5 +320,7 @@ def test_export_path_logs_info_on_ksrwid_fallback_uid():
     degraded = [rec for rec in records if "UID 降级" in rec.getMessage()]
     assert len(degraded) == 1, [rec.getMessage() for rec in records]
     assert degraded[0].levelname == "INFO", degraded[0].levelname
-    assert degraded[0].getMessage() == "考试「示例课程甲」缺少 WID，UID 降级到 KSRWID"
+    # 文案逐字钉住。**2026-10-15 起不带课程名**（§8：考试原文不进日志，`_uid_token` 是
+    # 这轮的最后一处例外，已收口）——判据只需要「缺哪个键、降到哪一档」。
+    assert degraded[0].getMessage() == "有一条考试缺少 WID，UID 降级到 KSRWID"
     assert not [rec for rec in records if rec.levelname in ("WARNING", "ERROR")]

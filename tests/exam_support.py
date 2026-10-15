@@ -92,11 +92,24 @@ MARK_TIME = "标记时间描述绝不进日志"  # KSSJMS（只放进解析不�
 #: 超过 10 字符、熬过 `parse_exam_rows` 的长度检查、直达 `date.fromisoformat` 的坏日期原文。
 BROKEN_DATE = "2030-13-45"
 MARKERS: tuple[str, ...] = (MARK_COURSE, MARK_ROOM, MARK_SEAT, MARK_TIME, BROKEN_DATE)
+#: 行标识（`WID` / `KSRWID`）**刻意不在 `MARKERS` 里**：它们是不透明的服务端行号，
+#: 与已经允许进日志的 UID 同级别，不是给人看的业务字段。用例仍给它们带标记的值，
+#: 是为了万一将来把它们算作原文时改一行 `MARKERS` 就能重新判定。
+MARK_ROW = "标记行号绝不进日志"
+MARK_TASK = "标记任务号绝不进日志"
 
 
 def marker_row(**over: str) -> dict[str, str]:
     """原文字段**全部带标记**的一行考试记录；`over` 用来把它推进某条跳过／提醒分支。"""
-    return exam_row(KCM=MARK_COURSE, JASMC=MARK_ROOM, ZWH=MARK_SEAT, **over)
+    row = exam_row(
+        KCM=MARK_COURSE,
+        JASMC=MARK_ROOM,
+        ZWH=MARK_SEAT,
+        WID=MARK_ROW,
+        KSRWID=MARK_TASK,
+    )
+    row.update(over)
+    return row
 
 
 def leaked(messages: Sequence[str]) -> list[str]:

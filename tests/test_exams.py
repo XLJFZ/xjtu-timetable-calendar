@@ -357,6 +357,29 @@ def test_weekday_mismatch_warning_carries_no_original_text():
     assert "第 1 行" in line and "星期" in line, line
 
 
+def test_uid_degradation_logs_carry_no_original_text():
+    """UID 降级的两档日志也不带课程名：**缺 WID 不是异常输入**，正常学期里会反复出现，
+    逐条吼原文比跳过日志更糟。判据只需要「缺哪个键、降到哪一档」，不需要是哪门课。
+
+    打破红：把 `exams._uid_token` 两行文案里的 `exam.course_name` 加回来，两条 `leaked()`
+    立即非空；级别改乱则由 `test_diff_exams.py` 的 C4 三条用例拦下。
+    """
+    second_tier = _exams(marker_row(WID=""))[0]  # 缺 WID、有 KSRWID → 第二档（INFO）
+    third_tier = _exams(marker_row(WID="", KSRWID=""))[0]  # 两键皆缺 → 第三档（WARNING）
+    with captured_logs() as records:
+        make_exam_uid("2026-2027-1", second_tier)
+        make_exam_uid("2026-2027-1", third_tier)
+    messages = [rec.getMessage() for rec in records]
+    assert not leaked(messages), messages
+    assert any(
+        rec.levelname == "INFO" and "缺少 WID，UID 降级到 KSRWID" in rec.getMessage()
+        for rec in records
+    ), messages
+    assert any(
+        rec.levelname == "WARNING" and "UID 降级到内容组合" in rec.getMessage() for rec in records
+    ), messages
+
+
 def test_broken_date_skip_log_carries_no_original_text():
     """`build_exam_events` 的丢弃日志：行号 + 异常类名，不带课程名，也不带坏日期原文。
 

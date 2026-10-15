@@ -298,20 +298,22 @@ def _uid_token(exam: ExamSchedule, *, announce: bool = True) -> str:
     缺 ``WID`` 记 ``INFO``、再缺 ``KSRWID`` 记 ``WARNING``，让用户必须知道 UID 不稳；
     diff 路径（:func:`_exam_key`）传 ``False``，把同一句话降到 ``DEBUG``——降级行在 diff
     里每行两侧都会命中，而它的可见信号本就是「取消 + 新增」那两行，无须再逐行吼一次。
+
+    文案**不带考试原名**（§8，与跳过/提醒/丢弃/降级这四条通道同一口径）：判据只需要"缺哪个
+    键、降到哪一档"，是哪门课对判定 UID 稳定性没有加成；而缺 ``WID`` 并不必然是异常输入，
+    这一条会在正常使用里反复出现，逐条打原文比跳过日志更糟。
     """
     if exam.row_id:
         return f"WID={exam.row_id}"
     if exam.task_id:
         logger.log(
             logging.INFO if announce else logging.DEBUG,
-            "考试「%s」缺少 WID，UID 降级到 KSRWID",
-            exam.course_name,
+            "有一条考试缺少 WID，UID 降级到 KSRWID",
         )
         return f"KSRWID={exam.task_id}"
     logger.log(
         logging.WARNING if announce else logging.DEBUG,
-        "考试「%s」缺少 WID 与 KSRWID，UID 降级到内容组合（改期会被视为新事件）",
-        exam.course_name,
+        "有一条考试缺少 WID 与 KSRWID，UID 降级到内容组合（改期会被视为新事件）",
     )
     # 必须含 KSSJMS：实测同一门课同一天有两场（上午 + 晚场），只到日期粒度会撞车
     return "|".join(

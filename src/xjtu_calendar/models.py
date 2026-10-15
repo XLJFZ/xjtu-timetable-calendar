@@ -278,12 +278,24 @@ class CourseMeeting:
 
 @dataclass(frozen=True)
 class CalendarEvent:
-    """一次「实际上课」，已经带上了具体日期与时间。"""
+    """一次「实际上课」或一条「全天校历事件」，已经带上具体日期（与钟点）。
+
+    ``start`` / ``end`` 允许两种同质的形态，**不许混用**：
+
+    - ``datetime`` 对：有钟点的课程 / 考试 / 撤销事件（渲染成 ``DATE-TIME`` + ``TZID``）；
+    - ``date`` 对：全天事件（校历事件，渲染成 ``DTSTART;VALUE=DATE``，RFC 5545 的
+      ``DTEND`` 是**不含**的结束边界）。
+
+    全天事件的区间语义在**这里**就定死为半开区间（`docs/design/2026-10-15-academic-calendar-source.md`
+    §12.1）：``end`` 已经是"最后一天 + 1 天"，所以单日事件是 ``D → D+1`` 而不是 ``D → D``，
+    渲染层因此不需要再加一天——**加一次只许发生在一个地方**（配置闭区间 → 构造时转半开），
+    否则基线回读与指纹会各自偏移，产生无意义的 ``SEQUENCE`` 漂移。
+    """
 
     uid: str
     summary: str
-    start: datetime
-    end: datetime
+    start: datetime | date
+    end: datetime | date
     location: str | None = None
     description: str | None = None
     #: 溯源信息，便于调试与调课比对（不进 ICS 正文）
@@ -293,10 +305,37 @@ class CalendarEvent:
     status: str | None = None
 
     def __post_init__(self) -> None:
+        if isinstance(self.start, datetime) != isinstance(self.end, datetime):
+            # 显式挡住混用：混着的比较会在排序/汇总处炸成 TypeError，那时现场已经走远了。
+            raise ValueError(
+                f"事件起止必须是同一形态（都为 DATE 或都为 DATE-TIME）："
+                f"start={type(self.start).__name__}、end={type(self.end).__name__}"
+            )
         if self.end <= self.start:
             raise ValueError(
                 f"事件结束时间必须晚于开始时间：{self.start.isoformat()} -> {self.end.isoformat()}"
             )
+
+    @property
+    def is_all_day(self) -> bool:
+        """是否为全天事件（``date`` 对，渲染成 ``VALUE=DATE``）。"""
+        return not isinstance(self.start, datetime)
+
+    @property
+    def start_date(self) -> date:
+        """事件开始那天。全天与计时事件都取到同一个"日历日"口径，供排序、过滤与汇总共用。"""
+        value = self.start
+        return value.date() if isinstance(value, datetime) else value
+
+    @property
+    def end_date(self) -> date:
+        """``end`` 落在哪一天。
+
+        ⚠️ 全天事件的 ``end`` 是**不含**的边界，所以这里是"最后一天 + 1 天"那天；
+        要展示事件的最后一天必须减一天，别在汇总里直接打出来。
+        """
+        value = self.end
+        return value.date() if isinstance(value, datetime) else value
 
 
 @dataclass(frozen=True)

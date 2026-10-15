@@ -13,6 +13,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
+from .errors import CalendarExportError
 from .exporter import PRODID
 from .models import CalendarEvent
 
@@ -57,6 +58,15 @@ def render_ledger(
     for item in pending:
         chosen.setdefault(item.uid, item)
     for event in live:
+        # 台账只收计时事件：保留期要和 aware 的墙钟比较（spec D9/D22），`date` 没有那一刻。
+        # 判据写成 `isinstance` 而不是 `event.is_all_day`：构造期的"起止同形态"保证两者等价，
+        # 但只有前者能让类型检查把 `start`/`end` 收窄成 `datetime`。
+        # 走到这里说明调用方把全天事件喂进了撤销通路——校历事件明确**不接**撤销（§5），
+        # 失败要响，不静默丢弃。
+        if not isinstance(event.start, datetime) or not isinstance(event.end, datetime):
+            raise CalendarExportError(
+                f"台账只接受 DATE-TIME 计时事件，收到全天事件 UID={event.uid}"
+            )
         chosen[event.uid] = LedgerEntry(
             uid=event.uid,
             start=event.start,

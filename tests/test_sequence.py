@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -198,8 +198,13 @@ def test_parse_baseline_skips_events_without_uid() -> None:
     assert parse_baseline(ics) == {}
 
 
-def test_parse_baseline_skips_all_day_events() -> None:
-    """DATE（非 DATE-TIME）形态不是本项目生成的，跳过而非报错。"""
+def test_parse_baseline_keeps_all_day_events() -> None:
+    """0.9-P1-01 起：`VALUE=DATE` 全天事件**进基线**。
+
+    原用例断言"跳过"，那是实现缺口的忠实记录（"进不了基线的事件，客户端永远不会收到更新"）。
+    校历事件天生是全天，接入 DATE 形态是 §12.1 的前置，所以这条契约反转；
+    仍然跳过的只剩**起止形态不一致**的病态输入（见下一条）。
+    """
     ics = "\r\n".join(
         [
             "BEGIN:VCALENDAR",
@@ -210,6 +215,32 @@ def test_parse_baseline_skips_all_day_events() -> None:
             "DTSTART;VALUE=DATE:20260911",
             "DTEND;VALUE=DATE:20260912",
             "SUMMARY:全天事件",
+            "END:VEVENT",
+            "END:VCALENDAR",
+            "",
+        ]
+    )
+    baseline = parse_baseline(ics)
+    assert list(baseline) == ["allday@example"]
+    # 指纹里的 end 是**不含**的边界，与构造期同一口径（§12.1），不做任何加减天。
+    assert baseline["allday@example"].sequence == 0
+    assert baseline["allday@example"].fingerprint == event_fingerprint(
+        "全天事件", None, None, date(2026, 9, 11), date(2026, 9, 12)
+    )
+
+
+def test_parse_baseline_skips_mixed_shape_events() -> None:
+    """起止一个 DATE、一个 DATE-TIME：不是本项目生成的形态，跳过而非报错。"""
+    ics = "\r\n".join(
+        [
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//test//CN",
+            "BEGIN:VEVENT",
+            "UID:mixed@example",
+            "DTSTART;VALUE=DATE:20260911",
+            "DTEND;VALUE=DATE-TIME:20260912T100000Z",
+            "SUMMARY:混形态事件",
             "END:VEVENT",
             "END:VCALENDAR",
             "",

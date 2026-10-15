@@ -20,7 +20,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping, MutableSet, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -378,7 +378,7 @@ def build_events(
                 )
             )
 
-    events.sort(key=lambda e: (e.start, e.summary))
+    events.sort(key=sort_key)
     return events
 
 
@@ -547,12 +547,17 @@ def render_ics(
 def summarize(
     meetings: Sequence[CourseMeeting], events: Sequence[CalendarEvent]
 ) -> dict[str, object]:
-    """汇总导出结果，供 CLI 展示。"""
+    """汇总导出结果，供 CLI 展示。
+
+    起止按**日历日**给（`date_range` 只是展示，不进任何产物字节）。全天事件的 ``end``
+    是不含的边界（RFC 5545 的 `DTEND`），所以最后一天要减一天才打得出"寒假到 2/28"；
+    计时事件的 `end` 本来就落在最后一天那天上，直接取日期。
+    """
     course_keys = {(m.course_id or m.course_name) for m in meetings}
     if events:
-        first = min(e.start for e in events)
-        last = max(e.end for e in events)
-        date_range = f"{first.date().isoformat()} ~ {last.date().isoformat()}"
+        first = min(event.start_date for event in events)
+        last = max(_last_day(event) for event in events)
+        date_range = f"{first.isoformat()} ~ {last.isoformat()}"
     else:
         date_range = "（无事件）"
 
@@ -624,6 +629,44 @@ def _stamp_from_snapshot(path: Path) -> datetime:
         return now_local()
 
 
+def sort_key(event: CalendarEvent) -> tuple[date, int, date | datetime, str]:
+    """产物内的统一事件顺序：**同一天里全天事件排在计时事件之前**。
+
+    为什么不能沿用 `(e.start, e.summary)`：`date` 与 `datetime` 之间**不可比较**
+    （`TypeError: can't compare datetime.datetime to datetime.date`），一旦课程/考试
+    （DATE-TIME）与校历事件（DATE）同批进产物，原写法会当场炸。
+    三段键的构造保证同一形态内部比较项仍是原类型：
+
+    1. 开始那天（两种形态都取得出来）；
+    2. 全天 = 0、计时 = 1 ⇒ 同一天里整天块置顶，这也符合客户端惯例；
+    3. 组内比较项：**计时事件用 `start`（与旧键 `(e.start, e.summary)` 完全同序）**，
+       全天事件用不含的 `end`（同日起点相同的长事件之间才有稳定次序）。两组的第 2 位不同，
+       元组比较在第 2 位就分出胜负、**永远不会拿 `date` 去和 `datetime` 比**。
+
+    ⚠️ 对既有的纯 DATE-TIME 产物，这个键与 `(e.start, e.summary)` 给出**完全相同**的顺序
+    ⇒ 不改动任何已发布字节，由两支 Golden 用例守着。
+    """
+    return (
+        event.start_date,
+        0 if event.is_all_day else 1,
+        event.end if event.is_all_day else event.start,
+        event.summary,
+    )
+
+
+def _last_day(event: CalendarEvent) -> date:
+    """事件实际占用的**最后一天**。
+
+    全天事件的 ``end`` 是不含的边界（§12.1），所以要减一天；计时事件的 `end` 就是
+    下课那一刻，日期本身即最后一天。判据用 `isinstance(..., datetime)` 而不是
+    `event.is_all_day`：两者由构造期的"起止同形态"约束保证等价，而这一条不依赖别的字段。
+    """
+    end = event.end
+    if isinstance(end, datetime):
+        return end.date()
+    return end - timedelta(days=1)
+
+
 def _in_range(event: CalendarEvent, lower: date | None, upper: date | None) -> bool:
     """事件的日期是否落在 ``[lower, upper]`` 闭区间内（与旧内联条件等价）。
 
@@ -631,7 +674,7 @@ def _in_range(event: CalendarEvent, lower: date | None, upper: date | None) -> b
     （§6.5 第 4 条：``--from-date``/``--to-date`` 连考试一起裁），
     两处各写一遍边界判断迟早会漂移。
     """
-    day = event.start.date()
+    day = event.start_date
     return (lower is None or day >= lower) and (upper is None or day <= upper)
 
 

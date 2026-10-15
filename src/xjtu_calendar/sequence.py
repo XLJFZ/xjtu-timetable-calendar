@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from .errors import CalendarExportError
@@ -72,8 +72,8 @@ def event_fingerprint(
     summary: str,
     location: str | None,
     description: str | None,
-    start: datetime,
-    end: datetime,
+    start: datetime | date,
+    end: datetime | date,
 ) -> str:
     """计算事件**内容指纹**。
 
@@ -82,12 +82,17 @@ def event_fingerprint(
     它们变化不代表事件本身变了。
 
     时间统一折算成 UTC 再比较，避免「同一时刻、不同时区表示」造成假差异。
+    全天事件（``date`` 对）没有时区可折算，直接用 ISO 日期串：``end`` 在构造时**已经**是
+    不含的边界（:class:`~xjtu_calendar.models.CalendarEvent` 的 §12.1 语义），所以这里
+    不再做任何加减天——加减只许发生在"配置闭区间 → 事件半开区间"那一处。
     """
 
-    def norm_dt(value: datetime) -> str:
-        if value.tzinfo is None:
-            return value.isoformat()
-        return value.astimezone(UTC).isoformat()
+    def norm_dt(value: datetime | date) -> str:
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                return value.isoformat()
+            return value.astimezone(UTC).isoformat()
+        return value.isoformat()
 
     return _SEP.join(
         [
@@ -142,8 +147,17 @@ def parse_baseline(ics_text: str) -> dict[str, EventBaseline]:
 
         dtstart = getattr(component.get("dtstart"), "dt", None)
         dtend = getattr(component.get("dtend"), "dt", None)
-        if not isinstance(dtstart, datetime) or not isinstance(dtend, datetime):
-            # 全天事件（DATE 值）等本项目不会生成的形态：指纹无从谈起，跳过。
+        # `isinstance(..., date)` 这一层是给 mypy 收窄类型用的（`datetime` 是 `date` 的
+        # 子类，所以它同时挡住 None 与"根本不是日期"的值；真正的形态判定在 `_same_shape`）。
+        if (
+            not isinstance(dtstart, date)
+            or not isinstance(dtend, date)
+            or not _same_shape(dtstart, dtend)
+        ):
+            # 三类都在这里被跳过：只有 DTSTART 没有 DTEND、起止形态混用（一个 DATE 一个
+            # DATE-TIME）、以及根本不是日期的值。**全天事件（两个 DATE）现在是要进基线的**
+            # ——0.9-P1-01 之前这里写的是"非 datetime 一律跳过"，那会让全天事件
+            # "每次重发布 SEQUENCE 恒 0、改了也不更新"（docs/design/2026-10-15-…-source.md §6.1）。
             continue
 
         fingerprint = event_fingerprint(
@@ -160,6 +174,20 @@ def parse_baseline(ics_text: str) -> dict[str, EventBaseline]:
             status=_read_status(component),
         )
     return baselines
+
+
+def _same_shape(dtstart: Any, dtend: Any) -> bool:
+    """起止是否同为「有钟点」或同为「纯日期」，且都不是 ``None``。
+
+    ``datetime`` 是 ``date`` 的子类，所以判"全天"必须先看它是不是 ``datetime``——
+    反过来写会把 DATE-TIME 误认成 DATE。混合形态（一条腿 DATE、一条腿 DATE-TIME）
+    在 :class:`~xjtu_calendar.models.CalendarEvent` 的构造期就被拒了，这里同样不收。
+    """
+    if dtstart is None or dtend is None:
+        return False
+    if not isinstance(dtstart, date) or not isinstance(dtend, date):
+        return False
+    return isinstance(dtstart, datetime) is isinstance(dtend, datetime)
 
 
 def _read_status(component: Any) -> str | None:

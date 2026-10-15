@@ -508,3 +508,22 @@ def test_config_without_events_still_loads_exactly_as_before() -> None:
     assert cal.calendar_events.conflicts == ()
     assert cal.calendar_events.errors == ()
     assert cal.is_excluded(date(2026, 10, 1)) is True
+
+
+def test_the_bundled_example_template_parses_cleanly() -> None:
+    """随仓库分发的格式模板必须能被解析器**零错误**收下。
+
+    模板是这个格式的唯一权威拷贝（`tests/subscribe_support.py` 同口径），
+    它一旦和解析器漂移，用户照着抄就当场撞上"配置错误"——而这类断链只有用例能拦住。
+    """
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "examples" / "academic_calendar.example.json"
+    cal = AcademicCalendar.from_file(path)
+
+    assert cal.calendar_events.errors == (), [e.describe() for e in cal.calendar_events.errors]
+    assert len(cal.calendar_events.specs) == 2
+    assert {spec.category for spec in cal.calendar_events.specs} == {"semester_start", "vacation"}
+    assert len(cal.calendar_events.conflicts) == 1
+    assert cal.calendar_events.conflicts[0].resolved is True
+    assert cal.calendar_events.publish_blocked is False

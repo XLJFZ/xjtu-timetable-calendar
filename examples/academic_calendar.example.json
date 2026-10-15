@@ -25,6 +25,24 @@
     "   导出默认报错列出明细（fail-closed）；确认接受缺失后加",
     "   --allow-unsupported-adjustments 带着显著警告继续。description 必填。",
     "",
+    "events / conflicts：**校历事件**（0.9 系列正在开发的能力，可选，**默认不进产物** ——",
+    "   要显式加 --include-calendar-events 才会进入导出与订阅发布）。",
+    "   只写学校**公开发布过**的事实，五类之内才收：",
+    "     semester_start 起课日 · registration 报到注册 · exam_period 考试周",
+    "     · vacation 寒暑假 · holiday 放假调休",
+    "   能由 first_week_monday + total_weeks 算出来的区间**不要**写成事件（能算 ≠ 学校发布过）。",
+    "   ⚠️ source_id 必填且是**身份**：同学期不许重复，只许用字母数字与 . _ -。",
+    "      '寒假''期末考试周'这类年年都有的事实请填稳定 ID（如 2026-2027-1-winter）——",
+    "      ID 不变 ⇒ 学校改了日期算**同一事件的原地更新**（SEQUENCE +1），不换 UID；",
+    "      没有稳定 ID 又没填对 = 配置错误，不做任何降级猜测。",
+    "   start / end 写**闭区间**（含两端，单日就写同一天），工具内部会转成",
+    "   ICS 的不含边界；source_url 必须是学校官方域名的**公开页**地址",
+    "   （https、*.xjtu.edu.cn，且不带任何 ticket/token/身份参数 ——",
+    "    这份配置会进公开产物，带凭据的 URL 一旦贴出去就等于公开凭据）。",
+    "   两个一手来源互相矛盾时**两边都不要写成事件**，改记一条 conflicts：",
+    "   它必须是结构化记录（两条 source_urls + 两个 dates + decided_on），",
+    "   写 adjudicated_by 才算裁决过；未裁决的冲突会让正式发布整体拒绝。",
+    "",
     "用法：复制到 ~/.xjtu-timetable-calendar/semesters/<学期标识>.json 后修改。"
   ],
 
@@ -58,6 +76,42 @@
     {
       "date": "2026-11-14",
       "description": "（格式示例）运动会停课，具体补课安排学校未公布"
+    }
+  ],
+
+  "events": [
+    {
+      "source_id": "2026-fall-start",
+      "category": "semester_start",
+      "title": "（格式示例）起课",
+      "start": "2026-09-07",
+      "end": "2026-09-07",
+      "source_url": "https://due.xjtu.edu.cn/xxfw/xl.htm",
+      "source_published_on": "2026-08-20",
+      "note": "（格式示例）闭区间：start == end 就是这一天"
+    },
+    {
+      "source_id": "2026-fall-winter",
+      "category": "vacation",
+      "title": "（格式示例）寒假",
+      "start": "2027-01-18",
+      "end": "2027-02-28",
+      "source_url": "https://due.xjtu.edu.cn/xxfw/xl.htm",
+      "note": "（格式示例）ID 不变 ⇒ 学校改日期是原地更新（SEQUENCE +1），不换 UID"
+    }
+  ],
+
+  "conflicts": [
+    {
+      "topic": "（格式示例）寒假起始日两份来源不一致",
+      "source_id": "2026-fall-winter",
+      "source_urls": [
+        "https://due.xjtu.edu.cn/xxfw/xl.htm",
+        "https://jwc.xjtu.edu.cn/info/1095/10442.htm"
+      ],
+      "dates": ["2027-01-18", "2027-01-22"],
+      "decided_on": "2026-10-15",
+      "adjudicated_by": "（格式示例）以教务部校历为准，通知里那句是转发"
     }
   ]
 }

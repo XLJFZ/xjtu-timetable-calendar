@@ -248,6 +248,12 @@ def _pollute_remote(origin: Path, *, branch: str = BRANCH) -> None:
 
     `branch` 默认是本文件专用的 `polluted`；已经发过一次、要在真正的 `cal` 上制造
     失败时传 `branch="cal"`（护栏看的就是订阅分支的 tip）。
+
+    **`cwd=seed` 不是可有可无的**（2026-10-15 CI 才暴露）：这句 push 原先漏了 cwd，
+    于是 git 跑在 pytest 的工作目录＝本工具仓库里，把**整个仓库的 tip**推进了临时裸仓库。
+    Windows 上它"碰巧"是绿的——护栏照样拒绝（tip 上远不止一个 `.ics`），但拒绝的理由
+    与被钉的契约无关；GitHub Actions 的 checkout 是 shallow 克隆，从 shallow 仓库 push
+    直接被 `shallow update not allowed` 拒掉，这条用例才在 Linux 上红。
     """
     seed = origin.parent / "seed"
     seed.mkdir(parents=True, exist_ok=True)
@@ -255,7 +261,9 @@ def _pollute_remote(origin: Path, *, branch: str = BRANCH) -> None:
     (seed / "stray.txt").write_text("not an ics\n", encoding="utf-8")
     _git("add", "-A", cwd=seed)
     _git("-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "stray", cwd=seed)
-    _git("push", "-q", "--force", str(origin), f"HEAD:refs/heads/{branch}")
+    _git("push", "-q", "--force", str(origin), f"HEAD:refs/heads/{branch}", cwd=seed)
+    # 现场必须真是"tip 上只有一个非 .ics 文件"，否则这条用例钉的就不是护栏那一格
+    assert _git("ls-tree", "-r", "--name-only", branch, cwd=origin).split() == ["stray.txt"]
 
 
 def test_failed_push_does_not_advance_any_published_state(

@@ -245,6 +245,11 @@ ColorOS 系统日历里那条「已取消的活动」**单条删不掉**，而�
 ⇒ 本机侧**没有任何清理动作可用**：手删、重加、删除订阅三条全部否证，占位只能等各自原定时刻过去。
 这条同时否证了「从产物里摘除墓碑能减负」的想法，见 §12。
 
+**适用前提（同一天晚些时候补，必读）**：上面那三条否证**只对 ColorOS 系统日历自带的 URL 订阅成立**。
+ICSx⁵ 每次成功同步都会无条件 prune 掉源里没有的 UID（上游源码，取证与真机待验清单见 §13），
+所以「产物消失 ⇒ 本地消失」在那条通路上是成立的——§8 这一格与 §12 里据它作的否证，
+都只在"通路 = ColorOS 原生订阅"这个前提下才有效。别把它当 Android 全平台的结论。
+
 **结论：维持 CD10 不动，不给过期条目发墓碑。** 理由：Google 侧按 UID 缺席自愈，不需要我们提醒；
 ColorOS 侧发不发墓碑都不会清（它连 `CANCELLED` 都不认，墓碑只是给残条换一个可辨认的标题），
 所以补墓碑**两头都换不到清理**，只是把一批已经不属于任何台账的旧事件重新塞回产物里发出去一遍。
@@ -439,7 +444,8 @@ Google 上不用管。**
 **否证掉的替代方案（别再去做）**：从课程台账 `subscribe/last-courses-<学期>.ics` 里摘掉那批墓碑
 UID、发一版"纯 live"产物。取证：该台账此刻是 168 条 = 96 live + 72 墓碑，而**墓碑与活课在台账里
 同形（D10 不写 `STATUS`）**，摘错一条就是撤掉一门真课；更关键的是本地行已经在手机上（10-12 演练
-是整本一次导入、占位与 live 1:1 全量落地），**产物消失 ≠ 本地消失**（§8 已实测），所以这一刀换不到
+是整本一次导入、占位与 live 1:1 全量落地），**产物消失 ≠ 本地消失**（§8 已实测，**但那条结论的
+前提是 ColorOS 原生订阅——ICSx⁵ 那条通路上 prune 会真删，见 §13**），所以这一刀换不到
 任何清爽，反而对没同步到的认 `STATUS` 客户端永久放弃这次撤销——让它们留下**带真实课程名**的 v1
 旧课表，比占位更糟。
 
@@ -476,3 +482,70 @@ UID、发一版"纯 live"产物。取证：该台账此刻是 168 条 = 96 live 
   不值"，那就是**不做**——本议题的正确出路包括"评审后关掉"，别为了有个 §12 而硬做。
 - 版本号：改的是已发布产物的形态，走 0.8.x 还是 0.9.0 等排期时按"用户可见产物变化"的口径定，
   本议题不预判。
+
+---
+
+## 13. Android 侧统一到 ICSx⁵（**方向已拍，读数待补**，2026-10-15）
+
+**决定**：Android 用户的首选订阅通路改为 **ICSx⁵**（包名 `at.bitfire.icsdroid`），不再按 ROM 各家
+去摸系统自带入口；ColorOS 的「URL 日历」**保留为免安装备选**（不删——"不想装第三方 App"是真实
+需求）。拍定理由由用户给：统一，别让每个 ROM 各自摸索。
+
+**为什么值得统一**（逐条标证据强度；除注明外全部是**上游源码取证，真机未验**）：
+
+- **消失项会被真删**：`ProcessEventsTask.processEvents()` 每次成功同步末尾无条件
+  `calendar.retainByUID(uids)`，把本地 UID 不在本次源里的行以 sync-adaptor 身份硬删，
+  **没有开关、默认就是 prune**。这正是 §8 那格在 ColorOS 上最缺的一半。
+- **`STATUS` 不被丢弃**：它依赖的 ical4android 在 `AndroidEvent.buildEvent()` 里把
+  `Status.VEVENT_CANCELLED` 映射成 Android 的 `Events.STATUS_CANCELED` 落库。⇒
+  "撤销条目被显示成普通日程"这个问题从**通路侧**挪到了**日历 App 侧**，而后者是可换的。
+- **维护面收敛**：行为矩阵里"各家系统自带入口参差"（MIUI / 鸿蒙常只给一次性导入）这一整格，
+  从此由一个上游承担，N 个 ROM 收敛成 1 条通路。
+- 开源、单 APK：仓库 https://github.com/bitfireAT/icsx5 ，GPL-3.0，实测最新 release
+  `v2.4.3`（2025-12-16，唯一产物 `icsx5-92-2.4.3-standard-release.apk`，16 MB）。官方
+  https://icsx5.bitfire.at/privacy/ 写明「ICSx⁵ won't send event data to anywhere」、
+  不统计不跟踪。
+
+**分发成本（这才是真门槛，写用户指引时必须排在好处前面）**：Google Play 版按我方既有口径是**收费**
+的（这格 10-15 未复验，以商店实际为准）；F-Droid 免费但要先装第三方商店；GitHub 直下 APK 需要
+"允许未知来源"。而本机 10-15 实测 `curl github.com` 返回 000、`f-droid.org` 不可达
+⇒ **手机侧下载环节在国内网络里大概率要挂代理**。README 那句"三步上手"对 Android 实际是五步。
+
+**仍然解决不了的（文档里不许写成解决了）**：**单条删不动**。ICSx⁵ 建的日历写的是
+`Calendars.CALENDAR_ACCESS_LEVEL = CAL_ACCESS_READ`，而 DAVx⁵ 手册把后果说得很直白——只读日历里
+App 不能 create/modify/**delete**；且它的数据库只有 `Subscription` 与 `Credential` 两张表，
+**没有任何"用户删过"的记录**，同步分支是 `queryByUID` 为空就重新 `add()` ⇒ 强删的条目下次同步
+必被加回。真要做到"本地删了就永久删"，只有 DAVx⁵ + 一台真 CalDAV 服务器（手册明确有
+locally-deleted → HTTP `DELETE`），代价是放弃"静态整本重发"这套架构，**不在本议题范围内**。
+
+**别把希望押在 DAVx⁵ 上**：https://github.com/bitfireAT/davx5-ose/issues/439 （2023-10 开、
+2026-02 仍 open）说 Webcal 订阅"路线图上有、但没有 ETA"，而手册里 DAVx⁵ 遇到 Webcal 集合是
+**把 URL 转交给 ICSx⁵**，它自己不拉纯 HTTP 的 `.ics`。长期看 ICSx⁵ 大概会被取代，但那是"入口搬家"，
+判据与产物形态都不变——我们文档已经钉过「是 ICSx⁵ 不是 DAVx⁵」这条，指引别倒退回去。
+
+**必须先取的真机读数（拿不到就不许把上面任何一条写成实测）**：用户 2026-10-15 已把正式订阅同时
+订到 ICSx⁵、并在 ColorOS 里隐藏旧那本，所以下面几条这学期就能收到。
+
+1. **canceled 到底显不显示**：产物里那 72 条墓碑在 ICSx⁵ 这本日历中是隐藏、当普通日程显示、还是
+   显示成"已取消"。判据必须把**库里**和**界面**分开：用
+   `adb shell content query --uri content://com.android.calendar/events --projection _id:title:status`
+   看那条的 `status` 是否与普通事件**不同**——**不许照抄任何"等于几"的数字**，官方源码只给了符号
+   常量 `Events.STATUS_CANCELED`，整数值本项目没有核实过。库里对而界面错 ⇒ 换日历 App 可解，
+   架构一字不动。
+2. **prune 在 GitHub Pages 上是否真生效**：ICSx⁵ 走 `If-None-Match`/`If-Modified-Since`，服务端回
+   304 时它一个字都不重读 ⇒ 要确认 Pages 的 `ETag`/`Last-Modified` 随发布变化；不变则用户侧兜底是
+   "手动同步（忽略缓存）"。天然探针：10-16 那天 1 条占位与 1 门真课同时段，看这本显示几条。
+3. **隐藏旧那本之后视图是否真单份**：两本的 live UID **完全相同**（token 不进产物，UID 只由
+   学期/课程号/星期/节次决定）⇒ 跨日历会不会"改一条动两条"，未验。
+4. **只读旗在 ColorOS 上的实际表现**：点开 ICSx⁵ 的一条事件，看有没有删除入口、报错文案是什么。
+5. **URL 暴露面**：官方 privacy 页自己警告「calendar URLs are accessible for other apps」——URL 会
+   作为 `Calendars.NAME` 写进 provider，任何有日历权限的 App 读得到。与 §4 的 token 公开面、与
+   托管迁移（转私有仓）一并评估。
+
+**与 §12 的关系（评审顺序：先 §13 读数，再判 §12）**：§12 的前提是"手机上清不掉，只能让它看不见"。
+若第 2 条读数成立，这个前提对 ICSx⁵ 通路不再成立 ⇒ §12 的收益缩到"学期中途真退课/调课"那几条
+单点；再叠加第 1 条（界面过不过滤 `STATUS_CANCELED`），§12 很可能可以直接关掉。
+
+**发布位置**：等第 1、2 条读数回来，再改 README 的「三条最要紧的口径」与
+`docs/user-guide/subscription.md` 的客户端矩阵，并同步 skill 的 `references/client-matrix.md`。
+在那之前，用户指引只写"Android 首选 ICSx⁵ + 免安装备选 ColorOS"，**不写**任何未验的行为断言。

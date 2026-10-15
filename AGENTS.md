@@ -77,3 +77,13 @@
   裸跑 `git add` 会被全局 `core.autocrlf` 把 CRLF 压成 LF，产物从 44285 字节变成 43077 字节。
   还原/手工强推的校验必须比字节数或 sha256，只看文件名与事件数不够（RFC 5545 要求 CRLF）。
 - 隐私 grep：对跟踪内容搜一遍绝对路径、姓名/学号类字段、品牌名，再谈发布。
+- **本地全绿 ≠ CI 绿：CI 在 Linux + shallow checkout 上跑，Windows 主检出的绿灯掩盖两类缺陷。**
+  2026-10-15 实测：`tests/test_cli_subscribe_recovery.py::_pollute_remote` 那句 `git push`
+  漏了 `cwd`，git 于是跑在 pytest 的工作目录＝**本工具仓库**里，把整个仓库的 tip 推进临时
+  裸仓库；护栏照样拒绝，Windows 上一直是绿的，而拒绝的理由与被钉的契约无关（假绿）。
+  Actions 的 checkout 是 shallow 克隆，从 shallow 仓库 push 被 `shallow update not allowed`
+  直接拒掉，这条才在 Linux 红。**测试里手工动 git 必须显式 `cwd=`，并断言现场形状**
+  （改完后加的那句 `ls-tree == ["stray.txt"]` 就是这类断言）。推之前用
+  `GET /repos/{repo}/actions/runs/{id}/logs`（先取 302 的 Location、再**不带** Authorization
+  下载 zip）看真实失败用例名，别靠本地绿灯推断远端。日志端点直取会 401/403，
+  见 `_notes/` 里那份取日志的写法。

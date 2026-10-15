@@ -8,6 +8,25 @@
 
 ## [未发布]
 
+- **Added：校历事件的配置模型（0.9-P1-02，尚无用户可见行为）。** 学期配置文件多了两段可选内容：
+  `events`（五类有明确来源的全天事件：`semester_start` / `registration` / `exam_period` /
+  `vacation` / `holiday`）与 `conflicts`（两个一手来源互相矛盾时的**结构化**记录）。
+  新模块 `calendar_events.py` 把三条裁定钉成代码：**闭区间只在 `to_event()` 一处变半开**
+  （模型里存的就是人写的 `end_inclusive`，别处再加一次会让基线指纹与新产物不一致、
+  每次重发布凭空 `SEQUENCE +1`）；**`source_id` 必填、没有降级链**（缺失/空白/非法字符/
+  同学期重复都是配置错误，配方只有 `semester_key | "cal" | source_id` 一种，改标题改日期都不换 UID）；
+  **来源 URL 走校历事件自己的官方域名清单**（https + `*.xjtu.edu.cn` 点边界匹配 + 禁 userinfo
+  与 ticket/token/session/身份类查询参数 —— 这份配置会进公开产物，带凭据的 URL 贴出去就等于公开凭据）。
+  校验是**逐条判定不抛异常**（一条坏配置只毙它自己，预览仍能带着好事件出），只有整段形态不对
+  （`events` 不是数组）才报错终止；错误记录只有 (序号, 字段名, 原因码, 所属清单)，
+  **标题与 URL 的值不进错误文本**（隐私 §8，用例把标题/URL 做成标记串扫一遍）。
+  `CalendarEventConfig.publish_blocked` 就是"预览可宽容 / 正式发布整体拒绝"的那道判据，
+  由 P1-03 接到 `subscribe push` 与 `rotate` 上。没配 `events` 的既有文件加载路径与产物字节
+  一字不变（特性默认关的地基）；`UID_DOMAIN` 搬到零依赖的 `naming` 模块以避免循环，
+  `exporter.UID_DOMAIN` 显式再导出。全量 `945 passed / 4 skipped`，两支 golden 逐字节复现。
+  用户可见的开关与文档（`--include-calendar-events`、CLI 参考、用户指南）随 P1-03 一起补，
+  本笔只在 `examples/academic_calendar.example.json` 里写清格式与身份规则。
+  决策依据见 `docs/design/2026-10-15-academic-calendar-source.md` §4 / §5 / §12 / §13。
 - **Added：全天（`VALUE=DATE`）事件的基础设施（0.9-P1-01，尚无用户可见行为）。**
   管线此前有六处按 `datetime` 写死：`CalendarEvent` 的起止类型、`event_fingerprint` 里的
   `value.tzinfo`、`parse_baseline` 对非 `datetime` 一律跳过、`build_events` 的排序键、

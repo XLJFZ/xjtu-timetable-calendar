@@ -252,9 +252,9 @@ RRULE 展开。
 
 1. **P1-01 全天事件基础设施**：§6.1 那六处位点一起打通。先红用例覆盖 DATE 解析、闭→半开转换、
    `VALUE=DATE` 渲染、指纹与 SEQUENCE、混合排序、`summarize`、`--from-date/--to-date`，
-   并**同时钉住"课程 / 考试 / 订阅三条 Golden 产物字节不变"**。
+   并**同时钉住"课程 / 考试 / 订阅三条 Golden 产物字节不变"**。✅ 已落地，见 §14。
 2. **P1-02 校历事件配置模型**：`events` 数组、`source_id` 必填与查重、来源域名清单、
-   冲突结构、严格错误判据（12.2 / 12.3 / 12.5 / 12.6）。
+   冲突结构、严格错误判据（12.2 / 12.3 / 12.5 / 12.6）。✅ 已落地，见 §15。
 3. **P1-03 事件生成与 CLI 接入**：`--include-calendar-events` 贯通 `export` / `subscribe push` /
    `rotate`，加 12.4 的防误删准入校验。
 4. **P1-04 端到端离线彩排**：合成学期配置 + `file://` 裸仓库跑六格——首次启用、改日期、改标题、
@@ -285,3 +285,49 @@ RRULE 展开。
 一处测试写法的教训（与产品无关但会咬人）：断言 `SEQUENCE` 别用 `^SEQUENCE:1$` + `re.MULTILINE`——
 RFC 5545 要求 **CRLF**，`$` 只认 `\n`，`\r` 会让本来成立的断言永远匹配不上（本次实测踩过）。
 用 `splitlines()` 取行。
+
+---
+
+## 15. P1-02 施工记录（2026-10-15，`fde6f38`）
+
+配置模型落在 `src/xjtu_calendar/calendar_events.py`。§12 那六条裁决之下还有七处
+备忘没写死、这次实现时定下来的口径，回写给 P1-03/P1-04 与以后接 eHall 的人：
+
+1. **冲突记录必须绑定到某个 `source_id`**。§12.6 只要求"两条 `source_url` + 两个日期值 +
+   判定时间"，但那样的记录**拦不住任何东西** —— 12.2 的"未裁决冲突拒绝发布"和 §7 的
+   "两边都不生成"都要能指回具体事件。落地形态：`topic` / `source_id` / `source_urls[2]` /
+   `dates[2]` / `decided_on` / `adjudicated_by`，其中 `source_id` 必须指向一条已声明的事件，
+   否则判配置错误（`unknown_source_id`）。**`adjudicated_by` 非空才算裁决过** ——
+   它是"人怎么定的"那句凭据，也是 `resolved` 的唯一判据。
+2. **官方域名用点边界后缀，不逐个列主机名**：允许 `xjtu.edu.cn` 与其任意子域
+   （`due.` / `jwc.` / `www.` 都在内），判据是 `host == suffix or host.endswith("." + suffix)`。
+   逐个列主机名会漏（学校换栏目就失效），而点边界足以挡住 `evilxjtu.edu.cn` 与
+   `xjtu.edu.cn.evil.com` 这两种后缀伪装（都有用例钉着）。协议只收 **https**；
+   禁 userinfo；查询参数按黑名单拒（`ticket` / `st` / `token` / `session*` / `uid` / `key` /
+   `signature` 等）—— 理由与订阅 token 那笔同源：**这份配置会进公开产物**。
+   普通栏目/分页参数（`cid` / `pn` / `#fragment`）刻意**不**拦，拦太凶的结果是人工录入干脆不填来源。
+3. **逐条判定、不抛异常**。一条坏事件只毙它自己（预览要能带着好事件出，12.2）；
+   只有 `events` 整段不是数组才 `ParseError` —— 那时每条的序号都指不回用户写的那一行。
+   一条记录里**只要有任何一条错误就不收这条**（部分接受一条已知有病的记录，
+   等于把"哪来的错"留给产物去暴露）。
+4. **拼写错的字段名判 `unknown_field`**（`sourse_id` 这种）。不判的话它会顺带满足
+   "缺 `source_id`"，看着像"少填一项"，实际是整条记录的身份没建立起来。
+   `_` 前缀一律不作数（沿用既有配置里 `_readme` 的口径）。
+5. **同学期重复 `source_id`：收前一条、后一条判错误**，序号指回人能数到的那一行。
+   反过来（两条都毙）会让用户看不出是"撞了"还是"两条都写坏了"。
+6. **±1 只在 `CalendarEventSpec.to_event()` 里发生**，模型存的是人写的闭区间原值
+   （`end_inclusive`）。这样 `doctor` 打出来的日期与用户手抄的校历逐字对得上（§7 的可核对性）；
+   换算若发生在解析期，展示就会整体多一天。
+7. **`UID_DOMAIN` 从 `exporter` 搬到零依赖的 `naming`**。校历模型必须能被
+   `academic_calendar` 导入，而从 `exporter` 反向取常量会绕成
+   `exporter → academic_calendar → calendar_events → exporter` 的环；
+   `exporter.UID_DOMAIN` 进 `__all__` 显式再导出，`exams.py` 与既有测试的引用路径一字未动（同 CD9 零回归面）。
+
+**本笔刻意没做**（全部是 P1-03 的活）：`--include-calendar-events` 旗标、
+12.2 的"发布整体拒绝"接线、12.4 的防误删准入校验、`doctor` 那一格「校历事件：N 条（来源 M 个）」。
+判据已经就位 —— `CalendarEventConfig.publish_blocked` 与 `blocked_source_ids()` 就是接线上要去读的两个东西。
+
+验证：69 条新用例先红后绿，全量 `945 passed / 4 skipped`，两支 Golden 产物字节不变，
+mypy / ruff check / ruff format --check 全绿；随仓库分发的格式模板
+`examples/academic_calendar.example.json` 也加了一条用例**当场解析**，模板与解析器漂移是
+用户照抄即撞的第一类断链。未推送、未动真实 home 与发布状态机。

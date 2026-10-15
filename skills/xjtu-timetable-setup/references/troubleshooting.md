@@ -178,6 +178,11 @@ python -m xjtu_calendar doctor --verify --semester <学期标识>
 - 处置：`python -m xjtu_calendar subscribe repair --semester <标识>`。它先从发布分支拉回
   线上真实字节，再在两份恢复凭据之间裁决，**不产生新发布**；跑完再 `doctor` 就该回到 0。
   可重复执行，中途再断一次，第二次接着补剩下的。
+- 同一道门也装在 `subscribe rotate` 上（换 token 的补发与 push 共用一条发布事务），
+  而且排在**换 token 之前**：被 `7` 拦住时旧 URL 依旧好用，先 `repair` 再 rotate。
+  rotate 若在推送**之后**才失败（提示改指 `subscribe repair`、返回 `7`），那是"远端可能
+  已经挂上新文件名"的窗口——按提示 `repair` 裁决，别直接重跑：两份凭据里那份待裁决的
+  准备稿是唯一的线索。
 - 两种**不该**判阻塞、只判警告的格子（别多跑一次 repair）：
   ① 从 0.8.5 之前升级上来、本地还没有恢复凭据，而留底字节与「最后一次发布记录」逐字节相符
   ⇒ 警告会说"两份台账与迁移标记这次没能校验"，直接 `push` 会自行把依据补回；

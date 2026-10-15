@@ -349,10 +349,19 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
       <tr><td>Google 日历（手机 App）</td><td data-label="订阅入口"><span class="no">无此入口</span></td><td data-label="收到 STATUS:CANCELLED">不适用</td><td data-label="条目从 feed 静默消失">不适用</td><td colspan="2" data-label="自动回源 · 用 X-WR-CALNAME 命名">实测 App 不显示「从 URL 添加」的日历，勾 syncselect、强制同步、走代理都不行</td></tr>
       <tr><td>Outlook.com（网页）</td><td data-label="订阅入口">添加日历 → 订阅日历</td><td data-label="收到 STATUS:CANCELLED"><span class="no">忽略</span>，当普通事件导入<small>v0.6.1 起显示为「已取消的活动」，此前是「无主题」</small></td><td data-label="条目从 feed 静默消失"><span class="no">未验证</span><small>该面回源周期未取得</small></td><td data-label="自动回源">添加时立刻拉一次<small>此后实测 14 小时以上未再回源（官方口径约每 3 小时）</small></td><td data-label="用 X-WR-CALNAME 命名">否，对话框强制手填</td></tr>
       <tr><td>ColorOS 系统日历</td><td data-label="订阅入口">我的 → 添加日历 → URL 日历</td><td data-label="收到 STATUS:CANCELLED"><span class="no">忽略</span>，同上<small>且它整体替换字段，旧标题会被清掉</small></td><td data-label="条目从 feed 静默消失"><span class="no">不删</span>，永久留着<small>10-12 整学期演练：21 条过期旧项重加后仍在；退订重加也清不掉</small></td><td data-label="自动回源"><span class="yes">是</span><small>实测延迟 ≤2h35m，能原地更新已存在的事件</small></td><td data-label="用 X-WR-CALNAME 命名">是</td></tr>
+      <tr><td>ICSx⁵（Android，第三方订阅器）</td><td data-label="订阅入口">在 ICSx⁵ 里粘贴 URL，事件写进系统日历数据库</td><td data-label="收到 STATUS:CANCELLED">不丢弃，映射成系统日历的"已取消"状态落库<small>上游源码取证。但 2026-10-15 真机读数：ColorOS 自带日历<strong>照旧显示成普通日程</strong>——换通路只把问题从同步侧挪到显示侧</small></td><td data-label="条目从 feed 静默消失"><span class="yes">通常会删</span><small>上游源码：每次成功同步末尾无条件清理源里已不存在的 UID；<strong>真机尚未单独观察到</strong>，且服务端回 <code>304</code> 时它一个字不重读</small></td><td data-label="自动回源">是<small>回源间隔由 ICSx⁵ 自己的设置决定，默认值未核实</small></td><td data-label="用 X-WR-CALNAME 命名"><span class="yes">是</span><small>2026-10-15 真机：自动就是课表名，没让填</small></td></tr>
       <tr><td>各类「导入日历」</td><td data-label="订阅入口">选本地 .ics 文件</td><td colspan="2" data-label="收到 STATUS:CANCELLED · 条目从 feed 消失">不适用——不再回源，一次性快照</td><td data-label="自动回源"><span class="no">否</span></td><td data-label="用 X-WR-CALNAME 命名">不适用</td></tr>
     </tbody>
   </table>
   </div>
+  <p class="note">ICSx⁵ 那一行的证据强度是<strong>混着的</strong>，别整行当实测读数：订阅入口、日历名、
+    以及"取消条目照旧显示成普通日程"是 2026-10-15 在正式订阅上的真机读数（单账户单样本）；
+    "消失项会被清理"与"`STATUS` 映射成系统 canceled 状态落库"仍是上游源码取证，前者还没单独验到。
+    另有一格<strong>未定</strong>：单条能不能删掉——先前据源码（只读日历 + 无"用户删过"记录）判定删不动，
+    而初步真机读数是"能删、且观察未回来"，缺的对照是被删那条的<strong>原定时刻究竟已过还是仍在未来</strong>
+    （前者只是产物退场 + 清理共同作用，后者才算本地删除被尊重）。判据见
+    <code class="inline-code">docs/design/2026-10-11-subscription-followups.md</code> §13。</p>
+
   <p class="note">「条目从 feed 静默消失」这一列是 2026-10-13 在<strong>试验田仓库</strong>（不是正式订阅）上单独测的：
     一份 96 事件的整学期规模产物换成 91 事件，抽掉 5 条<strong>不发墓碑</strong>、URL 与标题都不动。
     Google 网页版<strong>截至 T+14h39m 已移除其中 4 条</strong>，同批 7 处对照条目全部健在（⇒ 不是"没回源"）；
@@ -365,11 +374,31 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
   <h3>所以手机侧到底订哪个</h3>
   <ul class="checks">
     <li><strong>iPhone / Apple 日历</strong>：原生「添加日历 → 订阅」，直接贴 URL；CLI 也会顺手打一行把 <code class="inline-code">https://</code> 换成 <code class="inline-code">webcal://</code> 的同址链接，iOS 上<strong>通常</strong>点开即弹订阅确认——这条本仓库未做真机验证，失败就回手动路径。</li>
-    <li><strong>ColorOS</strong>：系统日历里的「URL 日历」就是手机侧正解——认新增、会自动原地更新、并用产物给的日历名。</li>
-    <li><strong>MIUI / 鸿蒙</strong>：若系统日历只给「导入日历」，那是一次性快照、永不自动更新；改用 <strong>ICSx⁵</strong>（<code class="inline-code">at.bitfire.icsdroid</code>）做 URL 订阅。<strong>注意不是 DAVx⁵</strong>——它只做 CalDAV 双向同步，官方 FAQ 明确把 URL 订阅指向 ICSx⁵。</li>
+    <li><strong>Android（不分 ROM）：首选 ICSx⁵</strong>（<code class="inline-code">at.bitfire.icsdroid</code>）——
+      各家系统自带入口能力参差（MIUI / 鸿蒙常常只给"导入日历"，那是一次性快照、永不自动更新），
+      统一走一条通路比按机型摸索可靠。<strong>注意不是 DAVx⁵</strong>——它只做 CalDAV 双向同步，
+      遇到 Webcal 是把 URL 转交给 ICSx⁵，自己不拉纯 HTTP 的 <code class="inline-code">.ics</code>。
+      两条要先交的成本：分发（商店版按我方口径收费、直下 APK 要允许未知来源、
+      国内网络下 <code class="inline-code">github.com</code> 与 <code class="inline-code">f-droid.org</code>
+      实测不可达，下载通常要挂代理）；以及它建的日历是<strong>只读</strong>的。</li>
+    <li><strong>ColorOS 系统日历</strong>：自带「URL 日历」入口，作为<strong>免安装备选</strong>保留——
+      认新增、会自动原地更新、并用产物给的日历名。但要清楚它另外三点：忽略
+      <code class="inline-code">STATUS:CANCELLED</code>、从产物消失的条目<strong>永不删</strong>、
+      <strong>单条也删不掉</strong>（2026-10-15 真机确认「删除订阅」同样不带走本地事件）。
+      已经用它、后来切到 ICSx⁵ 的，旧那本清不掉，只能在日历列表里<strong>取消勾选（隐藏）</strong>。</li>
+    <li><strong>MIUI / 鸿蒙</strong>：若系统日历只给「导入日历」，那是一次性快照、永不自动更新；
+      直接用上面那条 ICSx⁵，别在系统日历里找订阅入口。</li>
     <li><strong>Google 日历</strong>：订阅只能在网页版建立，手机端要上课表请走系统日历那条腿，别把希望放在 Google App 上。</li>
     <li><strong>给同步器关掉电池优化并允许自启动</strong>，否则后台查杀会伪装成「装了但从不更新」。</li>
-    <li><strong>订阅型日历通常是只读的</strong>：没有「删除单条事件」的入口；而那条「已取消的活动」占位是<strong>产物自身携带</strong>的，忽略取消字段的客户端<strong>退订重加时会再导入一遍</strong>（2026-10-12 真机实测），所以重加清不掉占位、只能清本地重复项——占位要等原定时刻过去后由下一次发布收掉。反过来，Google 侧连<strong>不带墓碑</strong>的消失项也会删（2026-10-13 试验田实测）⇒ 过期条目从产物里退场，在 Google 上是一条干净的路。</li>
+    <li><strong>那条「已取消的活动」占位是<em>产物自身携带</em>的</strong>：忽略取消字段的客户端
+      <strong>退订重加时会再导入一遍</strong>（2026-10-12 真机实测），所以重加清不掉占位、只能清本地重复项——
+      占位要等原定时刻过去后由下一次发布收掉。反过来，Google 侧连<strong>不带墓碑</strong>的消失项也会删
+      （2026-10-13 试验田实测）⇒ 过期条目从产物里退场，在 Google 上是一条干净的路。
+      <strong>换到 ICSx⁵ 并不会让占位消失</strong>：2026-10-15 在正式订阅上实测，那批占位
+      <strong>照旧显示成普通日程</strong>——同步器把取消状态正确地落进了系统数据库，
+      但日历 App 不按它过滤。至于"能不能手动删掉一条"，目前<strong>未定</strong>：
+      源码侧推论是只读日历删不动，而初步真机读数是能删且没回来，缺的对照是被删那条的时刻
+      究竟已过还是仍在未来（见 <code class="inline-code">docs/design/2026-10-11-subscription-followups.md</code> §13）。</li>
   </ul>
 
   <div class="callout warnbox" style="margin-top:1.3rem">

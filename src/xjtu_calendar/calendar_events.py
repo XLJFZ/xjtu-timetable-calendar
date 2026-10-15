@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from urllib.parse import parse_qsl, urlsplit
@@ -40,8 +40,11 @@ __all__ = [
     "CalendarEventConflict",
     "CalendarEventError",
     "CalendarEventSpec",
+    "calendar_uids_declared_by_config",
+    "doctor_calendar_status",
     "make_calendar_uid",
     "parse_calendar_events",
+    "publish_refusal_reasons",
 ]
 
 # --------------------------------------------------------------------------- #
@@ -57,6 +60,16 @@ CALENDAR_EVENT_CATEGORIES: tuple[str, ...] = (
     "vacation",  # 寒假 / 暑假
     "holiday",  # 学校公布的放假调休区间
 )
+
+#: 类别 → 给人看的中文名。只进 ``DESCRIPTION``，**不进** UID 与任何判据
+#: （改了标签不该让客户端重收事件，与"标题不进身份"是同一条）。
+CATEGORY_LABELS: dict[str, str] = {
+    "semester_start": "学期开始 / 起课",
+    "registration": "报到注册",
+    "exam_period": "期末考试周",
+    "vacation": "假期",
+    "holiday": "放假调休",
+}
 
 #: UID 配方里代表"校历事件"这一命名空间的那一段（§5：与课程 / 事件分开）。
 UID_NAMESPACE = "cal"
@@ -176,11 +189,29 @@ class CalendarEventSpec:
         """ICS ``DTEND`` 要的那个**不含**边界：闭区间末值 + 1 天（§12.1 唯一一次换算）。"""
         return self.end_inclusive + timedelta(days=1)
 
-    def to_event(self, semester_key: str, description: str | None = None) -> CalendarEvent:
+    def description(self) -> str:
+        """ICS ``DESCRIPTION``：类别、**配置里原样写的那两天**、来源与备注。
+
+        打的是闭区间原值而不是事件里的不含边界 —— §7 的可核对性要求用户拿通知原文
+        能逐字对上，多一天的话他会以为抄错了。来源 URL 进产物（公开页，无个人数据）：
+        `source_url` 之所以必填，就是为了订阅的人能自己查一句"这学校什么时候放寒假"。
+        """
+        lines = [
+            f"校历事件 · {CATEGORY_LABELS.get(self.category, self.category)}",
+            f"日期：{self.start.isoformat()} ~ {self.end_inclusive.isoformat()}（含两端）",
+            f"来源：{self.source_url}",
+        ]
+        if self.source_published_on is not None:
+            lines.append(f"来源发布：{self.source_published_on.isoformat()}")
+        if self.note:
+            lines.append(f"备注：{self.note}")
+        return "\n".join(lines)
+
+    def to_event(self, semester_key: str) -> CalendarEvent:
         """配置形态 → 产物形态。
 
         全天事件用 ``date`` 对（``VALUE=DATE``，见 P1-01 那套基础设施），
-        ``end`` 是不含的边界；``status`` 永不设置 —— 校历事件不接撤销通路（§5）。
+        ``end`` 是**不含**的边界；``status`` 永不设置 —— 校历事件不接撤销通路（§5）。
         """
         return CalendarEvent(
             uid=make_calendar_uid(semester_key, self.source_id),
@@ -188,7 +219,7 @@ class CalendarEventSpec:
             start=self.start,
             end=self.end_exclusive,
             location=None,
-            description=description,
+            description=self.description(),
         )
 
 
@@ -226,6 +257,19 @@ class CalendarEventConfig:
     specs: tuple[CalendarEventSpec, ...] = ()
     conflicts: tuple[CalendarEventConflict, ...] = ()
     errors: tuple[CalendarEventError, ...] = ()
+    #: 配置里**声明**了多少条事件/冲突（原样计数，不做判据）。
+    #: 只有"声明了但一条都没解析出来"这种自相矛盾才是 §7 点名的阻塞项。
+    declared_events: int = 0
+    declared_conflicts: int = 0
+    #: 配置里出现过的**全部** `source_id` 字符串（含没通过校验的那些）。
+    #: 只服务一件事：§12.4 那条"上一版发布过校历事件"的反推 —— 那时判据是
+    #: "这些身份本该有 UID"，与这条记录眼下有没有写坏无关。
+    declared_source_ids: tuple[str, ...] = ()
+
+    @property
+    def declared_but_none_parsed(self) -> bool:
+        """配置声称有校历事件，却一条都没通过校验（§7：这种自相矛盾算阻塞项）。"""
+        return self.declared_events > 0 and not self.specs
 
     @property
     def has_unresolved_conflicts(self) -> bool:
@@ -257,6 +301,96 @@ def make_calendar_uid(semester_key: str, source_id: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# 发布准入（§12.2 与 §12.4 都在这一层判，CLI 只负责把它变成退出码）
+# --------------------------------------------------------------------------- #
+def calendar_uids_declared_by_config(
+    config: CalendarEventConfig, semester_key: str
+) -> frozenset[str]:
+    """按配置里写过的 `source_id` **反推**它们本该有的 UID。
+
+    这是 §12.4 那条门的唯一判据来源：它要回答的是"上一版产物里有没有校历事件"，
+    而产物里的 UID 是一串摘要，形状上认不出命名空间。反推不需要事件眼下是有效的
+    —— 用 `declared_source_ids`（含写坏的条目），否则"日期抄反了的那条寒假"
+    会因为没通过校验而躲过这条门，正是要拦的那种漏。
+    """
+    return frozenset(
+        make_calendar_uid(semester_key, source_id)
+        for source_id in config.declared_source_ids
+        # 非法字符的 ID 推不出上一版真实发布过的 UID（它当初也没能通过校验），
+        # 但反推本身不会撞坏：`make_calendar_uid` 只做拼接与摘要。
+    )
+
+
+def publish_refusal_reasons(
+    config: CalendarEventConfig,
+    *,
+    semester_key: str,
+    include_calendar_events: bool,
+    published_uids: Collection[str],
+) -> tuple[str, ...]:
+    """正式 `subscribe push` / `rotate` 的拒绝理由；**空元组 = 放行**。
+
+    两条门各自的理由码（CLI 按码出文案，不靠字符串匹配）：
+
+    - ``config_errors`` / ``unresolved_conflicts`` —— §12.2，**只在本次真要发布
+      校历事件时**生效。
+    - ``flag_missing_after_publish`` —— §12.4，上一版含校历事件而本次没开旗标。
+
+    "只在开旗标时才拒"是实现时定下的一条边界，理由写在 §15：
+    一个从没启用过这特性的用户，配置里躺着一段写坏的 `events` 也该能正常发布课表 ——
+    新门拦住没用它的人，正是 v0.8 那次门 2 误拦的形态（AGENTS.md 收尾自检那条）。
+    那段配置坏着这件事由 `doctor` 负责喊（见 :func:`doctor_calendar_status`），
+    不靠把正常发布掐死来提醒。
+    """
+    reasons: list[str] = []
+    if include_calendar_events:
+        if config.errors:
+            reasons.append("config_errors")
+        if config.has_unresolved_conflicts:
+            reasons.append("unresolved_conflicts")
+    else:
+        if calendar_uids_declared_by_config(config, semester_key) & set(published_uids):
+            reasons.append("flag_missing_after_publish")
+    return tuple(reasons)
+
+
+def doctor_calendar_status(
+    config: CalendarEventConfig,
+    *,
+    semester_key: str,
+    published_uids: Collection[str],
+    include_calendar_events: bool = False,
+) -> tuple[str, tuple[str, ...]]:
+    """`doctor` 那一格的判据：返回 ``("ok"|"block", 理由码)``。
+
+    **门会拦的状态，体检不许只留一行警告**（既有原则，10-15 那轮把「本地发布状态散架」
+    从警告升成阻塞时定的口径），所以这里就是 :func:`publish_refusal_reasons` 加一条
+    §7 点名的自相矛盾（``declared_but_none_parsed``），别的都不加 ——
+    体检**不许比门更凶**：门在"没开旗标 + 没发布过校历事件"那格是放行的，
+    doctor 也必须放行，否则用户会去修一个并不存在的问题。
+
+    ``include_calendar_events`` 与 `doctor` 的同名旗标同义：体检本来就在跑一次
+    真实构建（``_check_render``），所以它有权知道自己模拟的是哪条发布路径。
+    """
+    if config.declared_events == 0 and config.declared_conflicts == 0:
+        return ("ok", ())
+
+    reasons = list(
+        publish_refusal_reasons(
+            config,
+            semester_key=semester_key,
+            include_calendar_events=include_calendar_events,
+            published_uids=published_uids,
+        )
+    )
+    if config.declared_but_none_parsed:
+        reasons.append("declared_but_none_parsed")
+    if reasons:
+        return ("block", tuple(dict.fromkeys(reasons)))
+    return ("ok", ())
+
+
+# --------------------------------------------------------------------------- #
 # 解析入口
 # --------------------------------------------------------------------------- #
 def parse_calendar_events(
@@ -275,7 +409,12 @@ def parse_calendar_events(
                 "conflicts 必须是数组（每条含 topic / source_id / source_urls / dates / decided_on）"
             )
         conflicts, conflict_errors = _parse_conflicts(raw_conflicts, ())
-        return CalendarEventConfig(specs=(), conflicts=conflicts, errors=tuple(conflict_errors))
+        return CalendarEventConfig(
+            specs=(),
+            conflicts=conflicts,
+            errors=tuple(conflict_errors),
+            declared_conflicts=len(raw_conflicts) if isinstance(raw_conflicts, list) else 0,
+        )
     if not isinstance(raw_events, list):
         raise ParseError(
             "events 必须是数组（每条含 source_id / category / title / start / end / source_url）"
@@ -284,7 +423,13 @@ def parse_calendar_events(
     specs: list[CalendarEventSpec] = []
     errors: list[CalendarEventError] = []
     seen: set[str] = set()
+    declared_ids: list[str] = []
     for index, item in enumerate(raw_events, start=1):
+        if isinstance(item, Mapping):
+            raw_id = item.get("source_id")
+            if isinstance(raw_id, str) and raw_id.strip():
+                # 反推 §12.4 的判据要用"配置里写过的身份"，连写坏的条目一起收。
+                declared_ids.append(raw_id.strip())
         spec, item_errors = _parse_event_item(item, index, seen)
         errors.extend(item_errors)
         if spec is not None:
@@ -293,7 +438,14 @@ def parse_calendar_events(
 
     conflicts, conflict_errors = _parse_conflicts(raw_conflicts, specs)
     errors.extend(conflict_errors)
-    return CalendarEventConfig(specs=tuple(specs), conflicts=tuple(conflicts), errors=tuple(errors))
+    return CalendarEventConfig(
+        specs=tuple(specs),
+        conflicts=tuple(conflicts),
+        errors=tuple(errors),
+        declared_events=len(raw_events),
+        declared_conflicts=len(raw_conflicts) if isinstance(raw_conflicts, list) else 0,
+        declared_source_ids=tuple(declared_ids),
+    )
 
 
 def _parse_event_item(

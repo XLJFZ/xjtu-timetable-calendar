@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .academic_calendar import AcademicCalendar
+from .calendar_events import make_calendar_uid
 from .config import Settings
 from .errors import (
     CalendarExportError,
@@ -736,6 +737,7 @@ def build_ics_for_semester(
     no_sequence: bool = False,
     dtstamp: datetime | None = None,
     include_exams: bool = True,
+    include_calendar_events: bool = False,
     exams_payload: dict[str, Any] | None = None,
     cancel_expiry_at: datetime | None = None,
     allow_mass_cancellation: bool = False,
@@ -762,6 +764,14 @@ def build_ics_for_semester(
     ``exams_payload``：直接给定考试响应、跳过读快照文件——§6.5 点名的注入接缝，
     当前主要供测试与后续任务使用；``include_exams=False`` 时一并忽略。
     注意 ``input_path`` **只喂课表 payload**，考试数据永远不从它读（§6.5 第 3 条）。
+
+    ``include_calendar_events``：是否把配置里的**校历事件**并进同一份 .ics
+    （``docs/design/2026-10-15-academic-calendar-source.md`` §6 第 2 条：v0.9 第一版
+    **默认关**，理由与考试侧当年默认并入相反——它来自人工配置、抄错的可能性高，
+    而它会进所有订阅者的日历）。关掉时这一段整体空转，
+    **既有产物字节一字不变**；开了也不接撤销通路（§5），旧事件从 feed 消失就消失。
+    配置错误在这里只降级成警告（§12.2 的**预览口径**）；正式发布的"整体拒绝"是
+    CLI 在构建之前那道门（``--include-calendar-events`` 与退出码 ``8``），不在本函数里判。
 
     ``cancel_expiry_at``：撤销保留期比较用的墙钟；``None`` 取 ``datetime.now(TZ_XIAN)``
     （D9）。只有测试注入，**不暴露成 CLI 旗标**，也不参与 ``--from-date/--to-date``
@@ -965,7 +975,48 @@ def build_ics_for_semester(
             seen.add(event.uid)
             kept_exam.append(event)
 
+    # --- 校历事件（v0.9，**默认关**）---
+    # 逐条判定在配置层已经做完了（`calendar_events.parse_calendar_events`），这一段只做三件事：
+    # 把有效条目变成全天事件、按 §12.2 的**预览口径**把配置错误降级成警告、
+    # 把未裁决冲突点名的条目**两边都不生成**（§7：择一就是把猜测写进公开产物）。
+    # 正式发布不走这里的"继续"：那道门在 CLI 的构建之前（整体拒绝、退出码 8），
+    # 因为 exporter 既不决定发布、也不读写订阅状态。
+    # 不带旗标时这段整体空转 ⇒ 既有产物字节一字不变（§6 第 2 条那条不变量）。
+    for error in academic.calendar_events.errors:
+        logger.warning("校历事件配置错误：%s", error.describe())
+
+    calendar_events: list[CalendarEvent] = []
+    calendar_withheld = 0
+    if include_calendar_events:
+        withheld_ids = academic.calendar_events.blocked_source_ids()
+        for spec in academic.calendar_events.specs:
+            if spec.source_id in withheld_ids:
+                # 只报配置序号（§8：标题与来源 URL 的值不进日志）。
+                calendar_withheld += 1
+                logger.warning("校历事件第 %d 条有未裁决的来源冲突，本次不生成", spec.index)
+                continue
+            calendar_events.append(spec.to_event(academic.semester.key))
+        if lower is not None or upper is not None:
+            # `--from-date/--to-date` 对课程、考试、校历事件用**同一组**边界（§6.5 第 4 条的延伸），
+            # 不给任何一类开特殊放行 —— 三类各裁一遍迟早漂成三套口径。
+            calendar_events = [e for e in calendar_events if _in_range(e, lower, upper)]
+        calendar_events.sort(key=sort_key)
+
     render_events = [*events, *kept_exam]
+    kept_calendar: list[CalendarEvent] = []
+    if calendar_events:
+        # 全局 UID 唯一性断言（§6.5 第 2 条）的第三种来源：校历事件的配方里有 ``cal``
+        # 命名空间段，正常永远撞不上课程 / 考试，但"永不"不是断言 —— 撞了就丢后来者 + warning，
+        # 与考试侧同一处置（产物里两条同 UID 会让客户端行为不可预期）。
+        seen_calendar = {event.uid for event in render_events}
+        for event in calendar_events:
+            if event.uid in seen_calendar:
+                logger.warning("校历事件与已有事件 UID 冲突，已丢弃：%s", event.uid)
+                continue
+            seen_calendar.add(event.uid)
+            kept_calendar.append(event)
+    render_events = [*render_events, *kept_calendar]
+
     if not render_events:
         # 判空看的是**合并后**的集合：日期窗口只框住考试时课程为零，但产物并不空，
         # 这时候甩一句「没有生成任何事件」就是假警告。
@@ -1241,9 +1292,17 @@ def build_ics_for_semester(
             #: 但规模必须经 `migration_summary` 交给 CLI 打印预告——构建层不写状态标记（CD7）。
             if published_baseline_text is not None:
                 published = load_ledger(published_baseline_text, label="发布留底")
+                # §5 的硬边界：**校历事件永不进撤销通路**。迁移候选的判据是
+                # 「留底 − live」，而"live"天然不含没开旗标的那批校历 UID ——
+                # 不显式排掉，一次配方迁移就会顺手给它们发撤销，等于用一套已冻结的
+                # 机制去掩盖"消失就是从 feed 消失"这笔代价。
+                calendar_uids = {
+                    make_calendar_uid(academic.semester.key, spec.source_id)
+                    for spec in academic.calendar_events.specs
+                }
                 migration = migration_candidates(
                     published=published,
-                    live_uids=live_course_uids | live_exam_uids,
+                    live_uids=live_course_uids | live_exam_uids | calendar_uids,
                     normal_cancel_uids={event.uid for event in course_cancellation_events}
                     | {event.uid for event in cancellation_events},
                     now=now,
@@ -1300,13 +1359,20 @@ def build_ics_for_semester(
     # 课程侧同口径（CD14/§9-17）：只数真正进了产物的条目（含迁移支），被 UID 断言
     # 丢弃的与 unresolvable 的不算。
     info["course_cancellations"] = len(course_cancellation_events)
+    # 校历事件走**自己那一格**（§6.5 第 1 条的同一原则：新类别不悄悄并进既有统计口径，
+    # 否则"课表覆盖范围"会被寒假拉到 3 月，那个数字已经写进若干文档与用例）。
+    info["calendar_events"] = len(kept_calendar)
+    info["calendar_withheld"] = calendar_withheld
+    info["calendar_config_errors"] = len(academic.calendar_events.errors)
     stats: dict[str, int] | None = None
     if baseline is not None:
         # stats 口径（spec D23）：必须含「课程 + live 考试」——否则考试的 SEQUENCE/新增
         # 统计失真（`test_sequence_stats_see_exam_events` 看守）；但**不含**撤销条目：
         # 它们的 UID 在基线里以 live 形态存在，指纹必变，混进来会凭空抬高 `updated`。
         # 撤销数量单独走 `info["exam_cancellations"]`。
-        stats = sequence_stats([*events, *kept_exam], baseline)
+        # 校历事件是**第四类 live 事件**，同进这个口径（不开旗标时它是空集，既有数字不变）：
+        # 用户看"更新了几条"时，学校改了寒假日期必须算一条更新。
+        stats = sequence_stats([*events, *kept_exam, *kept_calendar], baseline)
 
     return ExportResult(
         ics=ics,

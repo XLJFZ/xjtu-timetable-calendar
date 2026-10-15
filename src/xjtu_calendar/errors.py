@@ -198,5 +198,28 @@ class PublishStateIncompatible(XjtuCalendarError):
         )
 
 
+class CalendarEventsBlocked(XjtuCalendarError):
+    """校历事件的发布准入没过：`subscribe push` / `rotate` 在构建之前就整体拒绝。
+
+    为什么单独立一个退出码（``8``，与熔断 `6`、状态不相容 `7` 并列）：
+    这两类拒绝的**处置动作完全不同** —— 6 要确认课表真的少了、7 要先跑 `repair`，
+    而这里要改的是配置文件里的 `events` / `conflicts` 那两段（或补上
+    ``--include-calendar-events``）。共用 1「一般错误」会让脚本分不清"网络挂了"
+    与"我配置写错了"；复用 6/7 会把人引向 `--allow-mass-cancellation` / `repair`
+    这两条走不通的路。
+
+    判据来自 :func:`xjtu_calendar.calendar_events.publish_refusal_reasons`
+    （docs/design/2026-10-15-academic-calendar-source.md §12.2 与 §12.4）。
+    """
+
+    exit_code = 8
+
+    def __init__(self, message: str, *, hint: str | None = None) -> None:
+        super().__init__(
+            message,
+            hint=hint or "按上面列出的序号与字段名改回配置，或明确本次确实要带上校历事件后重跑。",
+        )
+
+
 class SubscribePublishError(XjtuCalendarError):
     """git 探测/推送失败：远端保持上一版，本地状态不变。"""

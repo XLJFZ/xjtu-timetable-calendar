@@ -43,6 +43,7 @@ from .config import Settings
 from .errors import (
     AuthenticationExpired,
     AuthenticationRequired,
+    CalendarEventsBlocked,
     EndpointNotConfigured,
     GitNotAvailable,
     PublishStateIncompatible,
@@ -54,6 +55,7 @@ from .errors import (
 from .exporter import UID_RECIPE_VERSION, ExportResult, MigrationSummary, build_ics_for_semester
 from .fileutil import atomic_write_text
 from .logging_setup import get_logger, setup_logging
+from .sequence import parse_baseline
 
 if TYPE_CHECKING:
     # cmd_subscribe 各分支内部惰性 `from . import subscribe`；这里只为类型标注。
@@ -155,6 +157,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="课程侧撤销规模触发门 2 熔断时仍强行发布（默认拒绝——疑似课表没抓全时"
         "会拒绝发布并退出码 6；先确认课表真的少了一批课，再带此旗标重跑）",
     )
+    export.add_argument(
+        "--include-calendar-events",
+        action="store_true",
+        help="把学期配置里 events 段声明的**校历事件**（起课 / 报到 / 考试周 / 寒暑假 / "
+        "放假调休）并进同一份 .ics。默认**不并**——这些日期由人工按学校公告抄写，"
+        "抄错的可能性比课表高，而订阅发布是一次性影响所有客户端的动作",
+    )
 
     # --- notice ---
     notice = sub.add_parser(
@@ -235,6 +244,13 @@ def build_parser() -> argparse.ArgumentParser:
         "逐字节相符就会自动放行，不需要这个旗标。注意：上一次发布结果**未裁决**、"
         "或恢复凭据**读不懂**这两格不在本旗标范围内，只能由 subscribe repair 处理）",
     )
+    push_p.add_argument(
+        "--include-calendar-events",
+        action="store_true",
+        help="把学期配置 events 段里的校历事件一起发布（默认不带，与 export 同口径）。"
+        "开了之后，正式发布的拒绝条件也变严：配置里有任何错误或有未裁决的校历冲突 ⇒ "
+        "整体不发布（退出码 8），因为校历事件**不接撤销通路**、少一条就恢复不回来",
+    )
     rot_p = sact.add_parser("rotate", help="更换订阅 token（旧 URL 立即失效）")
     rot_p.add_argument("--semester")
     rot_p.add_argument(
@@ -247,6 +263,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="课程侧撤销规模触发门 2 熔断时仍强行发布（默认拒绝——疑似课表没抓全时"
         "会拒绝发布并退出码 6；与 push 同一判据、同一旗标）",
+    )
+    rot_p.add_argument(
+        "--include-calendar-events",
+        action="store_true",
+        help="补发时把学期配置 events 段里的校历事件一起带上（与 push 同一旗标、同一判据）。"
+        "rotate 会重新构建整份产物并补发，不接这个旗标会让上一次发布里的校历事件"
+        "在换 token 时被静默丢掉——它们不接撤销通路，客户端连「已取消」都收不到",
     )
     rot_p.add_argument(
         "--allow-unverified-baseline",
@@ -271,6 +294,12 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--semester", help="学期标识，例如 2026-2027-1")
     doctor.add_argument(
         "--verify", action="store_true", help="额外对订阅 URL 发一次匿名 GET（默认不联网）"
+    )
+    doctor.add_argument(
+        "--include-calendar-events",
+        action="store_true",
+        help="体检按「本次会带校历事件发布」这条路径判定（默认按不带的那条）。"
+        "这一格与 subscribe push 的那道门共用判据，所以必须知道旗标状态",
     )
 
     # --- inspect ---
@@ -336,6 +365,7 @@ _DOCTOR_LABELS = {
     "snapshot": "课表快照",
     "exam_snapshot": "考试快照",
     "render": "渲染",
+    "calendar_events": "校历事件",
     "subscription": "订阅",
     "uid_recipe": "UID 配方与迁移",
     "url": "URL 自检",
@@ -353,7 +383,12 @@ def cmd_doctor(args: argparse.Namespace, cfg: Settings) -> int:
             "未指定学期", hint="用 --semester 指定，或设置环境变量 XJTU_SEMESTER。"
         )
 
-    checks = doctor_module.run_checks(cfg, semester, verify=args.verify)
+    checks = doctor_module.run_checks(
+        cfg,
+        semester,
+        verify=args.verify,
+        include_calendar_events=getattr(args, "include_calendar_events", False),
+    )
     print(f"体检（学期 {semester}）")
     for check in checks:
         label = _DOCTOR_LABELS.get(check.name, check.name)
@@ -596,7 +631,10 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
         sequence_from=args.sequence_from,
         baseline_probe=args.output,
         no_sequence=args.no_sequence,
+        # getattr 而不是直接读属性：既有测试与外部调用方会手工拼 Namespace，
+        # 它们不可能知道 0.9 新加了这一个旗标（同 `--allow-mass-cancellation` 的处置）。
         include_exams=not args.no_exams,
+        include_calendar_events=getattr(args, "include_calendar_events", False),
         # CD4/§6.6：export 与订阅路径**同一判据同一心智**——熔断在构建内部抛出
         # `MassCancellationBlocked`（退出码 6），沿 `main()` 的异常出口变成退出码；
         # 产物与台账都在 `build_ics_for_semester` 返回之后才写，异常时一行都没落盘。
@@ -682,6 +720,19 @@ def cmd_export(args: argparse.Namespace, cfg: Settings) -> int:
     cancelled = int(str(result.info.get("exam_cancellations", 0)))
     if cancelled:
         print(f"撤销：{cancelled} 条（已发布考试事件在本次产物中标记为取消）")
+        print()
+    # 校历事件的三格计数（P1-03）：进产物的、被未裁决冲突扣下的、配置有错的。
+    # 独立 `export` 走**预览口径**（§12.2）：有错也照样带着好事件出，但必须说清楚少了什么，
+    # 否则用户会拿着一份看起来正常、实则缺了寒假的日历去订阅。
+    cal_events = int(str(result.info.get("calendar_events", 0)))
+    cal_withheld = int(str(result.info.get("calendar_withheld", 0)))
+    cal_errors = int(str(result.info.get("calendar_config_errors", 0)))
+    if cal_events or cal_withheld or cal_errors:
+        print(f"校历事件：{cal_events} 条进入产物")
+        if cal_withheld:
+            print(f"  另有 {cal_withheld} 条因未裁决的来源冲突本次不生成（两边都不猜）")
+        if cal_errors:
+            print(f"  另有 {cal_errors} 条配置错误被跳过（明细见日志/doctor；正式发布会被拒绝）")
         print()
     logger.info("已生成 %s", output)
     return 0
@@ -1414,6 +1465,7 @@ def cmd_subscribe(args: argparse.Namespace, cfg: Settings) -> int:
             state,
             semester,
             include_exams=not args.no_exams,
+            include_calendar_events=getattr(args, "include_calendar_events", False),
             # Task 9 已在 rot_p 上声明该旗标；`getattr` 保留为对直接调用方的兜底，缺省即 False
             # （门 2 默认收紧）。
             allow_mass_cancellation=getattr(args, "allow_mass_cancellation", False),
@@ -1766,6 +1818,75 @@ def _publish_with_journal(
     return res
 
 
+def _require_calendar_events_admissible(
+    cfg: Settings,
+    semester: str,
+    *,
+    include_calendar_events: bool,
+    baseline_text: str | None,
+) -> None:
+    """校历事件那两道发布门，**排在构建之前**（§12.2 与 §12.4）。
+
+    为什么必须在构建前：发布路径要同时推进远端 ICS、本地留底、两份台账与凭据，
+    拒绝就必须一行都不落。而判据读的是**学期配置 + 上次发布的留底**，
+    与构建的产物无关，所以能独立成立。
+
+    判据本体在 :func:`xjtu_calendar.calendar_events.publish_refusal_reasons`（纯函数），
+    这里只做三件事：取证据、把理由码翻成人话、抛退出码 ``8``。
+    文案遵守隐私 §8：只有序号、字段名、原因码与计数，**不打事件标题与来源 URL 的值**。
+    """
+    from .calendar_events import publish_refusal_reasons
+
+    path = cfg.semester_config_path(semester)
+    if not path.is_file():
+        # 没有学期配置：这一格没什么可判的，让构建去报它那个更准的错
+        # （`SemesterNotConfigured` 的文案带着模板指路，比这里复读一句强）。
+        return
+    academic = AcademicCalendar.from_file(path)
+    config = academic.calendar_events
+
+    published_uids: set[str] = set()
+    if baseline_text:
+        with contextlib.suppress(Exception):
+            # 留底读不通不算校历错误：相容性那道门（退出码 7）专门管这件事。
+            published_uids = set(parse_baseline(baseline_text))
+
+    reasons = publish_refusal_reasons(
+        config,
+        semester_key=academic.semester.key,
+        include_calendar_events=include_calendar_events,
+        published_uids=published_uids,
+    )
+    if not reasons:
+        return
+
+    lines: list[str] = []
+    if "config_errors" in reasons:
+        lines.append(f"校历事件配置有 {len(config.errors)} 条错误：")
+        lines.extend(f"  {error.describe()}" for error in config.errors)
+        lines.append("  预览与独立 export 会带着其余好事件继续出，但**正式发布整体拒绝**——")
+        lines.append("  校历事件不接撤销通路，配置写错一条就是线上少一条，且恢复不回来。")
+    if "unresolved_conflicts" in reasons:
+        unresolved = sum(1 for c in config.conflicts if not c.resolved)
+        lines.append(
+            f"有 {unresolved} 组校历来源冲突尚未裁决（conflicts 段里缺 adjudicated_by）："
+            "两边都不生成事件，也不许自动择一，所以这次整体拒绝发布。"
+        )
+    if "flag_missing_after_publish" in reasons:
+        lines.append("上一次发布的产物里含校历事件，而本次没有带 --include-calendar-events。")
+        lines.append(
+            "漏写一个旗标**不等于**"
+            "「你要把校历事件全删掉」——这些事件不接撤销通路，"
+            "直接从 feed 消失的话，客户端会不会清掉旧条目完全看它的脾气。"
+        )
+        lines.append("  想继续带上它们：本次命令加 --include-calendar-events；")
+        lines.append("  确实不要了：把学期配置里的 events 条目删掉（那是明确选择，本门放行）。")
+    raise CalendarEventsBlocked(
+        "校历事件的发布准入未通过，本次不发布（远端与本地状态一字未动）：\n" + "\n".join(lines),
+        hint=f"改完配置后重跑同一条命令；体检可先看状态：xjtu-calendar doctor --semester {semester}",
+    )
+
+
 def _subscribe_push(
     args: argparse.Namespace, cfg: Settings, state: subscribe.SubscriptionState, semester: str
 ) -> int:
@@ -1796,12 +1917,20 @@ def _subscribe_push(
     # 来源（v1 配方代码已删除，CD15 ⇒ 不重算旧 UID，只从上次发布的产物里读）。
     migrating = subscribe.needs_uid_migration(state)
     baseline_text = last_local.read_text(encoding="utf-8") if last_local.is_file() else None
+    # 校历事件那道准入门（§12.2 / §12.4）：读同一份留底，排在构建之前。
+    _require_calendar_events_admissible(
+        cfg,
+        semester,
+        include_calendar_events=getattr(args, "include_calendar_events", False),
+        baseline_text=baseline_text,
+    )
     result_ics = build_ics_for_semester(
         cfg,
         semester,
         input_path=getattr(args, "input", None),
         baseline_probe=str(last_local) if last_local.is_file() else None,
         include_exams=not args.no_exams,
+        include_calendar_events=getattr(args, "include_calendar_events", False),
         published_baseline_text=baseline_text if migrating else None,
         allow_mass_cancellation=getattr(args, "allow_mass_cancellation", False),
     )
@@ -1828,6 +1957,7 @@ def _subscribe_rotate(
     semester: str,
     *,
     include_exams: bool = True,
+    include_calendar_events: bool = False,
     allow_mass_cancellation: bool = False,
     allow_unverified_baseline: bool = False,
 ) -> int:
@@ -1835,6 +1965,10 @@ def _subscribe_rotate(
 
     ``include_exams``：与 push 同口径透传给构建管线（spec §6.7）。rotate 若不接
     ``--no-exams``，用户明确关掉的考试会被悄悄塞回订阅 URL——正是本参数要防的缺陷。
+
+    ``include_calendar_events``：与 ``include_exams`` 完全同一理由（P1-03）。
+    rotate 会**重新构建并补发**整份产物，不接这个旗标的话，上一次发布里那批校历事件
+    会在换 token 的补发中被静默丢掉——而它们不接撤销通路，客户端那边连"已取消"都收不到。
 
     ``allow_mass_cancellation``：门 2（CD12）的显式放行旗标，与 push 同义（换 token 后
     的补发同样要撤课程事件，保险丝没有理由在这里松开）。
@@ -1876,6 +2010,14 @@ def _subscribe_rotate(
     # 报给用户的与实际发生的正相反（虚报只朝"多报"这一侧偏）。
     migrating = subscribe.needs_uid_migration(state)
     baseline_text = last_local.read_text(encoding="utf-8") if last_local.is_file() else None
+    # 校历事件的准入门（§12.2 / §12.4）与上面那道门同一个位置理由：
+    # **换 token 之前**停手，用户手里还得留着"旧 URL 仍然能用"这条退路。
+    _require_calendar_events_admissible(
+        cfg,
+        semester,
+        include_calendar_events=include_calendar_events,
+        baseline_text=baseline_text,
+    )
     # rotate 会换新 token = 换订阅 URL，旧地址此后永远收不到撤销（spec D12）。
     # 这里是**探针渲染**：只取撤销数量，返回的台账文本必须丢弃（D24②——此刻产物
     # 还没发布出去，落台账等于"假装撤销过"）。try **只罩探针**：撤销警告是增量，
@@ -1891,6 +2033,7 @@ def _subscribe_rotate(
             semester,
             baseline_probe=str(last_local) if last_local.is_file() else None,
             include_exams=include_exams,
+            include_calendar_events=include_calendar_events,
             published_baseline_text=baseline_text if migrating else None,
             allow_mass_cancellation=allow_mass_cancellation,
         )
@@ -1937,6 +2080,7 @@ def _subscribe_rotate(
             semester,
             baseline_probe=str(last_local),
             include_exams=include_exams,
+            include_calendar_events=include_calendar_events,
             published_baseline_text=baseline_text if migrating else None,
             allow_mass_cancellation=allow_mass_cancellation,
         )

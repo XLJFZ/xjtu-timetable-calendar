@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 from collections.abc import Callable
@@ -32,6 +33,7 @@ from .auth import inspect_session
 from .cancellation import load_ledger
 from .errors import XjtuCalendarError
 from .exporter import UID_RECIPE_VERSION, build_ics_for_semester
+from .sequence import parse_baseline
 from .subscribe import (
     check_local_compatibility,
     has_unpublished_changes,
@@ -356,6 +358,64 @@ def _check_uid_recipe(cfg: Settings, semester: str, state: Any) -> Check:
     return Check("uid_recipe", status, f"配方 v{state.uid_recipe}；{ledger_part}")
 
 
+def _check_calendar_events(cfg: Settings, semester: str, include_calendar_events: bool) -> Check:
+    """校历事件那一格（v0.9-P1-03）。口径与发布门**必须一致**（§12.2）。
+
+    判据全部走 `calendar_events.doctor_calendar_status`，它内部就是那条门，
+    所以这里不可能出现"门会拦而体检是绿的"。订阅状态不需要传进来：
+    这一格读的是留底字节，与 `push` 那道门同一份证据。
+    """
+    from .academic_calendar import AcademicCalendar
+    from .calendar_events import doctor_calendar_status
+    from .subscribe import subscribe_dir
+
+    path = cfg.semester_config_path(semester)
+    if not path.is_file():
+        return Check("calendar_events", STATUS_OK, "未配置教学日历，无校历事件")
+    try:
+        academic = AcademicCalendar.from_file(path)
+    except XjtuCalendarError as exc:
+        # 学期配置本身有问题时这一格不重复报错：`semester_config` 那格已经判了。
+        return Check("calendar_events", STATUS_WARN, f"读不到校历事件（{type(exc).__name__}）")
+
+    config = academic.calendar_events
+    if config.declared_events == 0 and config.declared_conflicts == 0:
+        return Check(
+            "calendar_events",
+            STATUS_OK,
+            "未配置（学期配置里没有 events 段；要用的话加 --include-calendar-events 发布）",
+        )
+
+    # 「上一版发布里有没有校历事件」的唯一凭据就是留底 —— 与 push 那道门读同一份文件。
+    last_local = subscribe_dir(cfg) / f"last-{semester}.ics"
+    published_uids: set[str] = set()
+    if last_local.is_file():
+        with contextlib.suppress(Exception):
+            published_uids = set(parse_baseline(last_local.read_text(encoding="utf-8")))
+
+    verdict, reasons = doctor_calendar_status(
+        config,
+        semester_key=academic.semester.key,
+        published_uids=published_uids,
+        include_calendar_events=include_calendar_events,
+    )
+    sources = len({spec.source_url for spec in config.specs})
+    summary = f"{len(config.specs)} 条可用、来源 {sources} 个"
+    if config.errors:
+        summary += f"；{len(config.errors)} 条配置错误"
+    if config.has_unresolved_conflicts:
+        summary += f"；{sum(1 for c in config.conflicts if not c.resolved)} 组冲突未裁决"
+    if verdict != "ok":
+        return Check(
+            "calendar_events",
+            STATUS_FAIL,
+            f"{summary}（{'、'.join(reasons)}）："
+            f"这个状态下 subscribe push 会被拒绝发布（退出码 8），先把配置改过来",
+        )
+    status = STATUS_OK if not config.errors else STATUS_WARN
+    return Check("calendar_events", status, summary)
+
+
 def _check_url(state: Any) -> Check:
     url = str(getattr(state, "subscription_url", ""))
     try:
@@ -377,7 +437,9 @@ def _safe(name: str, probe: Callable[..., Check], *args: object) -> Check:
         return Check(name, STATUS_FAIL, f"检查内部异常：{type(exc).__name__}: {exc}")
 
 
-def run_checks(cfg: Settings, semester: str, *, verify: bool = False) -> list[Check]:
+def run_checks(
+    cfg: Settings, semester: str, *, verify: bool = False, include_calendar_events: bool = False
+) -> list[Check]:
     """跑完全部判据。顺序即 CLI 打印顺序；任何单项内部异常都折成 fail，本函数不抛。"""
     checks: list[Check] = [
         _safe("version", _check_version),
@@ -389,6 +451,10 @@ def run_checks(cfg: Settings, semester: str, *, verify: bool = False) -> list[Ch
         _safe("render", _check_render, cfg, semester),
     ]
     state = load_state(cfg, semester)
+    # 校历事件这一格排在订阅之前：它自己就要读留底，与 `push` 那道门读同一份证据。
+    checks.append(
+        _safe("calendar_events", _check_calendar_events, cfg, semester, include_calendar_events)
+    )
     checks.append(_safe("subscription", _check_subscription, cfg, semester, state))
     checks.append(_safe("uid_recipe", _check_uid_recipe, cfg, semester, state))
     if verify and state is not None:

@@ -81,6 +81,7 @@ def test_every_check_name_appears_once(tmp_path: Path) -> None:
         "snapshot",
         "exam_snapshot",
         "render",
+        "calendar_events",
         "subscription",
         "uid_recipe",
     ]

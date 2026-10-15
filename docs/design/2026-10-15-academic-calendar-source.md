@@ -142,11 +142,12 @@ RRULE 展开。
    ⇒ 所以 **0.9-P1① 的范围从"让基线认 DATE"扩大为"全天事件的类型基础设施"**：先红用例要一次覆盖
    DATE 解析、`VALUE=DATE` 渲染、闭/半开区间转换、指纹与 SEQUENCE、混合排序、`summarize` 与
    `--from-date/--to-date`，以及**既有课程 / 考试 / 订阅产物的 Golden 字节不受影响**。
-2. **结束日期的语义必须写死**（RFC 5545 的 `DTEND` 是**不含**的结束边界）：配置层保留人工好核对的
+   ✅ P1-01 已按此施工（`c7426a7`），实测结果与两处需要补充的位点见 §14。
+3. **结束日期的语义必须写死**（RFC 5545 的 `DTEND` 是**不含**的结束边界）：配置层保留人工好核对的
    **闭区间** `start..end`，序列化时转成 `DTEND = end + 1 day`；解析基线回来算指纹时必须用
    **同一套语义**，否则每次重发布都因"闭/开区间不对齐"产生无意义的 SEQUENCE 漂移。
    例：注册 9/12–9/13 ⇒ `DTSTART;VALUE=DATE:20260912` + `DTEND;VALUE=DATE:20260914`。
-2. **默认关还是默认开**。裁定：**默认关，`--include-calendar-events` 显式打开**（并与
+4. **默认关还是默认开**。裁定：**默认关，`--include-calendar-events` 显式打开**（并与
    `--no-exams` 一样贯通到 `subscribe push` / `rotate`）。理由与考试侧当年默认并入不同：
    考试数据是本人课表的自然延伸、来源是认证接口；校历事件在 v0.9 第一版来自人工配置，
    来源缺失/抄错的可能性高，而它会进**所有订阅者**的日历。默认关还顺带守住一条既有不变量——
@@ -260,3 +261,27 @@ RRULE 展开。
    重复发布、错误配置拒发、漏旗标被拦。判据沿用 §7 那套：产物 sha 与彩排预测逐字节相同。
 
 四项都要保住既有不变量：**旧课程、旧考试、旧订阅产物的 Golden 字节兼容不许破**。
+
+## 14. P1-01 施工记录（2026-10-15，`c7426a7`）
+
+落地位点与 §6.1 表格的出入，回写给 P1-02/03 的实现者，别照表格找代码：
+
+- **表格漏了两处**。①`cancellation.render_ledger`：台账的 `LedgerEntry.start/end` 必须是
+  带 tz 的 `datetime`（保留期要和 aware 墙钟比，spec D9/D22），收到全天事件现在**抛
+  `CalendarExportError`** 而不是静默丢——这正是 §5「校历事件不接撤销通路」在代码里的硬保证。
+  ②`exporter.build_events:381` 的排序写在 `lambda e: (e.start, e.summary)` 里，
+  混排当场 `TypeError`；现抽出为模块级 `sort_key`（三段键的第 2 位区分全天/计时，
+  保证第 3 位永不拿 `date` 去和 `datetime` 比）。
+- **`render_ics` 本身没改**：崩点是 `sequence.event_fingerprint` 里的 `value.tzinfo`，
+  指纹认了 `date` 之后，icalendar 自然渲染出 `DTSTART;VALUE=DATE` / `DTEND;VALUE=DATE`，
+  且因为没有事件引用 TZID，`add_missing_timezones()` 不会凭空造 `VTIMEZONE`（有用例钉住）。
+- **反转了一条既有契约**：`tests/test_sequence.py` 里原 `test_parse_baseline_skips_all_day_events`
+  记录的是**缺口**而非契约，已改为「全天事件进基线」；另立一条守住"起止形态混用仍然跳过"。
+- **§12.1 的 ±1 换算只发生一处**：`CalendarEvent` 的 `end` 存的就是**不含**的边界，
+  渲染与指纹都不再加减天。配置闭区间 → 事件半开的那次转换属于 **P1-02 的配置模型**，本笔没碰。
+- 验证：877 passed / 4 skipped，两支 Golden（课程、考试）字节不变，
+  `mypy` / `ruff check .` / `ruff format --check .` 全绿；未推送、未动真实 home 与发布状态机。
+
+一处测试写法的教训（与产品无关但会咬人）：断言 `SEQUENCE` 别用 `^SEQUENCE:1$` + `re.MULTILINE`——
+RFC 5545 要求 **CRLF**，`$` 只认 `\n`，`\r` 会让本来成立的断言永远匹配不上（本次实测踩过）。
+用 `splitlines()` 取行。

@@ -8,6 +8,20 @@
 
 ## [未发布]
 
+- **Added：全天（`VALUE=DATE`）事件的基础设施（0.9-P1-01，尚无用户可见行为）。**
+  管线此前有六处按 `datetime` 写死：`CalendarEvent` 的起止类型、`event_fingerprint` 里的
+  `value.tzinfo`、`parse_baseline` 对非 `datetime` 一律跳过、`build_events` 的排序键、
+  `summarize` 与 `_in_range` 的 `.date()`，以及撤销台账。结果是**一条全天事件连渲染都到不了**，
+  而侥幸进不了基线的那类只会得到"每次重发布 SEQUENCE 恒 0、改了也不更新"的哑事件。
+  现在起止允许同质的 `date` 对（混用在构造期报 `ValueError`），指纹与基线按日期语义计算，
+  排序抽出为 `sort_key`（同一天里全天块在计时块之前），台账对全天事件**抛错**而非静默丢弃
+  ——校历事件按设计不接撤销通路。语义上把 RFC 5545 的半开区间钉死在 `CalendarEvent` 一处：
+  `end` 存的就是**不含**的边界，单日事件是 `D → D+1`，加减天只许发生在"配置闭区间 → 事件"那一处。
+  用户可见行为要到 P1-03 的 `--include-calendar-events` 才出现；**本笔不改任何已发布字节**
+  （两支 golden 逐字节复现，另有纯计时事件排序与旧键逐位一致的看守），全量 `877 passed / 4 skipped`。
+  契约反转一条：`tests/test_sequence.py` 原来那条「基线跳过全天事件」记录的是缺口，已改为
+  「全天事件进基线」，并另立一条守住"起止形态混用仍然跳过"。
+  决策与施工记录见 `docs/design/2026-10-15-academic-calendar-source.md` §12.1、§14。
 - **Fixed：考试侧的跳过/提醒/降级日志不再逐字带出考试原文（隐私 §8）。**
   `parse_exam_rows` 的三条跳过文案与「星期不一致」那条提醒此前打的是
   `考试「{课程名}」的时间描述无法解析：'{KSSJMS 原文}'` 这种形态，`exporter` 的考试 UID

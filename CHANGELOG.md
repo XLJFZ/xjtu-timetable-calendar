@@ -8,7 +8,21 @@
 
 ## [未发布]
 
-暂无。当前版本号 = `pyproject.toml` 里的 `0.8.5`。
+- **Fixed：考试侧的跳过/提醒日志不再逐字带出考试原文（隐私 §8）。**
+  `parse_exam_rows` 的三条跳过文案与「星期不一致」那条提醒此前打的是
+  `考试「{课程名}」的时间描述无法解析：'{KSSJMS 原文}'` 这种形态，`exporter` 的考试 UID
+  碰撞丢弃打的也是 `SUMMARY`。日志会被贴进 issue 与截图，而考试名、考场、座位、考试日期都是
+  个人数据。现在只报「第 N 行 + 坏在哪个字段（`KCM` / `KSSJMS` / `KSRQ`）」，UID 碰撞那条改报
+  UID（与课程侧撤销的丢弃日志同口径），`build_exam_events` 的日期丢弃只报异常类名——`str(exc)`
+  会逐字引用那个坏掉的日期。改的是日志，**产物一字未改**：两支 golden 逐字节复现，全量
+  `862 passed / 4 skipped`。新增 5 条泄漏看守用例（把原文字段换成唯一标记串，断言导出与 `diff`
+  两条通路的所有日志记录零命中）。
+  **已知边界（有意未一并收紧）**：`_uid_token` 那句「考试「{名}」缺少 WID，UID 降级到 KSRWID」
+  仍带课程名，那是 `tests/test_diff_exams.py` 逐字钉住的可诊断性取舍，要不要一起脱敏需要单独决策。
+- **文档：站点首页的命令表补上 `subscribe repair`。** 此前整份站点零命中，而 README /
+  `docs/user-guide/cli-reference.md` / `subscription.md` / setup skill 四处都已带上。同时写明它是
+  `subscribe push` / `rotate` 报退出码 `7` 时的处置、且需要联网读远端字节。
+  首页要更新到线上仍需一次**新的推送授权**。
 
 ---
 

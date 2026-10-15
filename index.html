@@ -426,7 +426,7 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
       <tr><td><code>export</code></td><td data-label="作用">解析并生成 .ics（默认并入考试事件；支持日期范围 / SEQUENCE 基线 / <code>--no-exams</code>）</td><td data-label="联网？">否</td></tr>
       <tr><td><code>notice</code> / <code>schedule</code></td><td data-label="作用">解析停课调课通知 / 官方作息页，预览或合并配置</td><td data-label="联网？">匿名 GET</td></tr>
       <tr><td><code>diff</code></td><td data-label="作用">比对新旧快照，列出课表变化与「考试变更」</td><td data-label="联网？">否</td></tr>
-      <tr><td><code>subscribe init/push/rotate/status</code></td><td data-label="作用">发布到 GitHub Pages 的订阅 URL；push 与 export 共用同一条构建管线</td><td data-label="联网？">仅 push / <code>status --verify</code></td></tr>
+      <tr><td><code>subscribe init/push/rotate/repair/status</code></td><td data-label="作用">发布到 GitHub Pages 的订阅 URL；push 与 export 共用同一条构建管线；<code>repair</code> 以<strong>线上真实字节</strong>为准把本地留底与台账对齐回已发布那一版（不产生新发布），<code>push</code> / <code>rotate</code> 报退出码 <code>7</code> 时的处置就是它</td><td data-label="联网？">仅 push / repair / <code>status --verify</code></td></tr>
       <tr><td><code>doctor</code></td><td data-label="作用">只读体检，退出码 0 / 5 可直接判定「部署到位没有」</td><td data-label="联网？">默认否</td></tr>
       <tr><td><code>inspect</code></td><td data-label="作用">对原始 JSON 做脱敏结构分析</td><td data-label="联网？">否</td></tr>
     </tbody>

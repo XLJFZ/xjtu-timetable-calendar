@@ -301,6 +301,15 @@ LAST-MODIFIED。**撤销条目不会每次发布都涨一个序号**，这是既
   或弃用某个 key，那个旧台账文件再也不会被读到，也就永远不会被剪掉，直到用户自己删除。
   本文**不做自动清理**（Non-goals），README 的换设备/换学期段落里给出手动删除指引。
 - 日志不打印台账内容；`sjbh` / `zjjsxm` 等既有打码键不变。
+- **2026-10-15 把这条口径从「台账」扩到「快照原文」**：考试名（`KCM`）、时间描述（`KSSJMS`）、
+  考试日期（`KSRQ`）都不进日志——逐条打印的通道只许给**行号 + 坏在哪个字段 + 异常类名**，
+  UID 碰撞的丢弃只许给 UID。理由与台账同一条：日志会被贴进 issue 与截图。
+  `str(exc)` 也算原文（`json.loads` / `date.fromisoformat` 会逐字引用坏
+  字节）。看守：`tests/test_exams.py`、`tests/test_exporter_exams.py`、`tests/test_cli_diff.py`
+  里三条 `*_carry_no_original_text` 用例，把原文字段换成唯一标记串后断言导出与 `diff` 两条通路
+  的**所有**日志记录零命中。**有意保留的例外**：`_uid_token` 的「缺少 WID，UID 降级」文案仍带
+  课程名——它是 UID 稳定性排查最直接的抓手，且被 `tests/test_diff_exams.py` 逐字钉住；要不要一并
+  脱敏是一个独立的取舍，尚未决策。
 - 订阅 URL 的风险口径不变（一学期一 token，转发即授权）。
 
 ## 9. 测试策略

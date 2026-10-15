@@ -116,6 +116,56 @@ README 里保留同名小节作入口；CLI 报错文案指的「必须由你配
 
 `description` 必填：没有说明的「无法表达」只会让人困惑。
 
+**`events` / `conflicts`（可选，0.9.0 起）：校历事件。**
+
+同一份学期配置里还可以声明学校**发布过**的全天事件（起课、报到注册、考试周、寒暑假、放假调休），
+让日历里除了课和考试之外也有"哪天放寒假"这类条目：
+
+```json
+"events": [
+  {
+    "source_id": "2026-fall-winter",
+    "category": "vacation",
+    "title": "寒假",
+    "start": "2027-01-18",
+    "end": "2027-02-28",
+    "source_url": "https://due.xjtu.edu.cn/xxfw/xl.htm"
+  }
+],
+"conflicts": [
+  {
+    "topic": "winter_start",
+    "source_id": "2026-fall-winter",
+    "source_urls": ["https://due.xjtu.edu.cn/xxfw/xl.htm", "https://jwc.xjtu.edu.cn/info/1095/10442.htm"],
+    "dates": ["2027-01-18", "2027-01-22"],
+    "decided_on": "2026-10-15",
+    "adjudicated_by": "以教务部校历图片为准"
+  }
+]
+```
+
+> 📌 同样是**格式示例**，日期必须从官方校历抄。`examples/academic_calendar.example.json` 里
+> 有一份完整可解析的版本，用例逐条把它喂给解析器钉着（模板与解析器漂移 = 用户照抄即撞）。
+
+四条会咬人的口径：
+
+- **`start` / `end` 是闭区间**（含 `end` 那一天）。ICS 的 `DTEND` 按 RFC 5545 是**不含**的边界，
+  工具在生成事件时 +1 天，只加这一次 —— 所以你在 `DESCRIPTION` 里看到的仍是抄进去的那两天。
+- **`source_id` 必填且同学期内唯一**，它就是这条事件的身份：**改标题、改日期都走原地更新**
+  （UID 不变、`SEQUENCE` +1）。缺失 / 空 / 非法字符 / 重复都是配置错误，没有降级链。
+- **`source_url` 必须是 `xjtu.edu.cn` 或其子域的 https 地址**，且不许带个人认证参数
+  （`ticket` / `token` / `sessionid` / `uid` 之类）。这份配置会进**公开产物**，来源链接是给
+  订阅你的人核对用的。
+- **两个来源互相矛盾时不要自己挑一个**：写进 `conflicts`，两边都不生成；
+  `adjudicated_by` 非空才算你已经裁决过（那是"人怎么定的"那句凭据）。
+
+校历事件**默认不进产物**，要显式带上 `--include-calendar-events`（`export` / `subscribe push` /
+`subscribe rotate` / `doctor` 四处同名）。正式发布的准入比预览严：开了旗标而 `events` 有错、
+或有未裁决的 `conflicts` ⇒ **整体拒绝发布**（退出码 `8`，远端与本地状态一字未动）——
+因为校历事件**不接撤销通路**，配置写错一条就是线上少一条且恢复不回来。
+它的已知边界（删除后再加回来的代价、客户端历史状态修不动）见
+[订阅指南](subscription.md)的「已知边界」一节。
+
 #### 2. 作息表
 
 位置：`~/.xjtu-timetable-calendar/schedules/schedule.json`

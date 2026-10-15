@@ -306,7 +306,7 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
   </div>
   <div class="callout" style="margin-top:1.2rem">
     <b>卡住了先跑体检：</b><code class="inline-code">doctor</code> 只读地把版本 / 会话 / 校历 / 作息 / 课表快照 /
-    考试快照 / 渲染 / 订阅留底一次看全，不写任何文件、默认一个请求都不发；有阻塞项时退出码为
+    考试快照 / 渲染 / <strong>校历事件</strong> / 订阅留底一次看全，不写任何文件、默认一个请求都不发；有阻塞项时退出码为
     <code class="inline-code">5</code>。
     <pre style="margin-top:.7rem">python -m xjtu_calendar <span class="p">doctor</span> --semester 2026-2027-1 --verify</pre>
   </div>
@@ -428,7 +428,7 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     <div class="feature"><div class="ico">📰</div><h3>notice · 停课/调课通知</h3><p>解析教务处通知页的调课表格，与校历周次交叉校验后合并进配置——只新增、识别不了的行拒绝写盘。</p></div>
     <div class="feature"><div class="ico">⏰</div><h3>schedule · 作息表</h3><p>从教务处公开「学生作息时间表」页直接读第 1~10 节课两季钟点，切换点取自页面原文，幂等合并。</p></div>
     <div class="feature"><div class="ico">🔍</div><h3>diff · 调课检测</h3><p>纯本地比对两次 fetch 的快照：哪门课新增删除、哪个时段改了周次/教室/教师，并列出「考试变更」（新增 / 取消 / 时间 / 教室 / 座位）。</p></div>
-    <div class="feature"><div class="ico">🩺</div><h3>doctor · 只读体检</h3><p>版本 / 会话 / 校历 / 作息 / 课表快照 / 考试快照 / 渲染 / 订阅留底一次看全。不写任何文件、不触发 <code class="inline-code">fetch</code>，默认一个 HTTP 请求都不发（只有 <code class="inline-code">--verify</code> 才对订阅 URL 做一次匿名 GET）。<strong>0 = 无阻塞（警告不阻塞）、5 = 有阻塞项</strong>，脚本与 Agent 可以直接判定成败。</p></div>
+    <div class="feature"><div class="ico">🩺</div><h3>doctor · 只读体检</h3><p>版本 / 会话 / 校历 / 作息 / 课表快照 / 考试快照 / 渲染 / <strong>校历事件</strong> / 订阅留底一次看全。不写任何文件、不触发 <code class="inline-code">fetch</code>，默认一个 HTTP 请求都不发（只有 <code class="inline-code">--verify</code> 才对订阅 URL 做一次匿名 GET）。<strong>0 = 无阻塞（警告不阻塞）、5 = 有阻塞项</strong>，脚本与 Agent 可以直接判定成败。</p></div>
     <div class="feature"><div class="ico">🧩</div><h3>skills/ · 交给编码 Agent</h3><p>仓库根两个技能：<code class="inline-code">xjtu-timetable-setup</code>（八步部署向导，登录一步显式禁止后台执行器与管道，收尾以 <code class="inline-code">doctor</code> 退出码定成败）与 <code class="inline-code">timetable-api-archaeology</code>（给陌生学校的接口考古方法论，含「什么时候该停下来」）。整个目录复制进你所用 Agent 的 skills 目录即可，内容不假设任何特定产品。只想试一次的话，<strong>页首有一段可整段复制的提示词</strong>。</p></div>
   </div>
   <pre style="margin-top:1.2rem">python -m xjtu_calendar <span class="p">notice</span>   --url &lt;通知页地址&gt; --semester 2026-2027-1 --apply
@@ -452,16 +452,16 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
       <tr><td><code>login [--force]</code></td><td data-label="作用">浏览器本人登录，会话仅存本地；会话过期后必须带 <code>--force</code></td><td data-label="联网？">认证页</td></tr>
       <tr><td><code>status</code></td><td data-label="作用">查看会话与配置状态</td><td data-label="联网？">否</td></tr>
       <tr><td><code>fetch</code></td><td data-label="作用">获取课表 JSON（HTTP 路径同时抓考试安排；自动轮转上一份快照作 diff 基线）</td><td data-label="联网？">是</td></tr>
-      <tr><td><code>export</code></td><td data-label="作用">解析并生成 .ics（默认并入考试事件；支持日期范围 / SEQUENCE 基线 / <code>--no-exams</code>）</td><td data-label="联网？">否</td></tr>
+      <tr><td><code>export</code></td><td data-label="作用">解析并生成 .ics（默认并入考试事件；支持日期范围 / SEQUENCE 基线 / <code>--no-exams</code>；<code>--include-calendar-events</code> 并入校历事件，0.9 起、默认不带）</td><td data-label="联网？">否</td></tr>
       <tr><td><code>notice</code> / <code>schedule</code></td><td data-label="作用">解析停课调课通知 / 官方作息页，预览或合并配置</td><td data-label="联网？">匿名 GET</td></tr>
       <tr><td><code>diff</code></td><td data-label="作用">比对新旧快照，列出课表变化与「考试变更」</td><td data-label="联网？">否</td></tr>
-      <tr><td><code>subscribe init/push/rotate/repair/status</code></td><td data-label="作用">发布到 GitHub Pages 的订阅 URL；push 与 export 共用同一条构建管线；<code>repair</code> 以<strong>线上真实字节</strong>为准把本地留底与台账对齐回已发布那一版（不产生新发布），<code>push</code> / <code>rotate</code> 报退出码 <code>7</code> 时的处置就是它</td><td data-label="联网？">仅 push / repair / <code>status --verify</code></td></tr>
-      <tr><td><code>doctor</code></td><td data-label="作用">只读体检，退出码 0 / 5 可直接判定「部署到位没有」</td><td data-label="联网？">默认否</td></tr>
+      <tr><td><code>subscribe init/push/rotate/repair/status</code></td><td data-label="作用">发布到 GitHub Pages 的订阅 URL；push 与 export 共用同一条构建管线；<code>repair</code> 以<strong>线上真实字节</strong>为准把本地留底与台账对齐回已发布那一版（不产生新发布），<code>push</code> / <code>rotate</code> 报退出码 <code>7</code> 时的处置就是它；带 <code>--include-calendar-events</code> 才发布校历事件（0.9 起）</td><td data-label="联网？">仅 push / repair / <code>status --verify</code></td></tr>
+      <tr><td><code>doctor</code></td><td data-label="作用">只读体检，退出码 0 / 5 可直接判定「部署到位没有」；「校历事件」那一格与发布门共用判据，因此也接 <code>--include-calendar-events</code></td><td data-label="联网？">默认否</td></tr>
       <tr><td><code>inspect</code></td><td data-label="作用">对原始 JSON 做脱敏结构分析</td><td data-label="联网？">否</td></tr>
     </tbody>
   </table>
   </div>
-  <p style="color:var(--sub);font-size:.9rem;margin-top:.8rem">退出码有语义（2=未登录、3=登录失效、4=接口拒绝——最常见是登录停在「请选择身份」的半截会话，见 README 的 403 一条、5=<code>doctor</code> 检出阻塞项），方便脚本串联。完整参数与客户端订阅入口见 <a href="https://github.com/XLJFZ/xjtu-timetable-calendar#命令参考">README · 命令参考</a>。</p>
+  <p style="color:var(--sub);font-size:.9rem;margin-top:.8rem">退出码有语义（2=未登录、3=登录失效、4=接口拒绝——最常见是登录停在「请选择身份」的半截会话，见 README 的 403 一条、5=<code>doctor</code> 检出阻塞项、6=成批撤销被熔断拒绝、7=本地发布状态与线上不相容（跑 <code>subscribe repair</code>）、8=校历事件的发布准入没过（<strong>改配置</strong>，不是 <code>repair</code> 也不是 <code>--allow-*</code>）），方便脚本串联。完整参数与客户端订阅入口见 <a href="https://github.com/XLJFZ/xjtu-timetable-calendar#命令参考">README · 命令参考</a>。</p>
 </section>
 
 <section id="privacy">

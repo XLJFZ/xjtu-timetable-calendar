@@ -28,6 +28,14 @@ logger = logging.getLogger("xjtu_calendar.naming")
 #: 日历标题的基础名，也是 ``--name`` 未显式给出时使用的默认值。
 DEFAULT_CALENDAR_NAME = "西安交通大学课表"
 
+#: UID 的域名后缀，便于在日历客户端中识别来源。
+#:
+#: 放在这个**零依赖**模块里，是因为三条 UID 配方（课程 / 考试 / 校历事件）都要用它，
+#: 而校历事件的模型必须能被 ``academic_calendar`` 导入 —— 从 ``exporter`` 反向取常量会
+#: 绕成循环（``exporter → academic_calendar → calendar_events → exporter``）。
+#: ``exporter.UID_DOMAIN`` 仍然可导入（兼容 ``exams.py`` 与既有测试的引用路径）。
+UID_DOMAIN = "xjtu-timetable-calendar"
+
 #: 形如 2026-2027-1 / 2026-2027-2 的学期代码；第 3 学期（短学期制）刻意不匹配。
 _SEMESTER_CODE = re.compile(r"^(\d{4})-(\d{4})-([12])$")
 

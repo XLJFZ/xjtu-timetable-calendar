@@ -25,6 +25,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .calendar_events import CalendarEventConfig, parse_calendar_events
 from .errors import ParseError, SemesterNotConfigured
 from .models import CourseMeeting, Semester, UnsupportedAdjustment
 
@@ -99,6 +100,9 @@ class AcademicCalendar:
     excluded_dates: set[date] = field(default_factory=set)
     overrides: dict[date, DateOverride] = field(default_factory=dict)
     unsupported_adjustments: tuple[UnsupportedAdjustment, ...] = field(default_factory=tuple)
+    #: 校历事件与冲突记录（v0.9 校历特性）。**默认空** ⇒ 没配 `events` 的既有文件
+    #: 加载路径与产物字节一字不变（特性默认关的那条地基）。
+    calendar_events: CalendarEventConfig = field(default_factory=CalendarEventConfig)
 
     # ------------------------------------------------------------------ #
     # 教学周 -> 日期
@@ -216,11 +220,20 @@ class AcademicCalendar:
                     f"请从 unsupported_adjustments 中删除这条过时声明。"
                 )
 
+        # 校历事件（v0.9）：**逐条判定、不抛**。一条写坏只毙那一条，
+        # 错误清单交给调用方决定"预览报告 / 正式发布拒绝"（§12.2）。
+        # 只有 `events` 整段形态不对（不是数组）才抛 —— 那时每条的序号都无从谈起。
+        calendar_events = parse_calendar_events(
+            payload.get("events"),
+            payload.get("conflicts"),
+        )
+
         return cls(
             semester=semester,
             excluded_dates=excluded,
             overrides=overrides,
             unsupported_adjustments=adjustments,
+            calendar_events=calendar_events,
         )
 
     @classmethod

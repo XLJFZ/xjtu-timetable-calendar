@@ -37,7 +37,7 @@ from .errors import (
 )
 from .logging_setup import get_logger
 from .models import CalendarEvent, CourseMeeting, UnsupportedAdjustment
-from .naming import DEFAULT_CALENDAR_NAME, calendar_title
+from .naming import DEFAULT_CALENDAR_NAME, UID_DOMAIN, calendar_title
 from .parser import ParseReport, TimetableParser
 from .periods import format_periods
 from .schedules import ScheduleTable
@@ -50,6 +50,7 @@ if TYPE_CHECKING:  # 仅为注解：exams.py 顶层 import exporter，运行时�
 
 __all__ = [
     "PRODID",
+    "UID_DOMAIN",
     "ExportResult",
     "MigrationSummary",
     "build_events",
@@ -64,12 +65,9 @@ logger = get_logger()
 
 PRODID = "-//xjtu-timetable-calendar//XJTU Personal Timetable Export//CN"
 
-#: UID 的域名后缀，便于在日历客户端中识别来源
-UID_DOMAIN = "xjtu-timetable-calendar"
-
-# 默认日历名称与标题推导口径集中在 naming 模块（见 .naming 导入），
-# exporter 只在渲染时取用；DEFAULT_CALENDAR_NAME 仍可从本模块导入，
-# 以兼容既有 CLI / 测试引用。
+# UID 的域名后缀与日历默认名一样集中在 `naming` 模块（那里零依赖，
+# 校历事件模型 import 它不会绕成循环）；`UID_DOMAIN` 仍从本模块导出，
+# 以兼容 `exams.py` 与既有测试的引用路径。
 
 _WEEKDAY_NAMES = ("一", "二", "三", "四", "五", "六", "日")
 

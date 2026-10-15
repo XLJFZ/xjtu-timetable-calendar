@@ -366,7 +366,7 @@ def _check_calendar_events(cfg: Settings, semester: str, include_calendar_events
     这一格读的是留底字节，与 `push` 那道门同一份证据。
     """
     from .academic_calendar import AcademicCalendar
-    from .calendar_events import doctor_calendar_status
+    from .calendar_events import GATE_REFUSAL_CODES, doctor_calendar_status
     from .subscribe import subscribe_dir
 
     path = cfg.semester_config_path(semester)
@@ -406,12 +406,17 @@ def _check_calendar_events(cfg: Settings, semester: str, include_calendar_events
     if config.has_unresolved_conflicts:
         summary += f"；{sum(1 for c in config.conflicts if not c.resolved)} 组冲突未裁决"
     if verdict != "ok":
-        return Check(
-            "calendar_events",
-            STATUS_FAIL,
-            f"{summary}（{'、'.join(reasons)}）："
-            f"这个状态下 subscribe push 会被拒绝发布（退出码 8），先把配置改过来",
+        # 文案必须与**门的实际行为**同源（§16.1）：`declared_but_none_parsed` 是体检
+        # 自己那条自相矛盾（§7），门在"没开旗标 + 没发布过校历事件"时仍然放行。
+        # 那一格上要是照着念"push 会被拒绝"，就是把用户送去修一个不存在的问题。
+        gate_will_refuse = any(code in GATE_REFUSAL_CODES for code in reasons)
+        tail = (
+            "这个状态下 subscribe push 会被拒绝发布（退出码 8），先把配置改过来"
+            if gate_will_refuse
+            else "不带 --include-calendar-events 的发布**不受影响**（照常放行）；"
+            "一旦带上那个旗标就会被拒绝（退出码 8）。这段配置坏着是事实，体检先把它喊出来"
         )
+        return Check("calendar_events", STATUS_FAIL, f"{summary}（{'、'.join(reasons)}）：{tail}")
     status = STATUS_OK if not config.errors else STATUS_WARN
     return Check("calendar_events", status, summary)
 

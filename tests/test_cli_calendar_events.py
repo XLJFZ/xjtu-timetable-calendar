@@ -27,6 +27,7 @@ from xjtu_calendar import subscribe
 from xjtu_calendar.calendar_events import make_calendar_uid
 from xjtu_calendar.cli import main
 from xjtu_calendar.config import Settings
+from xjtu_calendar.exporter import build_ics_for_semester
 
 URL_BASE = "https://me.github.io/timetable/"
 WINTER_UID = make_calendar_uid(SEMESTER, "2026-fall-winter")
@@ -204,6 +205,20 @@ def test_export_writes_the_event_only_when_asked(
 # --------------------------------------------------------------------------- #
 
 
+def _subscribe_tree(home: Path) -> dict[str, bytes]:
+    """订阅目录的**全量**字节快照（留底、两份台账、状态、两份发布凭据）。
+
+    零写盘那条断言原来只点名核了三个文件——其中一个（`course-ledger-*.ics`）连路径都是错的
+    （真名是 `last-courses-*.ics`），于是它一直是空转的。整目录取指纹才挡得住"多写了个凭据文件"。
+    """
+    root = home / "subscribe"
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def test_push_refuses_a_config_error_with_a_new_exit_code_and_touches_nothing(
     env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -214,10 +229,7 @@ def test_push_refuses_a_config_error_with_a_new_exit_code_and_touches_nothing(
     state = subscribe.load_state(Settings(home=home), SEMESTER)
     assert state is not None
     before = remote_bytes(origin, state.token)
-    last_local = home / "subscribe" / f"last-{SEMESTER}.ics"
-    ledger = home / "subscribe" / f"course-ledger-{SEMESTER}.ics"
-    last_before = last_local.read_bytes()
-    ledger_before = ledger.read_bytes() if ledger.is_file() else None
+    tree_before = _subscribe_tree(home)
     capsys.readouterr()
 
     # 同学期两条：一条日期抄反、一条来源不是官方域名 —— 都是**配置错误**。
@@ -232,11 +244,11 @@ def test_push_refuses_a_config_error_with_a_new_exit_code_and_touches_nothing(
 
     err = capsys.readouterr().err
     assert "校历" in err
-    # 拒绝必须**真的没动现场**：远端、留底、台账三样逐字节相同。
+    # 拒绝必须**真的没动现场**：远端逐字节相同，订阅目录一个文件都没变、也没多出文件。
+    # （目录里那份 `publish-journal-*.json` 是上面那次**成功**发布留下的凭据，属正常状态；
+    # 整目录逐字节比对已经涵盖"被拒这一次没有新写、没有改写、没有留下准备稿"。）
     assert remote_bytes(origin, state.token) == before
-    assert last_local.read_bytes() == last_before
-    if ledger_before is not None:
-        assert ledger.read_bytes() == ledger_before
+    assert _subscribe_tree(home) == tree_before
 
 
 def test_push_refuses_an_unresolved_conflict(env: tuple[Path, Path]) -> None:
@@ -422,3 +434,90 @@ def test_doctor_is_not_stricter_than_the_gate(env: tuple[Path, Path]) -> None:
     assert push() == 0
 
     assert main(["doctor", "--semester", SEMESTER]) == 0
+
+
+def test_doctor_does_not_promise_a_refusal_the_gate_does_not_make(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """§16.1 的文案面：坏配置 + **没开旗标** + 从没发布过校历事件 ⇒ push 返回 0。
+
+    体检这一格仍然要喊（配置确实坏着，且"声称有事件却一条都没解析出来"是 §7 的阻塞项），
+    但它**不许**说"这个状态下 subscribe push 会被拒绝发布"——那句话会把人送去修一个
+    不存在的问题，也正是 v0.8 那次"门比警告凶"的反面教材：文案与判据必须同源。
+    """
+    home, origin = env
+    with_session(home)
+    assert _init(origin) == 0
+    assert push() == 0
+    write_calendar_config(home, [event_item(category="nope")])
+    assert push() == 0, "前置：这个状态下普通 push 是放行的"
+    capsys.readouterr()
+
+    assert main(["doctor", "--semester", SEMESTER]) == 5
+    out = capsys.readouterr().out
+    assert "[阻塞] 校历事件" in out, out
+    assert "会被拒绝发布" not in out, out
+    # 该说的还是得说：旗标名要点出来，并且要说清"带上了才会被拒"。
+    assert "不带 --include-calendar-events 的发布" in out, out
+    assert "不受影响" in out, out
+
+    # 反向半边：**带了旗标**去体检，那句"会被拒绝发布"就是真话，必须说。
+    assert main(["doctor", "--semester", SEMESTER, "--include-calendar-events"]) == 5
+    out = capsys.readouterr().out
+    assert "会被拒绝发布（退出码 8）" in out, out
+
+
+def test_export_without_the_flag_stays_quiet_about_calendar_events(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """没开旗标的 `export` 不许打印"另有 N 条配置错误被跳过（正式发布会被拒绝）"。
+
+    预览口径（§12.2）说的是**这次真的把校历事件放进来**时缺了什么；旗标关着的时候
+    校历事件根本没参与，报"0 条进入产物 / N 条错误"既无信息量又把"正式发布会被拒绝"
+    这句错话递到没启用这特性的人眼前（§16.1）。开了旗标才报，行不变。
+    """
+    home, _origin = env
+    write_calendar_config(home, [event_item(category="nope")])
+    capsys.readouterr()
+
+    assert main(["export", "--semester", SEMESTER, "-o", str(home / "off.ics")]) == 0
+    out = capsys.readouterr().out
+    assert "校历事件" not in out, out
+    assert "正式发布会被拒绝" not in out, out
+
+    assert (
+        main(
+            [
+                "export",
+                "--semester",
+                SEMESTER,
+                "-o",
+                str(home / "on.ics"),
+                "--include-calendar-events",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    # 开了旗标 = 这次真的要用校历事件，预览口径必须把缺的东西说清楚（§12.2 前半句）。
+    assert "校历事件" in out, out
+    assert "配置错误" in out, out
+
+
+def test_export_without_the_flag_does_not_warn_about_calendar_config(
+    env: tuple[Path, Path],
+) -> None:
+    """同一处副产的 CLI 侧证据：不带旗标时 `info["calendar_config_errors"]` 必须是 0。
+
+    为什么不走 `captured_logs`：`main()` 会调 `setup_logging`，它**先把该 logger 的
+    handler 全部摘掉**再挂自己的（`logging_setup.py` 的幂等那段），所以"跑一次 CLI 再抓日志"
+    的断言是空转的。警告本体的守卫在 `tests/test_calendar_event_export.py`（直接调构建）。
+    """
+    home, _origin = env
+    write_calendar_config(home, [event_item(category="nope")])
+    cfg = Settings(home=home)
+
+    off = build_ics_for_semester(cfg, SEMESTER, include_calendar_events=False)
+    assert off.info["calendar_config_errors"] == 0, off.info
+    on = build_ics_for_semester(cfg, SEMESTER, include_calendar_events=True)
+    assert on.info["calendar_config_errors"] == 1, on.info

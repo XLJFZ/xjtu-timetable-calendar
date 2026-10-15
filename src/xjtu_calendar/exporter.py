@@ -981,13 +981,15 @@ def build_ics_for_semester(
     # 把未裁决冲突点名的条目**两边都不生成**（§7：择一就是把猜测写进公开产物）。
     # 正式发布不走这里的"继续"：那道门在 CLI 的构建之前（整体拒绝、退出码 8），
     # 因为 exporter 既不决定发布、也不读写订阅状态。
-    # 不带旗标时这段整体空转 ⇒ 既有产物字节一字不变（§6 第 2 条那条不变量）。
-    for error in academic.calendar_events.errors:
-        logger.warning("校历事件配置错误：%s", error.describe())
-
+    # 不带旗标时这段整体空转 ⇒ 既有产物字节一字不变（§6 第 2 条那条不变量），
+    # **连警告也不发**（§16.1：没启用这特性的人不该每轮被校历噪声刷屏，那事归 `doctor` 喊）。
     calendar_events: list[CalendarEvent] = []
     calendar_withheld = 0
+    calendar_config_errors = 0
     if include_calendar_events:
+        calendar_config_errors = len(academic.calendar_events.errors)
+        for error in academic.calendar_events.errors:
+            logger.warning("校历事件配置错误：%s", error.describe())
         withheld_ids = academic.calendar_events.blocked_source_ids()
         for spec in academic.calendar_events.specs:
             if spec.source_id in withheld_ids:
@@ -1363,7 +1365,7 @@ def build_ics_for_semester(
     # 否则"课表覆盖范围"会被寒假拉到 3 月，那个数字已经写进若干文档与用例）。
     info["calendar_events"] = len(kept_calendar)
     info["calendar_withheld"] = calendar_withheld
-    info["calendar_config_errors"] = len(academic.calendar_events.errors)
+    info["calendar_config_errors"] = calendar_config_errors
     stats: dict[str, int] | None = None
     if baseline is not None:
         # stats 口径（spec D23）：必须含「课程 + live 考试」——否则考试的 SEQUENCE/新增

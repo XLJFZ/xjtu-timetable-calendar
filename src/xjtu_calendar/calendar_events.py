@@ -36,6 +36,7 @@ from .naming import UID_DOMAIN
 
 __all__ = [
     "CALENDAR_EVENT_CATEGORIES",
+    "GATE_REFUSAL_CODES",
     "CalendarEventConfig",
     "CalendarEventConflict",
     "CalendarEventError",
@@ -321,6 +322,14 @@ def calendar_uids_declared_by_config(
     )
 
 
+#: 只有这三个理由码**出自那道门本身**（= 这次 `subscribe push` / `rotate` 真会被拒）。
+#: `doctor` 的文案靠它区分"门真会拦"与"只有体检在喊"（§16.1 那条同判据要求），
+#: 而 `declared_but_none_parsed` 刻意不在其中——那是 §7 的自相矛盾，门对它放行。
+GATE_REFUSAL_CODES: frozenset[str] = frozenset(
+    {"config_errors", "unresolved_conflicts", "flag_missing_after_publish"}
+)
+
+
 def publish_refusal_reasons(
     config: CalendarEventConfig,
     *,
@@ -344,10 +353,14 @@ def publish_refusal_reasons(
     """
     reasons: list[str] = []
     if include_calendar_events:
-        if config.errors:
-            reasons.append("config_errors")
-        if config.has_unresolved_conflicts:
-            reasons.append("unresolved_conflicts")
+        # §12.2 的两个条件由 `publish_blocked` 一处定义（P1-02 就在那儿），这里只把它
+        # 拆成**可分派文案的理由码**；两处必须同进同退，否则"门放行了而体检说会被拒"
+        # 这种漂移又会回来（v0.9-P1-03 终审抓到的正是这类复读）。
+        if config.publish_blocked:
+            if config.errors:
+                reasons.append("config_errors")
+            if config.has_unresolved_conflicts:
+                reasons.append("unresolved_conflicts")
     else:
         if calendar_uids_declared_by_config(config, semester_key) & set(published_uids):
             reasons.append("flag_missing_after_publish")

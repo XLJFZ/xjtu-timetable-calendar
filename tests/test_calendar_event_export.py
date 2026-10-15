@@ -267,3 +267,26 @@ def test_withheld_event_count_is_reported_in_info(tmp_path: Path) -> None:
     )
     assert result.info["calendar_events"] == 1
     assert result.info["calendar_withheld"] == 1
+
+
+def test_a_broken_events_block_stays_silent_when_the_flag_is_off(tmp_path: Path) -> None:
+    """§16.1 的日志面：没启用这特性的人，每轮普通发布都不该被校历警告刷屏。
+
+    配置坏着这件事由 `doctor` 喊（体检那一格照旧报），构建侧的 warn 与计数都跟着旗标走——
+    与"坏配置不许拦住没用它的人"是同一条裁决，只是落在**噪声**而不是**退出码**上。
+    """
+    from exam_support import captured_logs
+
+    cfg = home_with_calendar(tmp_path, [event_item(category="nope")])
+
+    with captured_logs() as records:
+        off = build(cfg, include=False)
+    joined = "\n".join(record.getMessage() for record in records)
+    assert "校历事件配置错误" not in joined, joined
+    assert off.info["calendar_config_errors"] == 0, off.info
+
+    with captured_logs() as records:
+        on = build(cfg, include=True)
+    joined = "\n".join(record.getMessage() for record in records)
+    assert "校历事件配置错误" in joined, joined
+    assert on.info["calendar_config_errors"] == 1, on.info

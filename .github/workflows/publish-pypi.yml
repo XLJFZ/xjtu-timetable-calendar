@@ -52,4 +52,6 @@ jobs:
         with:
           repository-url: ${{ github.event.inputs.repository_url || '' }}
           # 未配置 repository_url 时该键为空，action 会发往正式 PyPI。
-          print-version-info: true
+          # 不再传 print-version-info：release/v1 的有效入参清单里没有它
+          # （0.9.0 发布时实测日志报 `Unexpected input(s) 'print-version-info'`），
+          # 只是一条噪声、不影响上传，但留着会让人以为这版 action 还认它。

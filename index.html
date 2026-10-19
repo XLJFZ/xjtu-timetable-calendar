@@ -180,6 +180,7 @@ footer{border-top:1px solid var(--line);background:var(--card);margin-top:2rem}
       <a href="#why">设计核心</a>
       <a href="#quickstart">快速开始</a>
       <a href="#exams">考试与撤销</a>
+      <a href="#calendar">校历事件</a>
       <a href="#subscribe">订阅 · 客户端</a>
       <a href="#automate">体检 · 配置</a>
       <a href="#commands">命令参考</a>
@@ -218,7 +219,7 @@ git clone https://github.com/XLJFZ/xjtu-timetable-calendar.git
     <div class="badges">
       <span class="badge">Python 3.11+</span>
       <span class="badge">MIT 许可</span>
-      <span class="badge">800+ 项测试守卫</span>
+      <span class="badge">近千项测试守卫</span>
       <span class="badge plain">课程 + 考试，同一份 .ics</span>
       <span class="badge plain">非官方工具 · 与学校无隶属关系</span>
     </div>
@@ -325,8 +326,31 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     <b>⚠️ 但「取消」在手机上不一定表现为消失。</b>2026-10 真机演练：Google 日历（网页版）会据此移除日程；
     <strong>Outlook.com 与 ColorOS 系统日历实测忽略 <code class="inline-code">STATUS:CANCELLED</code></strong>，把撤销条目当普通事件导入。
     自 v0.6.1 起那条日程带一个固定标题「<strong>已取消的活动</strong>」（此前是不带标题的「无主题」残条），
-    一眼能认出是废弃条目，但<strong>不会自动消失</strong>，要等原定时刻过去后由下一次发布收掉。
+    一眼能认出是废弃条目。<strong>它不会自动消失</strong>：要等原定时刻过去、条目从产物里退场，而退场之后
+    归谁清理是按通路分的——ICSx⁵ 与 Google 网页版会删（前者 2026-10-19 正式订阅真机、后者 2026-10-13 试验田），
+    <strong>ColorOS 系统日历不会</strong>，那条日程永久留着、还单条删不掉；Outlook 从没拿到过回源读数。
+    分通路的判据见下面的行为矩阵。
     一次性导入型客户端不回源，撤销对它完全无从生效——仍需手动删除。
+  </div>
+</section>
+
+<section id="calendar">
+  <div class="sec-kicker">v0.9</div>
+  <h2>校历事件：开学、考试周、寒暑假也标进同一份日历</h2>
+  <div class="grid">
+    <div class="feature"><div class="ico">🗓</div><h3>只做有出处的五类</h3><p><code class="inline-code">semester_start</code>（起课）、<code class="inline-code">registration</code>（报到）、<code class="inline-code">exam_period</code>（期末考试周）、<code class="inline-code">vacation</code>（寒暑假）、<code class="inline-code">holiday</code>（放假调休）——都是全天事件，判据是「学校公布过」。清单之外一律不做，尤其不许拿总周次反推考试周；工具也不抓取校历，这几条由你从官方校历图和教务处通知抄进配置，逐条附来源。</p></div>
+    <div class="feature"><div class="ico">🔗</div><h3>每条都得给一个校内公开页</h3><p><code class="inline-code">source_id</code> / <code class="inline-code">category</code> / <code class="inline-code">title</code> / <code class="inline-code">start</code> / <code class="inline-code">end</code> / <code class="inline-code">source_url</code> 六项必填。来源域名必须落在 <code class="inline-code">xjtu.edu.cn</code> 上（按点边界匹配，<code class="inline-code">evilxjtu.edu.cn</code> 不算），并且不许带 <code class="inline-code">ticket</code>、<code class="inline-code">token</code>、<code class="inline-code">session</code> 一类认证参数——发布仓库是公开的，一个带凭据的地址等于把凭据公开。</p></div>
+    <div class="feature"><div class="ico">📏</div><h3>配置写闭区间，产物发互斥钟点</h3><p>配置里的 <code class="inline-code">end</code> 含当天，只有渲染那一步才换成 RFC 5545 要求的互斥 <code class="inline-code">DTEND</code>，全项目也只在这一处转。中秋那条写 <code class="inline-code">2026-09-25</code> 至 <code class="inline-code">2026-09-27</code>，发出去是 <code class="inline-code">DTSTART;VALUE=DATE:20260925</code> 配 <code class="inline-code">DTEND;VALUE=DATE:20260928</code>，日历里显示的是 25、26、27 三天。</p></div>
+    <div class="feature"><div class="ico">🏷</div><h3>身份是 <code class="inline-code">source_id</code>，不是标题</h3><p>UID 由「学期 | cal | <code class="inline-code">source_id</code>」推导，类别中文名和标题都不参与。把「国庆节放假」改成别的说法是原地更新，订阅端不会重收；改 <code class="inline-code">source_id</code> 才是换了一条事件，等于旧的消失、新的重来。</p></div>
+  </div>
+  <div class="callout warnbox" style="margin-top:1.4rem">
+    <b>⚠️ 它默认不带，而且不接撤销通路。</b>加 <code class="inline-code">--include-calendar-events</code> 才会进产物（0.9 起默认不带）。
+    从配置里删掉一条，就是让它<strong>从 feed 消失</strong>，工具不会替它发 <code class="inline-code">STATUS:CANCELLED</code>——
+    之后会发生什么按通路分：<strong>ICSx⁵ 会清掉</strong>（2026-10-19 真机：两条过期退场的占位同步后界面上都不在了，
+    界面级判据）、
+    <strong>Google 网页版会删</strong>（2026-10-13 试验田实测）、<strong>ColorOS 系统日历不删</strong>，那条日程会永久留着。
+    发布前还有三道准入：配置有错、来源之间有未解决的冲突、上一版带过校历事件而这次忘了开旗标——
+    任一命中即退出码 <code class="inline-code">8</code>，<strong>零写盘、不发版</strong>，改的是配置而不是加 <code class="inline-code">--allow-*</code>。
   </div>
 </section>
 
@@ -397,14 +421,16 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     <li><strong>给同步器关掉电池优化并允许自启动</strong>，否则后台查杀会伪装成「装了但从不更新」。</li>
     <li><strong>那条「已取消的活动」占位是<em>产物自身携带</em>的</strong>：忽略取消字段的客户端
       <strong>退订重加时会再导入一遍</strong>（2026-10-12 真机实测），所以重加清不掉占位、只能清本地重复项——
-      占位要等原定时刻过去后由下一次发布收掉。反过来，Google 侧连<strong>不带墓碑</strong>的消失项也会删
+      占位要等各自原定时刻过去、从产物里退场，<em>退场之后归谁清理</em>就是下面这两句。
+      Google 侧连<strong>不带墓碑</strong>的消失项也会删
       （2026-10-13 试验田实测）⇒ 过期条目从产物里退场，在 Google 上是一条干净的路。
       <strong>换到 ICSx⁵ 并不会让占位自动消失</strong>：2026-10-15 在正式订阅上实测，那批占位
       <strong>照旧显示成普通日程</strong>——同步器把取消状态正确地落进了系统数据库，
-      但日历 App 不按它过滤。<strong>不过它删得掉</strong>：2026-10-19 手删一条仍在产物里、
+      但日历 App 不按它过滤。<strong>不过它两条都救得了</strong>：2026-10-19 手删一条仍在产物里、
       原定时刻还在两个多月之后的占位，同步之后没有再回来（同批新增的校历事件已在手机上出现，
-      证明那次同步拿到的是全文）⇒ 先前那句"单条删不掉"是 <strong>ColorOS 专属</strong>的结论，
-      别套到所有订阅通路上（判据是界面级，见
+      证明那次同步拿到的是全文）；同一批里两条<strong>从未手删</strong>、随发布退场的占位也都不在了
+      ⇒ 它既尊重本地删除、也真的清理退场项，先前那句"单条删不掉"和"消失了也留着"都是
+      <strong>ColorOS 专属</strong>的结论，别套到所有订阅通路上（判据是界面级，见
       <code class="inline-code">docs/design/2026-10-11-subscription-followups.md</code> §13）。</li>
   </ul>
 
@@ -422,7 +448,9 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     忽略取消字段的客户端（Outlook.com / ColorOS）会看到一次整学期「已取消的活动」——2026-10-12 整学期
     规模真机演练实测 ColorOS：<strong>96 条新日程 + 75 条「已取消的活动」占位（1:1 成对）+ 21 条已过原定
     时刻的旧条目</strong>。这批占位由产物自身携带，<strong>退订重加清不掉</strong>（会再导入一遍），只能等各自
-    原定时刻过去后由下一次发布收掉；回滚不免费（退回 0.7.x 会双份）。Google 那条腿未在整学期规模复验（演练
+    原定时刻过去、从产物里退场——而同一次演练也证过 ColorOS <strong>连退场项都不清</strong>（那 21 条旧条目
+    删除日历再重新添加之后仍在），所以在这条通路上它们不会自己干净；换到 ICSx⁵ 之后退场项会被 prune 掉
+    （2026-10-19 实测）。回滚不免费（退回 0.7.x 会双份）。Google 那条腿未在整学期规模复验（演练
     URL 已下线），仍按小规模实测写「通常会移除」。详见 <a href="docs/user-guide/subscription.md">「升级到 v0.8」</a>；
     ⑤ 发布分支永远是「无父孤儿单提交 + 强推」，课表旧版本不进 git 历史。
   </div>

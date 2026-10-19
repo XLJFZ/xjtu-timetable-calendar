@@ -349,17 +349,20 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
       <tr><td>Google 日历（手机 App）</td><td data-label="订阅入口"><span class="no">无此入口</span></td><td data-label="收到 STATUS:CANCELLED">不适用</td><td data-label="条目从 feed 静默消失">不适用</td><td colspan="2" data-label="自动回源 · 用 X-WR-CALNAME 命名">实测 App 不显示「从 URL 添加」的日历，勾 syncselect、强制同步、走代理都不行</td></tr>
       <tr><td>Outlook.com（网页）</td><td data-label="订阅入口">添加日历 → 订阅日历</td><td data-label="收到 STATUS:CANCELLED"><span class="no">忽略</span>，当普通事件导入<small>v0.6.1 起显示为「已取消的活动」，此前是「无主题」</small></td><td data-label="条目从 feed 静默消失"><span class="no">未验证</span><small>该面回源周期未取得</small></td><td data-label="自动回源">添加时立刻拉一次<small>此后实测 14 小时以上未再回源（官方口径约每 3 小时）</small></td><td data-label="用 X-WR-CALNAME 命名">否，对话框强制手填</td></tr>
       <tr><td>ColorOS 系统日历</td><td data-label="订阅入口">我的 → 添加日历 → URL 日历</td><td data-label="收到 STATUS:CANCELLED"><span class="no">忽略</span>，同上<small>且它整体替换字段，旧标题会被清掉</small></td><td data-label="条目从 feed 静默消失"><span class="no">不删</span>，永久留着<small>10-12 整学期演练：21 条过期旧项重加后仍在；退订重加也清不掉</small></td><td data-label="自动回源"><span class="yes">是</span><small>实测延迟 ≤2h35m，能原地更新已存在的事件</small></td><td data-label="用 X-WR-CALNAME 命名">是</td></tr>
-      <tr><td>ICSx⁵（Android，第三方订阅器）</td><td data-label="订阅入口">在 ICSx⁵ 里粘贴 URL，事件写进系统日历数据库</td><td data-label="收到 STATUS:CANCELLED">不丢弃，映射成系统日历的"已取消"状态落库<small>上游源码取证。但 2026-10-15 真机读数：ColorOS 自带日历<strong>照旧显示成普通日程</strong>——换通路只把问题从同步侧挪到显示侧</small></td><td data-label="条目从 feed 静默消失"><span class="yes">通常会删</span><small>上游源码：每次成功同步末尾无条件清理源里已不存在的 UID；<strong>真机尚未单独观察到</strong>，且服务端回 <code>304</code> 时它一个字不重读</small></td><td data-label="自动回源">是<small>回源间隔由 ICSx⁵ 自己的设置决定，默认值未核实</small></td><td data-label="用 X-WR-CALNAME 命名"><span class="yes">是</span><small>2026-10-15 真机：自动就是课表名，没让填</small></td></tr>
+      <tr><td>ICSx⁵（Android，第三方订阅器）</td><td data-label="订阅入口">在 ICSx⁵ 里粘贴 URL，事件写进系统日历数据库</td><td data-label="收到 STATUS:CANCELLED">不丢弃，映射成系统日历的"已取消"状态落库<small>上游源码取证。但 2026-10-15 真机读数：ColorOS 自带日历<strong>照旧显示成普通日程</strong>——换通路只把问题从同步侧挪到显示侧</small></td><td data-label="条目从 feed 静默消失"><span class="yes">会删</span><small>2026-10-19 真机确认：两条从未手删过、随发布从 feed 消失的占位，同步后界面上都不在了（同批新增的校历事件已在手机上出现 ⇒ 那次同步拿到的是全文，不是 <code>304</code>）</small></td><td data-label="自动回源">是<small>回源间隔由 ICSx⁵ 自己的设置决定，默认值未核实</small></td><td data-label="用 X-WR-CALNAME 命名"><span class="yes">是</span><small>2026-10-15 真机：自动就是课表名，没让填</small></td></tr>
       <tr><td>各类「导入日历」</td><td data-label="订阅入口">选本地 .ics 文件</td><td colspan="2" data-label="收到 STATUS:CANCELLED · 条目从 feed 消失">不适用——不再回源，一次性快照</td><td data-label="自动回源"><span class="no">否</span></td><td data-label="用 X-WR-CALNAME 命名">不适用</td></tr>
     </tbody>
   </table>
   </div>
-  <p class="note">ICSx⁵ 那一行的证据强度是<strong>混着的</strong>，别整行当实测读数：订阅入口、日历名、
+  <p class="note">ICSx⁵ 那一行的证据强度<strong>不是齐平的</strong>，别整行当实测读数：订阅入口、日历名、
     以及"取消条目照旧显示成普通日程"是 2026-10-15 在正式订阅上的真机读数（单账户单样本）；
-    "消失项会被清理"与"`STATUS` 映射成系统 canceled 状态落库"仍是上游源码取证，前者还没单独验到。
-    另有一格<strong>未定</strong>：单条能不能删掉——先前据源码（只读日历 + 无"用户删过"记录）判定删不动，
-    而初步真机读数是"能删、且观察未回来"，缺的对照是被删那条的<strong>原定时刻究竟已过还是仍在未来</strong>
-    （前者只是产物退场 + 清理共同作用，后者才算本地删除被尊重）。判据见
+    "`STATUS` 映射成系统 canceled 状态落库"仍是上游源码取证（真机只看到显示层）。
+    <strong>2026-10-19 补上两格</strong>：消失项会被清理 = 真机成立；<strong>单条删得掉、且同步后不回来</strong>——
+    先前据源码（只读日历 + 无"用户删过"记录）判定删不动，而 10-15 那次"能删但没回来"因为缺对照只能记
+    "未定"；这次是在发布之后、且用同批新增的校历事件证明那次同步拿到的是全文的前提下看的，
+    被删那条的原定时刻还在两个多月之外 ⇒ 对照成立，源码那条推论被否证。
+    限制要跟着写：判据是<strong>界面级</strong>（库里那一行是硬删还是打软删除标记未取），
+    且这条只属于 ICSx⁵——ColorOS 原生订阅仍然三条路全部删不掉。判据见
     <code class="inline-code">docs/design/2026-10-11-subscription-followups.md</code> §13。</p>
 
   <p class="note">「条目从 feed 静默消失」这一列是 2026-10-13 在<strong>试验田仓库</strong>（不是正式订阅）上单独测的：
@@ -396,11 +399,13 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
       <strong>退订重加时会再导入一遍</strong>（2026-10-12 真机实测），所以重加清不掉占位、只能清本地重复项——
       占位要等原定时刻过去后由下一次发布收掉。反过来，Google 侧连<strong>不带墓碑</strong>的消失项也会删
       （2026-10-13 试验田实测）⇒ 过期条目从产物里退场，在 Google 上是一条干净的路。
-      <strong>换到 ICSx⁵ 并不会让占位消失</strong>：2026-10-15 在正式订阅上实测，那批占位
+      <strong>换到 ICSx⁵ 并不会让占位自动消失</strong>：2026-10-15 在正式订阅上实测，那批占位
       <strong>照旧显示成普通日程</strong>——同步器把取消状态正确地落进了系统数据库，
-      但日历 App 不按它过滤。至于"能不能手动删掉一条"，目前<strong>未定</strong>：
-      源码侧推论是只读日历删不动，而初步真机读数是能删且没回来，缺的对照是被删那条的时刻
-      究竟已过还是仍在未来（见 <code class="inline-code">docs/design/2026-10-11-subscription-followups.md</code> §13）。</li>
+      但日历 App 不按它过滤。<strong>不过它删得掉</strong>：2026-10-19 手删一条仍在产物里、
+      原定时刻还在两个多月之后的占位，同步之后没有再回来（同批新增的校历事件已在手机上出现，
+      证明那次同步拿到的是全文）⇒ 先前那句"单条删不掉"是 <strong>ColorOS 专属</strong>的结论，
+      别套到所有订阅通路上（判据是界面级，见
+      <code class="inline-code">docs/design/2026-10-11-subscription-followups.md</code> §13）。</li>
   </ul>
 
   <div class="callout warnbox" style="margin-top:1.3rem">

@@ -18,7 +18,9 @@
   手机 App 里既没有订阅入口，也**不显示** URL 导入型日历——别在 App 里找。
 - **Outlook.com**：网页版「添加日历 → 订阅日历」，但对话框会强制你手填日历名，
   产物里的 `X-WR-CALNAME` 它不采用。
-- **Android 一律首选 ICSx⁵**（包名 `at.bitfire.icsdroid`），不要按 ROM 各家去摸系统自带入口——
+- **Android 一律首选 ICSx⁵**（包名 `at.bitfire.icsdroid`，免费获取地址
+  `https://f-droid.org/packages/at.bitfire.icsdroid/`；`f-droid.org` 国内实测不可达，通常要挂代理），
+  不要按 ROM 各家去摸系统自带入口——
   MIUI / 鸿蒙常常只给"导入日历"，那是一次性快照。注意是 **ICSx⁵**，不是 DAVx⁵（后者只做 CalDAV，
   遇到 Webcal 集合是把 URL 转交给 ICSx⁵，自己不拉纯 HTTP 的 `.ics`）。
   它相对系统自带订阅的三点差别（**全部是上游源码取证，本项目真机读数未取**，见

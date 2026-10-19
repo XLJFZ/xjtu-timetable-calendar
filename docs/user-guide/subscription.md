@@ -321,7 +321,8 @@ v0.8.0 把课程 UID 的配方从 v1 换成 v2（去掉课程名），这是**�
   当前版本的日历设置里**没有**「自动移除旧事件」这一项（旧文档常提到它，已不存在）——
   好消息是它不影响撤销：`STATUS:CANCELLED` 的条目是**在场地**出现在产物里的，
   Google 实测会据此移除日程（见下面的行为矩阵）。
-- **Android**：首选 **ICSx⁵**（`at.bitfire.icsdroid`），不分 ROM统一走它。原因不是系统自带入口
+- **Android**：首选 **ICSx⁵**（`at.bitfire.icsdroid`；**免费**获取地址
+  <https://f-droid.org/packages/at.bitfire.icsdroid/>），不分 ROM 统一走它。原因不是系统自带入口
   不好用，而是**各家自带入口的能力参差不齐**——MIUI / 鸿蒙常常只给「导入日历」，那是一次性快照、
   永不自动更新；只有它才有订阅语义。ICSx⁵ 专门做 URL / 本地 `.ics` 订阅并把事件写进系统日历数据库。
   **注意不是 DAVx⁵**——DAVx⁵ 只做 CalDAV 双向同步，遇到 Webcal 集合是把 URL 转交给 ICSx⁵，

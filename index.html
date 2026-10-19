@@ -374,15 +374,17 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
   <h3>所以手机侧到底订哪个</h3>
   <ul class="checks">
     <li><strong>iPhone / Apple 日历</strong>：原生「添加日历 → 订阅」，直接贴 URL；CLI 也会顺手打一行把 <code class="inline-code">https://</code> 换成 <code class="inline-code">webcal://</code> 的同址链接，iOS 上<strong>通常</strong>点开即弹订阅确认——这条本仓库未做真机验证，失败就回手动路径。</li>
-    <li><strong>Android（不分 ROM）：首选 ICSx⁵</strong>（<code class="inline-code">at.bitfire.icsdroid</code>）——
+    <li><strong>Android（不分 ROM）：就装 ICSx⁵，不用按机型试别的通路</strong>（<code class="inline-code">at.bitfire.icsdroid</code>）——
       各家系统自带入口能力参差（MIUI / 鸿蒙常常只给"导入日历"，那是一次性快照、永不自动更新），
       统一走一条通路比按机型摸索可靠。<strong>注意不是 DAVx⁵</strong>——它只做 CalDAV 双向同步，
       遇到 Webcal 是把 URL 转交给 ICSx⁵，自己不拉纯 HTTP 的 <code class="inline-code">.ics</code>。
-      两条要先交的成本：分发（商店版按我方口径收费、直下 APK 要允许未知来源、
+      两条要先交的成本：分发（商店版按我方口径收费、<strong>免费版走 F-Droid</strong>
+      <code class="inline-code">https://f-droid.org/packages/at.bitfire.icsdroid/</code>、
+      直下 APK 要允许未知来源、
       国内网络下 <code class="inline-code">github.com</code> 与 <code class="inline-code">f-droid.org</code>
       实测不可达，下载通常要挂代理）；以及它建的日历是<strong>只读</strong>的。</li>
-    <li><strong>ColorOS 系统日历</strong>：自带「URL 日历」入口，作为<strong>免安装备选</strong>保留——
-      认新增、会自动原地更新、并用产物给的日历名。但要清楚它另外三点：忽略
+    <li><strong>只有 ICSx⁵ 确实装不上时</strong>，才退回系统日历自带的订阅入口（如 ColorOS 的「URL 日历」）：
+      它认新增、会自动原地更新、也用产物给的日历名，但缺撤销语义——忽略
       <code class="inline-code">STATUS:CANCELLED</code>、从产物消失的条目<strong>永不删</strong>、
       <strong>单条也删不掉</strong>（2026-10-15 真机确认「删除订阅」同样不带走本地事件）。
       已经用它、后来切到 ICSx⁵ 的，旧那本清不掉，只能在日历列表里<strong>取消勾选（隐藏）</strong>。</li>

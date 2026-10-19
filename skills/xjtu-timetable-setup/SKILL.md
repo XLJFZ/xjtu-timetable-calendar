@@ -175,6 +175,17 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 读 `references/client-matrix.md` 再给建议。核心决策只有一条：
 **要自动更新就必须走订阅型入口**；"导入日历"是一次性快照，之后任何变更与撤销都收不到。
 
+**安卓的默认建议只有一个：装 ICSx⁵（`at.bitfire.icsdroid`，免费获取地址
+`https://f-droid.org/packages/at.bitfire.icsdroid/`），不分 ROM。** 别带着用户在系统日历里
+找订阅入口——MIUI / 鸿蒙常常只给「导入日历」那一项；也**不是 DAVx⁵**（它只做 CalDAV 双向同步，
+遇到 Webcal 是把 URL 转交给 ICSx⁵，自己不拉纯 HTTP 的 `.ics`）。统一走一条通路比按机型摸索可靠。
+告诉用户 `f-droid.org` 在国内网络下实测不可达，下载环节通常要挂代理。
+
+只有 ICSx⁵ 确实装不上时才退回系统日历自带的订阅入口（它的成本是真实的：商店版按我方口径收费、
+直下 APK 要允许未知来源、国内网络下 `github.com` 与 `f-droid.org` 实测不可达通常要挂代理），
+并且必须把该客户端缺的语义讲清楚再交付——例如 ColorOS 的「URL 日历」会回源并原地更新，
+但忽略 `STATUS:CANCELLED`、消失项不删、单条删不掉。
+
 ## 收尾：一条命令定成败
 
 ```bash

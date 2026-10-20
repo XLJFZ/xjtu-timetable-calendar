@@ -135,8 +135,8 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
   的「先选一条托管路」把代价列在同一屏）：接受公开仓 + GitHub Pages（省事、可达性已实测通），
   或私有仓 + Cloudflare Pages（token 那条保护变成真的，代价是要注册第三方账号，
   且 `pages.dev` 在国内**间歇**可达）。走后者时的三个硬约束：
-  ① **先 `subscribe push` 再去 Cloudflare 建项目**（生产分支 `cal` 是这次 push 才创建的，
-  Cloudflare 的下拉里选不到不存在的分支）；② 控制台 `Create` 那页的五个选项**全是 Workers**
+  ① **先 `subscribe push` 再去 Cloudflare 建项目**（建项目时要当场选生产分支，
+  而 `cal` 分支是这次 push 才创建的；分支不存在时那个选择框会怎样未实测，别去赌），② 控制台 `Create` 那页的五个选项**全是 Workers**
   （发出来是 `*.workers.dev`，国内基本不通），Pages 在那页**最底下那行小字**里，
   点 "Continue to Pages" 再选 "Import an existing Git repository"；
   ③ 换订阅地址**之前**先让用户在**关掉代理的手机上**打开一次

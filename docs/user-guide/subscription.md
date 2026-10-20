@@ -80,8 +80,9 @@
    python -m xjtu_calendar subscribe push --semester 2026-fall
    ```
 
-   **顺序要紧**：Cloudflare 建项目时要在下拉里选生产分支，而 `cal` 分支是这次
-   push 才存在的 ⇒ 先 push，再去 Cloudflare 建项目。
+   **建议先 push、再去 Cloudflare 建项目**：建项目时要当场选生产分支，而 `cal` 分支
+   是这次 push 才创建的。分支还不存在时那个选择框会怎样（列不出来？还是允许手填？）
+   **没有实测过**，按这个顺序走就碰不到这个问题。
 4. 注册 Cloudflare（免费档）→ Workers & Pages → Create。
    ⚠️ **落到的那一页上五个选项（Connect GitHub、Connect with GitLab、Start with
    Hello World!、Select a template、Upload your static files）全是 Workers 那条路**，
@@ -92,7 +93,7 @@
 5. 授权 GitHub 时把范围改成 **Only select repositories**，只勾这个发布仓库。
 6. 四项配置：Production branch = `cal`、Framework preset = **None**、
    Build command **留空**、Build output directory = `/`。Save and Deploy，
-   等那条 deployment 变 Success（无构建，通常一分钟内）。
+   等那条 deployment 变 Success（不跑构建，当天实测几分钟内就完成）。
 7. **先验可达性，再订阅**：手机**关掉 VPN / 代理**，用浏览器打开
    `https://<项目名>.pages.dev/<token>.ics`，Wi-Fi 与移动数据**各测一次**，
    看到以 `BEGIN:VCALENDAR` 开头的内容才算过。打不开就别把订阅地址换成它 ——
@@ -107,8 +108,9 @@
 课表已随日期变化，等于发出一次你并不想发的新版本。
 
 **两条路的一处已知差异**：GitHub Pages 的响应同时带 `ETag` 和 `Last-Modified`，
-Cloudflare 只带 `ETag`、不发 `Last-Modified`。会发 `If-None-Match` 的客户端（ICSx⁵ 实测会）
-两边都能命中 `304`、不重复拉全文；只认时间的客户端每次都会拿全文，功能不受影响，只是多花流量。
+Cloudflare 只带 `ETag`、不发 `Last-Modified`。带 `If-None-Match` 的条件请求在两边都实测过，
+都能命中 `304`、不重复拉全文（ICSx⁵ 按上游源码会带这个头，本项目未对它的实际请求序列取证）；
+只认时间的客户端在 Cloudflare 这边每次都会拿全文，功能不受影响，只是多花流量。
 
 **换回路径 A**：把仓库改回公开，GitHub Pages 随之恢复；token 没换 ⇒
 把 `url_base` 改回 `https://<用户名>.github.io/<仓库>/` 就回到原样。

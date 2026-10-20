@@ -122,12 +122,29 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
   **`--repo` 与 `--semester` 都是必填**：照抄不带它们的 `subscribe init` 一步都走不出去——
   缺 `--repo` 停在「the following arguments are required: --repo」，
   缺 `--semester` 停在「[错误] 未指定学期」（两处都是退出码 1，不是"配置错了"）。
-  `--branch` 默认 `cal`；`--url-base` 在 GitHub 远端下能自动推导，非 GitHub 才需要显式给。
+  `--branch` 默认 `cal`。`--url-base`：**GitHub 公开仓**可以不写（自动推导成
+  `https://<用户名>.github.io/<仓库>/`）；**其余一切情形都必须显式给**——
+  推导只看"远端是不是 GitHub"，不看仓库是否私有，而私有仓上 GitHub Pages 不提供托管，
+  推出来的那条是 404，且 init 不会报任何错。
 - 证据：`subscribe status` 显示留底一致，且 `doctor --verify` 的「URL 自检」通过（HTTP 200）。
 - 必须如实告知用户两件事，不许淡化：
   1. 订阅 URL 里的随机 token **等价于凭据**，不要提交、不要发到群里；
   2. 若发布仓库是**公开**的，仓库分支页会直接列出 `<token>.ics` 的文件名——
-     "知道 URL 才能读"这层保护在公开仓库上并不成立。要么接受，要么改用私有分发。
+     "知道 URL 才能读"这层保护在公开仓库上并不成立。
+- 上面第 2 条有两条出路，**让用户自己选，别替他定**（`docs/user-guide/subscription.md`
+  的「先选一条托管路」把代价列在同一屏）：接受公开仓 + GitHub Pages（省事、可达性已实测通），
+  或私有仓 + Cloudflare Pages（token 那条保护变成真的，代价是要注册第三方账号，
+  且 `pages.dev` 在国内**间歇**可达）。走后者时的三个硬约束：
+  ① **先 `subscribe push` 再去 Cloudflare 建项目**（生产分支 `cal` 是这次 push 才创建的，
+  Cloudflare 的下拉里选不到不存在的分支）；② 控制台 `Create` 那页的五个选项**全是 Workers**
+  （发出来是 `*.workers.dev`，国内基本不通），Pages 在那页**最底下那行小字**里，
+  点 "Continue to Pages" 再选 "Import an existing Git repository"；
+  ③ 换订阅地址**之前**先让用户在**关掉代理的手机上**打开一次
+  `https://<项目>.pages.dev/<token>.ics`（Wi-Fi 与移动数据各一次），拿到
+  `BEGIN:VCALENDAR` 才算过——打不开就别换，换了就是静默失效。
+  改 `url_base` 本身**不需要也不应该**跑 `push`（跳过条件只看内容哈希与 token，
+  换地址推不动任何东西；而隔几天再 push 会因为课表随日期变化而发出一次用户没要的改版），
+  用只读的 `subscribe status` 确认即可。
 - 换 token（`subscribe rotate`）会让所有已添加的 URL 立刻失效，需用户明确同意。
 - iOS / macOS 用户可以**试** init / push / rotate / status 四处打印的那条 `webcal://` 链接
   （它只是把同一行 `https://` URL 换个 scheme）。「点开就弹订阅确认」**没有在本项目真机验证过**，

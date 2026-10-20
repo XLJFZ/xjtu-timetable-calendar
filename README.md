@@ -421,7 +421,7 @@ URL/token、强推前有 tree 护栏（拒绝覆盖非本工具产物）、**提
 - [x] 调课检测（`diff` 子命令 + `fetch` 快照轮转：新增/删除课程、时段增减、
   周次/教室/教师/课程名变化，纯本地比对）
 - [x] URL 订阅发布（`subscribe` 子命令：.ics 以孤儿单提交强推到个人
-  GitHub Pages 分支，客户端按不可猜的 token URL 订阅，`rotate` 一键换链接）
+  Pages 分支（GitHub Pages，或私有仓 + Cloudflare Pages），客户端按不可猜的 token URL 订阅，`rotate` 一键换链接）
 - [x] 考试安排接入（`fetch` HTTP 路径同时抓考试快照，考试事件并入同一份 .ics /
   同一个订阅 URL；三态判定「状态未知绝不覆盖快照」、`--no-exams` 四路径开关、
   `diff`「考试变更」小节，见上文「考试安排」）
@@ -443,7 +443,8 @@ URL/token、强推前有 tree 护栏（拒绝覆盖非本工具产物）、**提
 **未来扩展（架构已预留）**
 
 1. **URL 订阅式 ICS** —— 已交付 `subscribe` 手动发布通道（见上文
-   「URL 订阅」：本地构建 + 强推 GitHub Pages，客户端按 URL 自动拉取）；
+   「URL 订阅」：本地构建 + 强推个人发布分支（GitHub Pages / Cloudflare Pages），
+   客户端按 URL 自动拉取）；
    **服务端定期重新生成**仍未实现（当前口径是纯手动 push）
 2. **考试安排** —— 已交付（见上文「考试安排」：`fetch` → 同一份日历内含考试事件）；
    取消通路已于 v0.6.0 交付（见上文「考试撤销」：消失的已发布考试以 `STATUS:CANCELLED`

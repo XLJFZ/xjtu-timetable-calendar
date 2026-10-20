@@ -359,7 +359,7 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
   <h2>导入一次，还是订阅一条 URL</h2>
   <div class="grid">
     <div class="feature"><div class="ico">📥</div><h3>手工导入</h3><p>拿到 .ics → 双击导入。简单、零公网暴露，但课表一变就要重新导出、重新导入，多端各来一遍。导入型入口把事件一次性写进本机，<strong>此后不再回源</strong>，<code class="inline-code">subscribe push</code> 对它无效。</p></div>
-    <div class="feature"><div class="ico">🔗</div><h3>URL 订阅（subscribe）</h3><p>把同一份 .ics 发布到<strong>你自己的 GitHub Pages</strong>（公开仓库 + 不可猜的 token 文件名），客户端按 URL 定期回源。日常更新只有两条命令：<code class="inline-code">fetch</code> → <code class="inline-code">subscribe push</code>，未变动的事件在客户端保持安静，变动的事件原地更新。</p></div>
+    <div class="feature"><div class="ico">🔗</div><h3>URL 订阅（subscribe）</h3><p>把同一份 .ics 发布到<strong>你自己的静态托管</strong>——GitHub Pages（公开仓库），或私有仓库 + Cloudflare Pages；文件名是不可猜的 token。客户端按 URL 定期回源。日常更新只有两条命令：<code class="inline-code">fetch</code> → <code class="inline-code">subscribe push</code>，未变动的事件在客户端保持安静，变动的事件原地更新。</p></div>
     <div class="feature"><div class="ico">🔁</div><h3>换链接（rotate）</h3><p>转发给了不该给的人、或有任何泄露疑虑时跑 <code class="inline-code">subscribe rotate</code>：新文件挂上分支、旧文件名从 tip 消失，<strong>旧 URL 自此 404</strong>。代价是所有客户端都要重新粘贴新 URL。</p></div>
     <div class="feature"><div class="ico">🏷</div><h3>日历名从产物里来</h3><p>不指定 <code class="inline-code">--name</code> 时，标题按课表自动推导成「西安交通大学课表 · 大三-上」；凡是不敢定的情况（自定义学期 key、课表里没有入学年级字段、年级出现并列）一律退回基础名，<strong>宁可少信息也不给一个错的年级</strong>。年级只影响标题，<strong>不参与 UID、不写进事件</strong>，所以订阅端不会因为换了名字而重收整学期课程。</p></div>
   </div>
@@ -490,7 +490,7 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
       <tr><td><code>export</code></td><td data-label="作用">解析并生成 .ics（默认并入考试事件；支持日期范围 / SEQUENCE 基线 / <code>--no-exams</code>；<code>--include-calendar-events</code> 并入校历事件，0.9 起、默认不带）</td><td data-label="联网？">否</td></tr>
       <tr><td><code>notice</code> / <code>schedule</code></td><td data-label="作用">解析停课调课通知 / 官方作息页，预览或合并配置</td><td data-label="联网？">匿名 GET</td></tr>
       <tr><td><code>diff</code></td><td data-label="作用">比对新旧快照，列出课表变化与「考试变更」</td><td data-label="联网？">否</td></tr>
-      <tr><td><code>subscribe init/push/rotate/repair/status</code></td><td data-label="作用">发布到 GitHub Pages 的订阅 URL；push 与 export 共用同一条构建管线；<code>repair</code> 以<strong>线上真实字节</strong>为准把本地留底与台账对齐回已发布那一版（不产生新发布），<code>push</code> / <code>rotate</code> 报退出码 <code>7</code> 时的处置就是它；带 <code>--include-calendar-events</code> 才发布校历事件（0.9 起）</td><td data-label="联网？">仅 push / repair / <code>status --verify</code></td></tr>
+      <tr><td><code>subscribe init/push/rotate/repair/status</code></td><td data-label="作用">发布到订阅 URL（GitHub Pages，或私有仓 + Cloudflare Pages）；push 与 export 共用同一条构建管线；<code>repair</code> 以<strong>线上真实字节</strong>为准把本地留底与台账对齐回已发布那一版（不产生新发布），<code>push</code> / <code>rotate</code> 报退出码 <code>7</code> 时的处置就是它；带 <code>--include-calendar-events</code> 才发布校历事件（0.9 起）</td><td data-label="联网？">仅 push / repair / <code>status --verify</code></td></tr>
       <tr><td><code>doctor</code></td><td data-label="作用">只读体检，退出码 0 / 5 可直接判定「部署到位没有」；「校历事件」那一格与发布门共用判据，因此也接 <code>--include-calendar-events</code></td><td data-label="联网？">默认否</td></tr>
       <tr><td><code>inspect</code></td><td data-label="作用">对原始 JSON 做脱敏结构分析</td><td data-label="联网？">否</td></tr>
     </tbody>

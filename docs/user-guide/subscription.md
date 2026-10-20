@@ -8,15 +8,29 @@
 
 「快速开始」的交付方式是「拿到文件 → 手工导入」：课表一变就要重新导出、
 重新导入，多端各来一遍。`subscribe` 增加一条 **URL 订阅通道**——把同一份 .ics
-发布到**你自己的 GitHub Pages**（公开仓库 + 不可猜的 token 文件名），
-日历客户端按 URL 订阅；之后每次课表调整只需本地跑一次 `subscribe push`，
-客户端自动拉取，不再需要导入。
+发布到**一个只有你知道地址的静态 URL**（GitHub Pages 或私有仓 + Cloudflare Pages，
+二选一，见下面「先选一条托管路」），日历客户端按 URL 订阅；
+之后每次课表调整只需本地跑一次 `subscribe push`，客户端自动拉取，不再需要导入。
 
 > **口径先说清**：刷新是**纯手动**的——本工具不做定时任务、不常驻进程，
 > 也不会替你 `fetch`。「手机 24 小时内自动呈现新状态」的前提是你自己 push 过。
 > 一个学期一个 token、一个订阅 URL；多学期合并进同一 URL 是明确不做的事。
 
-### 一次性设置
+### 先选一条托管路
+
+两条路的产物、命令、token 机制**完全相同**，区别只在「谁来把这个分支对外服务」：
+
+| | 路径 A：GitHub Pages | 路径 B：私有仓 + Cloudflare Pages |
+| --- | --- | --- |
+| 设置耗时 | 五分钟 | 十几分钟，且要注册一个第三方账号 |
+| 「知道 URL 才能读」这条保护 | **不成立**：仓库必须公开，分支文件列表页匿名可读 | 成立 |
+| 国内可达性 | 实测可通（多条真机读数支撑） | `pages.dev` 国内**间歇**可达，上线前必须在手机上验一次 |
+| 是否免费 | 是 | 是（免费档，不需要信用卡） |
+
+想省事选 A，想守住订阅地址选 B。**先按 A 走完、之后改 B 也完全可以**：
+换托管只改状态文件里 `url_base` 一个字段，token 全程不换。
+
+### 路径 A：GitHub Pages（一次性设置）
 
 1. 在 GitHub 建一个**公开**仓库（例如 `cal-alice`）。它里面只会出现一个
    `<token>.ics` 文件。
@@ -44,6 +58,60 @@
    可运行 `subscribe status --verify` 对 URL 做一次匿名 GET 自检。
    iOS / macOS 用户还可直接打开 init 一并打印的那条 `webcal://` 链接
    （口径与手动路径见下面「iOS / macOS：`webcal://` 订阅链接」）。
+
+### 路径 B：私有仓库 + Cloudflare Pages
+
+路径 B 的产物和命令与路径 A 完全一样，只是对外服务换成了 Cloudflare，
+这样发布仓库就可以是**私有**的。步骤：
+
+1. 在 GitHub 建一个**私有**仓库（例如 `cal-alice`）。
+2. 登记发布目标。**`--url-base` 这一步不能省**，而且要先想好 Cloudflare 的项目名：
+
+   ```bash
+   python -m xjtu_calendar subscribe init --repo https://github.com/<用户名>/cal-alice.git --url-base https://<项目名>.pages.dev/ --semester 2026-fall
+   ```
+
+   不带 `--url-base` 的话，工具见远端是 GitHub 就自动推导成
+   `https://<用户名>.github.io/<仓库>/` —— 私有仓上 GitHub Pages 不提供托管，
+   那条地址是 404，而 init 不会为此报任何错。
+3. 先发布第一版（这一步创建 `cal` 分支）：
+
+   ```bash
+   python -m xjtu_calendar subscribe push --semester 2026-fall
+   ```
+
+   **顺序要紧**：Cloudflare 建项目时要在下拉里选生产分支，而 `cal` 分支是这次
+   push 才存在的 ⇒ 先 push，再去 Cloudflare 建项目。
+4. 注册 Cloudflare（免费档）→ Workers & Pages → Create。
+   ⚠️ **落到的那一页上五个选项（Connect GitHub、Connect with GitLab、Start with
+   Hello World!、Select a template、Upload your static files）全是 Workers 那条路**，
+   发出来的域名是 `*.workers.dev`，在国内基本不通，而且不会有任何报错告诉你为什么。
+   Pages 藏在这页**最底下那行小字**里：**"Need to use the legacy Pages workflow?
+   → Continue to Pages"**。点它，再选 **Import an existing Git repository**
+   —— 不要选 Drag and drop your files，那是手工上传，会断掉「push 即自动发布」这条链。
+5. 授权 GitHub 时把范围改成 **Only select repositories**，只勾这个发布仓库。
+6. 四项配置：Production branch = `cal`、Framework preset = **None**、
+   Build command **留空**、Build output directory = `/`。Save and Deploy，
+   等那条 deployment 变 Success（无构建，通常一分钟内）。
+7. **先验可达性，再订阅**：手机**关掉 VPN / 代理**，用浏览器打开
+   `https://<项目名>.pages.dev/<token>.ics`，Wi-Fi 与移动数据**各测一次**，
+   看到以 `BEGIN:VCALENDAR` 开头的内容才算过。打不开就别把订阅地址换成它 ——
+   `pages.dev` 的可达性在国内是间歇的，而这条通路是手机自己去拉的，没人给它挂代理。
+8. 之后与路径 A 完全相同：`fetch` → `subscribe push`，Cloudflare 随每次 push 自动重新部署。
+
+**两个时点会重新踩上面第 2 步那个坑**：`rotate`（换 token）与**下学期第一次 `init`**。
+两处都只要漏了 `--url-base`，工具打印出来的就是一条 404 的 github.io 链接，且不报错。
+漏了也不用来重做 init：手工把状态文件 `subscribe/subscribe-<学期>.json` 里的 `url_base`
+字段改成 Cloudflare 那个前缀，再用只读的 `subscribe status` 确认即可。
+**不要**为了「验证一下」去跑 `push`：换地址本身不需要发布，而隔了几天再 push，
+课表已随日期变化，等于发出一次你并不想发的新版本。
+
+**两条路的一处已知差异**：GitHub Pages 的响应同时带 `ETag` 和 `Last-Modified`，
+Cloudflare 只带 `ETag`、不发 `Last-Modified`。会发 `If-None-Match` 的客户端（ICSx⁵ 实测会）
+两边都能命中 `304`、不重复拉全文；只认时间的客户端每次都会拿全文，功能不受影响，只是多花流量。
+
+**换回路径 A**：把仓库改回公开，GitHub Pages 随之恢复；token 没换 ⇒
+把 `url_base` 改回 `https://<用户名>.github.io/<仓库>/` 就回到原样。
 
 ### 日常更新
 
@@ -195,19 +263,22 @@ iOS/macOS：通常可直接打开 webcal://<你的 Pages 前缀>/<token>.ics 完
 
 1. **URL 即能力**：token 是 32 位十六进制随机串，猜不到；但知道完整 URL 的
    人就能匿名读取你的课表——**转发 URL 等于授权**。
-2. **在公开仓库上，「知道 URL 才能读」这层保护并不成立**：发布仓库必须是公开的
+2. **走路径 A 时，「知道 URL 才能读」这层保护并不成立**：路径 A 的发布仓库必须是公开的
    （GitHub Pages 对免费账户的私有仓库不提供托管），而仓库的分支文件列表页匿名可读，
    会**直接列出** `<token>.ics` 的文件名。也就是说不用猜 token——任何会浏览该仓库
-   分支的人都能拿到你的课表。token 实际挡住的是「不知道有这个仓库 / 分支」这一层。
-   不接受这个口径就退回「导出文件 + 手工导入」，或把导出文件放进你自己的网盘同步目录、
+   分支的人都能拿到你的课表，token 实际挡住的是「不知道有这个仓库 / 分支」这一层。
+   要把这层保护变成真的，走上面**路径 B**（私有仓 + Cloudflare Pages），
+   代价是订阅地址的可达性交给 Cloudflare 的国内路由决定；
+   两条路都不接受就退回「导出文件 + 手工导入」，或把导出文件放进你自己的网盘同步目录、
    手机上用 ICSx⁵ 订阅**本地** .ics（零公网暴露）。
 3. **产物里有什么，就是公开什么**：默认并进的考试事件会把考试名称、考试时间、考场，
    以及 `DESCRIPTION` 里的座位号一起放进那份匿名可读的文件。不愿意公开就带
    `--no-exams`（`fetch` / `export` / `subscribe push` / `subscribe rotate` 四处都认）。
 4. **历史零残留**：发布分支永远是「无父孤儿单提交 + 强推」，课表的旧版本
    不进 git 历史，仓库里翻不到你上周的课表。
-5. **Pages 生效延迟数分钟**：push 成功 ≠ 订阅 URL 立刻是新内容；客户端要等
-   Pages 构建完成后的下一次自动拉取才呈现新状态。`status --verify` 可确认。
+5. **部署生效延迟数分钟**（两条托管路都有）：push 成功 ≠ 订阅 URL 立刻是新内容；
+   客户端要等 Pages / Cloudflare 部署完成后的下一次自动拉取才呈现新状态。
+   `status --verify` 可确认。
    `rotate` 之后这个窗口尤其明显：git 层此刻已经只剩新文件名（旧文件已从
    分支 tip 消失），但 Pages/CDN 可能仍有 1~2 分钟继续供着旧内容——这期间
    旧 URL 还读得到属正常现象，稍后重查即可，不要据此判定 rotate 失败。
@@ -252,7 +323,8 @@ token 状态文件按收紧的文件权限写盘（与 `storage_state.json` 同�
   此后不再回源，`subscribe push` 对它无效；订阅型入口才会定期回源。ColorOS 系统日历
   两者都有（「URL 日历」是订阅，「导入日历」是快照）；Google 日历只有网页版能订阅，
   手机 App 里连订阅入口都没有。分辨方法：订阅型入口带「上次同步时间」，导入型只有显示开关。
-- 发布通道只有静态 URL（以 GitHub Pages 为主）；不做 CalDAV 直写、
+- 发布通道只有静态 URL（GitHub Pages 或 Cloudflare Pages，见上面「先选一条托管路」）；
+  不做 CalDAV 直写、
   不做中心托管服务。
 
 > ⚠️ `~/.xjtu-timetable-calendar/subscribe/work-<学期>/` 是**工具专用**的 git

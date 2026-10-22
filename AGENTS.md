@@ -82,6 +82,11 @@
   裸跑 `git add` 会被全局 `core.autocrlf` 把 CRLF 压成 LF，产物从 44285 字节变成 43077 字节。
   还原/手工强推的校验必须比字节数或 sha256，只看文件名与事件数不够（RFC 5545 要求 CRLF）。
 - 隐私 grep：对跟踪内容搜一遍绝对路径、姓名/学号类字段、品牌名，再谈发布。
+- **发版不等于同步完：门户是另一个仓库、没有 CI，也不会自己跟上。**
+  `XLJFZ/xjtu-student-tools` 里课程表工具的版本号与通路描述写了两处
+  （`index.html` 卡片 + `README.md` 表格与小节），动了用户可见通路或默认值就要回那里改，
+  事实一律回源头取（版本号对 PyPI `info.version`，默认值与限定语对 README / user-guide）。
+  细则与踩过的措辞坑见 `docs/user-guide/contributing.md` 的「发布」。
 - **本地全绿 ≠ CI 绿：CI 在 Linux + shallow checkout 上跑，Windows 主检出的绿灯掩盖两类缺陷。**
   2026-10-15 实测：`tests/test_cli_subscribe_recovery.py::_pollute_remote` 那句 `git push`
   漏了 `cwd`，git 于是跑在 pytest 的工作目录＝**本工具仓库**里，把整个仓库的 tip 推进临时

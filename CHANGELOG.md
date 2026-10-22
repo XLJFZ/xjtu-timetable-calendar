@@ -8,7 +8,17 @@
 
 ## [未发布]
 
-暂无。当前版本号 = `pyproject.toml` 里的 `0.9.0`。
+- **模板里那条演示调课不再拦住新用户的第一次导出**（`examples/academic_calendar.example.json`，
+  2026-10-22 路径 B 旅程走查命中）。它的 `unsupported_adjustments` 演示日期原本是
+  `2026-11-14`，**正好落在当前学期内**；而照着模板抄的新用户会因此被
+  `export` / `subscribe push` 以退出码 `1` 停手、`doctor` 渲染项判阻塞（`5`）——
+  收尾判据永远到不了 `0`。改成 `2099-11-14`（任何真实学期之外），并在模板 `_readme`
+  与本字段的作用范围两处写清"填真实调课日期时它才会生效"。字段语义与 fail-closed 行为一字未改。
+- **文档纠错**：`subscription.md` 里「`rotate` 与下学期 `init` 两处都会漏 `--url-base`」一句
+  与代码不符（`rotate` 不接该旗标、也不重新推导，全仓只有 `init` 调 `derive_url_base`），
+  收窄成只有 `init` 一处；路径 B 步骤里补一句"init 收尾打印的 GitHub Pages 指引对路径 B 无效"。
+  代码级的那两条（`init` 文案不分托管路、全新 `init` 被 `doctor` 判「待迁移」）记在
+  `docs/design/2026-10-11-subscription-followups.md` §14，**待拍，未实现**。
 
 ---
 

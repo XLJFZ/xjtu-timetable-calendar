@@ -516,6 +516,31 @@ def test_webcal_hint_absent_for_non_https_and_before_init(
     assert "尚未登记订阅" in captured.err and "Traceback" not in captured.err
 
 
+def test_init_publish_hint_follows_the_hosting_path(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**路径 B 的用户不该收到 GitHub Pages 的操作指引**（2026-10-22 旅程走查命中）。
+
+    旧文案对任何 `--url-base` 都打印「一次性开启 Pages（GitHub）：仓库 Settings → Pages →
+    Deploy from branch」，而路径 B 的发布仓是**私有**的——GitHub Pages 对免费账户的私有仓
+    不提供托管，照着那两行去点要么找不到开关、要么开出一个永远 404 的站点。
+    工具手里就攥着 `url_base`，判得出来是哪条路：只有 `*.github.io` 才给 GitHub 指引，
+    其余（`pages.dev`、自建、`file://` 彩排远端）给中性的「交给你的托管方」并指回文档。
+    """
+    home, origin = env
+    assert _init(origin, url_base="https://DEMO.pages.dev/") == 0
+    out = capsys.readouterr().out
+    assert "Settings → Pages" not in out
+    assert "托管方" in out
+    assert "subscription.md" in out
+
+    # 路径 A（github.io）那两行照旧，一字不改：它是被真机验证过的通路
+    (home / "subscribe" / f"subscribe-{SEMESTER}.json").unlink()
+    assert _init(origin) == 0
+    out = capsys.readouterr().out
+    assert "Settings → Pages" in out and "Deploy from branch" in out
+
+
 def test_publish_never_carries_a_stray_file_from_the_work_dir(
     env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:

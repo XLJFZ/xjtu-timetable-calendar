@@ -362,10 +362,16 @@ class _FakeState:
 # --------------------------------------------------------------------------- #
 
 
-def _uid_state(uid_recipe: int | None):
-    from xjtu_calendar.subscribe import SubscriptionState
+def _uid_state(uid_recipe: int | None, *, published: bool = False):
+    """订阅状态固件。``published=True`` 才带上「最后一次成功发布」的记录。
 
-    return SubscriptionState(
+    这一格区分的是两件不同的事：**升级上来的老用户**（发布过、状态里没有配方标记）
+    与**刚 init、从没发布过的新用户**（同样没有配方标记，但没有任何旧 UID 可撤销）。
+    ``uid_recipe`` 单独一个字段分不开它们，靠 ``last_push`` 才分得开。
+    """
+    from xjtu_calendar.subscribe import PushRecord, SubscriptionState
+
+    state = SubscriptionState(
         semester=SEMESTER,
         repo_url="https://example.invalid/r.git",
         branch="cal",
@@ -373,6 +379,11 @@ def _uid_state(uid_recipe: int | None):
         url_base="https://example.invalid/cal",
         uid_recipe=uid_recipe,
     )
+    if published:
+        state.last_push = PushRecord(
+            pushed_at="2026-10-12T00:00:00+00:00", content_sha256="0" * 64, token="t" * 32
+        )
+    return state
 
 
 def _write_course_ledger(cfg: Settings) -> None:
@@ -387,12 +398,31 @@ def _write_course_ledger(cfg: Settings) -> None:
 
 
 def test_doctor_warns_when_migration_pending(tmp_path: Path) -> None:
+    """**发布过**且状态里没有配方标记 = 从 v0.7.x 升级上来的老用户：这才是待迁移。"""
+    import xjtu_calendar.doctor as doctor_module
+
+    cfg = make_home(tmp_path)
+    got = doctor_module._check_uid_recipe(cfg, SEMESTER, _uid_state(None, published=True))
+    assert got.status == STATUS_WARN and "迁移" in got.detail
+    assert got.name == "uid_recipe"
+
+
+def test_doctor_fresh_init_without_push_is_not_migration(tmp_path: Path) -> None:
+    """刚 `subscribe init`、从没发布过的状态不许报「上次发布使用 v1 配方」。
+
+    全新状态与升级老状态共用 `uid_recipe=None`（`SubscriptionState` 的默认值就是 None），
+    所以判据必须多看一眼 `last_push`。2026-10-22 离线走查实测到旧文案对新用户说
+    「下次 subscribe push 会一次性撤销旧事件并原地重建」——而那次 push 走的确实是迁移分支，
+    候选集却因台账为空而一条都发不出去，等于用假预告吓第一个用户。
+    """
     import xjtu_calendar.doctor as doctor_module
 
     cfg = make_home(tmp_path)
     got = doctor_module._check_uid_recipe(cfg, SEMESTER, _uid_state(None))
-    assert got.status == STATUS_WARN and "迁移" in got.detail
+    assert got.status == STATUS_OK, "还没发布过就没有迁移可言，也不该是警告"
     assert got.name == "uid_recipe"
+    assert "待迁移" not in got.detail and "上次发布" not in got.detail
+    assert "尚未发布" in got.detail
 
 
 def test_doctor_ok_after_migration(tmp_path: Path) -> None:

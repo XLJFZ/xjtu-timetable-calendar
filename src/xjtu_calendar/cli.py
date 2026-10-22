@@ -35,6 +35,7 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 from . import __version__
 from .academic_calendar import AcademicCalendar
@@ -1502,10 +1503,31 @@ def _subscribe_init(args: argparse.Namespace, cfg: Settings, semester: str) -> i
     print(f"订阅 URL：{state.subscription_url}")
     _print_webcal_hint(state)
     print()
-    print("一次性开启 Pages（GitHub）：仓库 Settings → Pages → Deploy from branch，")
-    print(f"分支选 {state.branch}、目录选 /(root)。完成后运行 subscribe push。")
+    _print_hosting_hint(state)
     print("⚠️ 知道该 URL 的人即可读取你的课表；有泄露疑虑时运行 subscribe rotate。")
     return 0
+
+
+def _print_hosting_hint(state: subscribe.SubscriptionState) -> None:
+    """init 收尾的「下一步怎么对外服务」两行，按 `url_base` 落在哪个托管方分支。
+
+    旧实现无条件打印 GitHub Pages 的操作指引，而路径 B（私有仓 + Cloudflare Pages，
+    `docs/user-guide/subscription.md`「先选一条托管路」）照着做会走进死路：GitHub Pages
+    对免费账户的私有仓不提供托管。判据只看 URL 前缀本身，不看仓库是否私有 ——
+    工具无从知道可见性，而 `*.github.io` 这个前缀恰好只有路径 A 会用。
+    其余前缀（`pages.dev`、自建托管、`file://` 彩排远端）一律给中性的「交给你的托管方」，
+    不猜具体控制台路径（各托管方的界面本项目只在迁移当天实测过 Cloudflare 那一条）。
+    """
+    host = urlparse(state.url_base).hostname or ""
+    if host.endswith(".github.io"):
+        print("一次性开启 Pages（GitHub）：仓库 Settings → Pages → Deploy from branch，")
+        print(f"分支选 {state.branch}、目录选 /(root)。完成后运行 subscribe push。")
+        return
+    print("下一步：把这个发布分支交给你的托管方对外服务（GitHub Pages 只在公开仓上提供托管）。")
+    print(
+        f"分支 {state.branch}、目录 /(root)；两条托管路的代价与步骤见 "
+        "docs/user-guide/subscription.md 的「先选一条托管路」。完成后运行 subscribe push。"
+    )
 
 
 def _restore_from_journal(

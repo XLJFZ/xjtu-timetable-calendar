@@ -341,7 +341,7 @@ def _check_uid_recipe(cfg: Settings, semester: str, state: Any) -> Check:
                 f"配方 v{UID_RECIPE_VERSION}；未配置订阅，无迁移；课程台账暂不可读（{read_error}）",
             )
         return Check("uid_recipe", STATUS_OK, f"配方 v{UID_RECIPE_VERSION}；未配置订阅，无迁移")
-    if needs_uid_migration(state):
+    if needs_uid_migration(state) and state.last_push is not None:
         ledger_part = (
             f"课程台账现有 {count} 条" if count is not None else f"课程台账暂不可读（{read_error}）"
         )
@@ -350,6 +350,20 @@ def _check_uid_recipe(cfg: Settings, semester: str, state: Any) -> Check:
             STATUS_WARN,
             f"待迁移：上次发布使用 v1 配方；下次 subscribe push 会一次性撤销旧事件并原地重建"
             f"（{ledger_part}）",
+        )
+    if needs_uid_migration(state):
+        # `uid_recipe` 缺字段分不开两种人：从 v0.7.x 升级上来的老用户，和刚 `subscribe init`、
+        # 一次都没发布过的新用户（`SubscriptionState.uid_recipe` 的默认值就是 None）。
+        # 只有 `last_push` 分得开 —— 没有"上次发布"就没有"上次用了 v1"，也没有旧 UID 可撤销。
+        # 2026-10-22 的离线走查就是拿这句假预告吓到了第一个新用户。
+        ledger_part = (
+            f"课程台账 {count} 条" if count is not None else f"课程台账暂不可读（{read_error}）"
+        )
+        status = STATUS_OK if count is not None else STATUS_WARN
+        return Check(
+            "uid_recipe",
+            status,
+            f"配方 v{UID_RECIPE_VERSION}；尚未发布过，无迁移（{ledger_part}）",
         )
     ledger_part = (
         f"课程台账 {count} 条" if count is not None else f"课程台账暂不可读（{read_error}）"

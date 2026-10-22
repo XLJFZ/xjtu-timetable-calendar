@@ -74,10 +74,12 @@
    不带 `--url-base` 的话，工具见远端是 GitHub 就自动推导成
    `https://<用户名>.github.io/<仓库>/` —— 私有仓上 GitHub Pages 不提供托管，
    那条地址是 404，而 init 不会为此报任何错。
-   另外：**init 收尾会无差别打印一条「一次性开启 Pages（GitHub）：仓库 Settings → Pages →
-   Deploy from branch」**，它只对路径 A 成立。走路径 B 时那两行直接忽略——你的仓库是私有的，
-   GitHub Pages 那项要么灰着要么开了也不服务；对外服务由下面第 4 步的 Cloudflare 项目负责。
-   （该文案目前不区分托管路，是已知待修项，见 `docs/design/2026-10-11-subscription-followups.md` §14。）
+   另外：**init 收尾打印的「下一步」指引现在按托管路分支**（2026-10-22 修）：`url_base` 是
+   `*.github.io` 才打「仓库 Settings → Pages → Deploy from branch」那两行，其余
+   （`pages.dev`、自建、`file://`）打中性的「把这个发布分支交给你的托管方对外服务」并指回本节。
+   但**这条改动要等下一次发版才到你手上**——如果你用的是还没带上它的版本，路径 B 里 init 照样
+   会打那两行 GitHub 指引，直接忽略：你的仓库是私有的，GitHub Pages 那项要么灰着要么开了也不服务，
+   对外服务由下面第 4 步的 Cloudflare 项目负责。
 3. 先发布第一版（这一步创建 `cal` 分支）：
 
    ```bash

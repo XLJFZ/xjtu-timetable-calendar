@@ -964,16 +964,19 @@ README 的「三条最要紧的口径」与 `docs/user-guide/subscription.md` �
    实测改动后：`export` 退出码 `0`、`doctor` 只剩「会话」一项阻塞（离线旅程本来就没登录），
    用例 113 passed。**"这条字段本身值不值得存在"不在本次范围**——它是 fail-closed 的正确形态。
 
-2. **`init` 无差别打印 GitHub Pages 指引**（**待拍**，改的是面向用户文案 = 行为变更）。
+2. **`init` 无差别打印 GitHub Pages 指引**（**已修，2026-10-22**：新增 `_print_hosting_hint`，按 `url_base` 的 hostname 分支）。
    `_subscribe_init`（`cli.py:1505-1506`）打印的是写死的两行「一次性开启 Pages（GitHub）：
    仓库 Settings → Pages → Deploy from branch」。路径 B 的仓库是**私有**的，GitHub Pages
    对免费账户的私有仓不提供托管 ⇒ 新用户照着终端里这两行去点，要么找不到开关，
    要么开出一个永远 404 的站点，而工具**手里就攥着 `--url-base`，完全判得出来走的是哪条路**。
-   本次先在文档两侧打补丁（`subscription.md` 路径 B 第 2 步 + 本条留账）。
-   真修的话形态是：`url_base` 主机是 `github.io` 才打那两行，否则改成"下一步去 Cloudflare
-   建 Pages 项目，见文档路径 B 第 4 步"。代价 = 一处文案分支 + 用例 + 进 minor 版本。
+   落地形态与建议一致：`*.github.io` 才打那两行，其余（`pages.dev`、自建、`file://` 彩排远端）
+   打中性的「把这个发布分支交给你的托管方对外服务」并指回 `subscription.md`「先选一条托管路」——
+   刻意不写具体控制台路径，因为除了 Cloudflare 那一条我们没实测过别家。
+   用例：`tests/test_cli_subscribe.py::test_init_publish_hint_follows_the_hosting_path`；
+   离线实测三种前缀的输出都在 `_notes/journey/hint_check.py` 的返回里（github.io 那两行逐字未动）。
+   **随下一次发版才到用户手上**，所以 `subscription.md` 路径 B 第 2 步同时写了旧版仍会打 GitHub 指引。
 
-3. **全新 init、从未 push 的用户被 doctor 判「待迁移」**（**待拍**，同上属文案/判据）。
+3. **全新 init、从未 push 的用户被 doctor 判「待迁移」**（**已修，2026-10-22**：判据多看一眼 `last_push`）。
    `needs_uid_migration(state)` 的判据是 `state.uid_recipe is None`（`subscribe.py:168-170`），
    而 `SubscriptionState.uid_recipe` 的默认值就是 `None`（`subscribe.py:113`）⇒
    "0.8 之前升级上来的老状态"与"刚登记、从没发布过的新状态"共用同一个信号。
@@ -984,8 +987,12 @@ README 的「三条最要紧的口径」与 `docs/user-guide/subscription.md` �
    push 完 doctor 就变「配方 v2；课程台账 15 条」通过。
    **行为是安全的，文案是假的**，而它恰好吓在新用户最敏感的位置（"会一次性撤销旧事件"）。
    与 `subscription.md`「升级到 v0.8」一节写的"**每个已发布过课表的老用户**都会遇到"直接冲突。
-   候选修法（择一，都要补用例）：判据加一格 `state.last_push is not None`；
-   或文案在 `last_push is None` 时改说「尚未发布过，无迁移」。后者改动面小、不回溯历史行为。
+   取的是第二条：`uid_recipe is None` 且**有** `last_push` 才报待迁移，没有 `last_push` 就说
+   「尚未发布过，无迁移」。第一条（给 `needs_uid_migration` 加条件）**刻意没做**——那会顺手改掉
+   `push` 侧的迁移分支，而「缺标记且无留底仍要写回 `uid_recipe: 2`」是
+   `tests/test_cli_course_cancellation.py:303-323` 钉住的既有契约，不该被一条文案修复顺带动到。
+   用例：`tests/test_doctor.py::test_doctor_fresh_init_without_push_is_not_migration`，
+   并把原「warns when migration pending」那条的固件补上 `published=True`（那才是升级上来的老用户）。
 
 4. **文档里一句与代码不符的提醒**（已修，本次）。`subscription.md` 路径 B 结尾那段原文写
    「**两个**时点会重新踩 `--url-base` 那个坑：`rotate` 与下学期第一次 `init`」——

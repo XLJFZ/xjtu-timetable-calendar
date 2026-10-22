@@ -14,11 +14,23 @@
   `export` / `subscribe push` 以退出码 `1` 停手、`doctor` 渲染项判阻塞（`5`）——
   收尾判据永远到不了 `0`。改成 `2099-11-14`（任何真实学期之外），并在模板 `_readme`
   与本字段的作用范围两处写清"填真实调课日期时它才会生效"。字段语义与 fail-closed 行为一字未改。
+- **`subscribe init` 的「下一步」指引按托管路分支**（`cli.py` 的 `_print_hosting_hint`）：
+  `url_base` 是 `*.github.io` 才打「仓库 Settings → Pages → Deploy from branch」，其余
+  （`pages.dev`、自建托管、`file://` 彩排远端）改打「把这个发布分支交给你的托管方对外服务」
+  并指回 `docs/user-guide/subscription.md`「先选一条托管路」。此前那句对任何 URL 都说 GitHub，
+  而走路径 B 的人仓库是私有的、GitHub Pages 不提供托管 —— 照终端做会走进死路。
+  路径 A 的两行文案逐字未改。
+- **`doctor` 不再对全新订阅说「待迁移」**：`uid_recipe` 缺字段被当成"上次发布用的 v1"，
+  可 `SubscriptionState.uid_recipe` 的默认值就是 `None` ⇒ 刚 `init`、一次都没发布过的用户
+  也会收到「下次 subscribe push 会一次性撤销旧事件并原地重建」。现在这一格多看一眼
+  `last_push`：发布过才报待迁移，没发布过就报「尚未发布过，无迁移」。
+  **`subscribe push` 的迁移分支一字未动**——「缺标记且无留底仍写回 `uid_recipe: 2`」
+  是既有契约，不该被一条文案修复顺带改掉。
 - **文档纠错**：`subscription.md` 里「`rotate` 与下学期 `init` 两处都会漏 `--url-base`」一句
   与代码不符（`rotate` 不接该旗标、也不重新推导，全仓只有 `init` 调 `derive_url_base`），
-  收窄成只有 `init` 一处；路径 B 步骤里补一句"init 收尾打印的 GitHub Pages 指引对路径 B 无效"。
-  代码级的那两条（`init` 文案不分托管路、全新 `init` 被 `doctor` 判「待迁移」）记在
-  `docs/design/2026-10-11-subscription-followups.md` §14，**待拍，未实现**。
+  收窄成只有 `init` 一处；路径 B 步骤里同步写清 init 那句指引按托管路分支、
+  以及旧版本仍会打 GitHub 那句。走查的四条命中全部记在
+  `docs/design/2026-10-11-subscription-followups.md` §14。
 
 ---
 

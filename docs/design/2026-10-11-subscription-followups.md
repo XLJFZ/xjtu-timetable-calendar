@@ -938,3 +938,63 @@ README 的「三条最要紧的口径」与 `docs/user-guide/subscription.md` �
    **一次都没验过** ⇒ 「订阅端消失即退场」这条保证**不能只按手机客户端成立就当数**。
    凡是依赖"条目从 feed 消失即等于设备上退场"的设计，判据都要多写一层"下游设备（手表/车机等镜像
    手机的端）的 prune 行为未验"。
+
+---
+
+## 14. 路径 B 新用户旅程走查（2026-10-22 凌晨）—— 四条命中，两条是代码级、**待拍不动实现**
+
+背景：`0858343` 把对外文案改成"两条托管路并列"之后，路径 B（私有仓 + Cloudflare Pages）
+只被我们自己的**迁移**走过一次，从没被"从零按 B 建"走过。这一场就补这一格。
+方法照 10-14 那次：一次性 home（`_notes/journey/home`）+ 本地裸仓库 `file://`、零网络、
+零真实凭据，把 README 快速开始 → 校历/作息 → fetch → export → `subscribe init/push/status/rotate/repair`
+→ `doctor` 逐条原样敲，看终端实际输出与文档说法对不对得上。全程命令与输出留在
+`_notes/journey/walk.log`、`walk2.log`（gitignore）。
+
+命中的四条，按后果排：
+
+1. **照抄 `examples/academic_calendar.example.json` 会让整条旅程在第一次导出就停手**（已修，本次）。
+   那份模板带一条演示用的 `unsupported_adjustments`，日期原本是 `2026-11-14` ——
+   **正好落在当前学期**（第 1 周周一 2026-09-07 + 16 周）里，于是新用户复制模板改完日期就撞上：
+   `export` 与 `subscribe push` 退出码 `1`、`doctor` 渲染项判**阻塞**（`5`）、
+   而 setup 向导第 8 步的收尾判据正是 `doctor` 退出码 `0` ⇒ 流程永远交付不了。
+   `rotate` 还会顺带冒一条 `[WARNING] subscribe rotate 的撤销探针渲染失败…UnsupportedAdjustmentError`。
+   修法取"把演示值挪出任何真实学期"而不是"文档里加一句提醒"：模板是这个格式的**唯一权威拷贝**
+   （`docs/user-guide/config-templates.md` 的模板说明记着这条口径，
+   `tests/test_calendar_event_config.py:513` 把它整份喂给解析器钉漂移），提醒句会被人略过， inert 的演示值不会。
+   实测改动后：`export` 退出码 `0`、`doctor` 只剩「会话」一项阻塞（离线旅程本来就没登录），
+   用例 113 passed。**"这条字段本身值不值得存在"不在本次范围**——它是 fail-closed 的正确形态。
+
+2. **`init` 无差别打印 GitHub Pages 指引**（**待拍**，改的是面向用户文案 = 行为变更）。
+   `_subscribe_init`（`cli.py:1505-1506`）打印的是写死的两行「一次性开启 Pages（GitHub）：
+   仓库 Settings → Pages → Deploy from branch」。路径 B 的仓库是**私有**的，GitHub Pages
+   对免费账户的私有仓不提供托管 ⇒ 新用户照着终端里这两行去点，要么找不到开关，
+   要么开出一个永远 404 的站点，而工具**手里就攥着 `--url-base`，完全判得出来走的是哪条路**。
+   本次先在文档两侧打补丁（`subscription.md` 路径 B 第 2 步 + 本条留账）。
+   真修的话形态是：`url_base` 主机是 `github.io` 才打那两行，否则改成"下一步去 Cloudflare
+   建 Pages 项目，见文档路径 B 第 4 步"。代价 = 一处文案分支 + 用例 + 进 minor 版本。
+
+3. **全新 init、从未 push 的用户被 doctor 判「待迁移」**（**待拍**，同上属文案/判据）。
+   `needs_uid_migration(state)` 的判据是 `state.uid_recipe is None`（`subscribe.py:168-170`），
+   而 `SubscriptionState.uid_recipe` 的默认值就是 `None`（`subscribe.py:113`）⇒
+   "0.8 之前升级上来的老状态"与"刚登记、从没发布过的新状态"共用同一个信号。
+   实测（一次性 home，第一次 push **之前**）：
+   `[警告] UID 配方与迁移：待迁移：上次发布使用 v1 配方；下次 subscribe push 会一次性撤销旧事件并原地重建（课程台账现有 0 条）`
+   —— 这里根本没有"上次发布"，也没有任何旧事件可撤销；push 实际走的是
+   `[INFO] 本地还没有 2026-2027-1 的课程台账，本次不撤销任何已发布课程事件`，一条墓碑都没发，
+   push 完 doctor 就变「配方 v2；课程台账 15 条」通过。
+   **行为是安全的，文案是假的**，而它恰好吓在新用户最敏感的位置（"会一次性撤销旧事件"）。
+   与 `subscription.md`「升级到 v0.8」一节写的"**每个已发布过课表的老用户**都会遇到"直接冲突。
+   候选修法（择一，都要补用例）：判据加一格 `state.last_push is not None`；
+   或文案在 `last_push is None` 时改说「尚未发布过，无迁移」。后者改动面小、不回溯历史行为。
+
+4. **文档里一句与代码不符的提醒**（已修，本次）。`subscription.md` 路径 B 结尾那段原文写
+   「**两个**时点会重新踩 `--url-base` 那个坑：`rotate` 与下学期第一次 `init`」——
+   `subscribe rotate` 既不接 `--url-base`（见 `--help`），全仓也只在 `cli.py:1488` 的
+   init 分支调用 `derive_url_base` ⇒ rotate 不可能"漏了 `--url-base`"，它照状态文件走。
+   已改成"只有一个时点：下学期第一次 `init`"，并把 rotate 为什么不在列表里写清。
+   **同一处错误也存在于本项目记忆里**（"换学期 init/rotate 会指向 404"那句），
+   下次真实发布时若按那句去"防 rotate"，防的是不存在的风险。
+
+一条**不构成缺陷**的观察，记在这儿防重复取证：离线走查里 `doctor` 一定会有「会话」这一项阻塞
+（`exit=5`），因为走查刻意不登录。用 `--from-file` 调试的人同样如此 —— 这不是配置错了，
+是 doctor 如实报"没有会话"。收尾判据要么先真登一次录，要么按项读，别整体当成失败。

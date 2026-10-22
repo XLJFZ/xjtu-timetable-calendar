@@ -74,6 +74,10 @@
    不带 `--url-base` 的话，工具见远端是 GitHub 就自动推导成
    `https://<用户名>.github.io/<仓库>/` —— 私有仓上 GitHub Pages 不提供托管，
    那条地址是 404，而 init 不会为此报任何错。
+   另外：**init 收尾会无差别打印一条「一次性开启 Pages（GitHub）：仓库 Settings → Pages →
+   Deploy from branch」**，它只对路径 A 成立。走路径 B 时那两行直接忽略——你的仓库是私有的，
+   GitHub Pages 那项要么灰着要么开了也不服务；对外服务由下面第 4 步的 Cloudflare 项目负责。
+   （该文案目前不区分托管路，是已知待修项，见 `docs/design/2026-10-11-subscription-followups.md` §14。）
 3. 先发布第一版（这一步创建 `cal` 分支）：
 
    ```bash
@@ -100,9 +104,12 @@
    `pages.dev` 的可达性在国内是间歇的，而这条通路是手机自己去拉的，没人给它挂代理。
 8. 之后与路径 A 完全相同：`fetch` → `subscribe push`，Cloudflare 随每次 push 自动重新部署。
 
-**两个时点会重新踩上面第 2 步那个坑**：`rotate`（换 token）与**下学期第一次 `init`**。
-两处都只要漏了 `--url-base`，工具打印出来的就是一条 404 的 github.io 链接，且不报错。
-漏了也不用来重做 init：手工把状态文件 `subscribe/subscribe-<学期>.json` 里的 `url_base`
+**只有一个时点会重新踩上面第 2 步那个坑：下学期第一次 `init`。**
+它漏了 `--url-base`，工具打印出来的就是一条 404 的 github.io 链接，且不报错。
+**`rotate` 不在这个列表里**（2026-10-22 对着代码与离线旅程复核）：`rotate` 既不接
+`--url-base`，也不重新推导地址——它照状态文件里已有的 `url_base` 换新 token 再补发，
+所以只要 init 那次没漏，rotate 就不会把路径 B 的订阅指回 github.io。
+漏了 init 也不用重做 init：手工把状态文件 `subscribe/subscribe-<学期>.json` 里的 `url_base`
 字段改成 Cloudflare 那个前缀，再用只读的 `subscribe status` 确认即可。
 **不要**为了「验证一下」去跑 `push`：换地址本身不需要发布，而隔了几天再 push，
 课表已随日期变化，等于发出一次你并不想发的新版本。

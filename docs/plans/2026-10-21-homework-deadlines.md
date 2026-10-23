@@ -1,13 +1,14 @@
 # 思源学堂作业 DDL 接入（`lms_todo` 数据源）实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:subagent-driven-development（推荐）或
-> superpowers:executing-plans 逐任务实现。每个任务收尾过一次独立评审，全部完成后再做全分支终审。
+> **For agentic workers:** 逐任务实现、每个任务收尾过一次独立评审、全部完成后再做全分支终审；
 > 派发预算与门禁口径按 `AGENTS.md`「派发边界规则」执行。
 >
-> **本计划现在不可执行。** 规格 `docs/design/2026-10-21-homework-deadlines.md` 的状态是
-> **草案、不批准实现**；D4/D5/D7 未拍，§5 读数里承重的那条（本文件「读数 S2」）还是空的。
-> 这份文档的作用是把「哪些活儿已经能钉死、哪些必须等人拍」落到具体文件与行号上：
-> 拍板之后删掉落选分支即可开工，不需要重写。计划撰写于 2026-10-22 00:4x +0800。
+> **本计划不再由本仓库执行（2026-10-23）。** 规格 `docs/design/2026-10-21-homework-deadlines.md`
+> 的状态已改为**本仓库不排期实现，转为公开接手材料**：D4/D5/D7 未拍，§5 读数里承重的那条
+> （本文件「读数 S2」）还是空的。接手人可以把它当现成的施工骨架——它的作用是把
+> 「哪些活儿已经能钉死、哪些必须等人拍」落到具体文件与行号上：拍板之后删掉落选分支即可开工，
+> 不需要重写。但绑在这套门禁与派发纪律上的假设只有本仓库成立，换人接手要自己决定跟不跟。
+> 计划撰写于 2026-10-22 00:4x +0800。
 
 **Goal:** 把思源学堂（`lms.xjtu.edu.cn`）未提交作业的截止时间接进现有 `fetch → 快照 → 解析 → 导出 → diff → subscribe` 管线，让同一份 .ics 里同时有课程、考试与作业 DDL 三类事件。
 
@@ -227,7 +228,7 @@ def todo_row(**over: object) -> dict[str, object]:
     """一条 LMS `todo_list` 行。键名与实测 11 键一致，值全是合成的。"""
     row: dict[str, object] = {
         "course_code": "203020301DEMO00000001",
-        "course_id": 33590,
+        "course_id": 33001,
         "course_name": "示例课程甲",
         "course_type": 1,
         "end_time": DEMO_DEADLINE_UTC,

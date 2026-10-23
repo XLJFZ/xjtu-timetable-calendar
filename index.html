@@ -184,6 +184,7 @@ footer{border-top:1px solid var(--line);background:var(--card);margin-top:2rem}
       <a href="#subscribe">订阅 · 客户端</a>
       <a href="#automate">体检 · 配置</a>
       <a href="#commands">命令参考</a>
+      <a href="#open">未排期</a>
       <a href="#privacy">隐私与安全</a>
     </div>
     <span class="nav-cta"><a class="btn btn-primary" href="https://github.com/XLJFZ/xjtu-timetable-calendar">GitHub</a></span>
@@ -497,6 +498,38 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
   </table>
   </div>
   <p style="color:var(--sub);font-size:.9rem;margin-top:.8rem">退出码有语义（2=未登录、3=登录失效、4=接口拒绝——最常见是登录停在「请选择身份」的半截会话，见 README 的 403 一条、5=<code>doctor</code> 检出阻塞项、6=成批撤销被熔断拒绝、7=本地发布状态与线上不相容（跑 <code>subscribe repair</code>）、8=校历事件的发布准入没过（<strong>改配置</strong>，不是 <code>repair</code> 也不是 <code>--allow-*</code>）），方便脚本串联。完整参数与客户端订阅入口见 <a href="https://github.com/XLJFZ/xjtu-timetable-calendar#命令参考">README · 命令参考</a>。</p>
+</section>
+
+<section id="open">
+  <div class="sec-kicker">未排期 · 欢迎接手</div>
+  <h2>思源学堂的作业 DDL：取证做完了，本仓库不实现</h2>
+  <p>
+    把「还没交的作业」的截止时间也写进同一份日历，这个提案在 2026-10-21 做过一次
+    <strong>只读取证</strong>，规格与判据都写进了
+    <a href="https://github.com/XLJFZ/xjtu-timetable-calendar/blob/main/docs/design/2026-10-21-homework-deadlines.md"><code class="inline-code">docs/design/2026-10-21-homework-deadlines.md</code></a>。
+    2026-10-23 决定<strong>本仓库不再排期实现它</strong>，文档原样公开——
+    想接手的可以直接以那份规格为起点另起实现，不必等这边。项目是 MIT 许可。
+  </p>
+  <ul class="checks">
+    <li>数据形状已验：<code class="inline-code">GET /api/todos</code> 一个请求出全量（取证时 21 条，URL 上无分页参数），每条 11 个字段</li>
+    <li><code class="inline-code">id</code> 是稳定数字，<code class="inline-code">course_code</code> 前缀就是学期号 ⇒ UID 配方 <code class="inline-code">hw:&lt;course_code&gt;:&lt;id&gt;</code> 天然不会跨学期撞号</li>
+    <li><code class="inline-code">end_time</code> 是 <strong>UTC</strong>：同一时刻界面显示「当天 23:59」、字段是 <code class="inline-code">T15:59:00Z</code>，相差整 8 小时</li>
+    <li><strong>没有「已提交 / 未提交」状态字段</strong>——交完的那条从列表里静默消失，而不是变成 CANCELLED</li>
+  </ul>
+  <div class="callout warnbox" style="margin-top:1.2rem">
+    <b>为什么这边不做：</b>最后一项决定了它要的是「消失即退场」，而本仓库的撤销通路是按
+    「被取消」设计的（<code class="inline-code">STATUS:CANCELLED</code> 墓碑 + 过期退场两道门），
+    接作业得把那一套口径重判一遍。另有三条决定性读数当场取不到：
+    <code class="inline-code">type</code> 的取值全集（当时没有课程测验在场，21 条全为
+    <code class="inline-code">homework</code>）、思源课程内考试与门户排考是否重复、
+    会话能维持多久。按本仓库一贯的纪律——不把未验证的语义接进一条已经干净的数据源——
+    这些必须由真要实现它的人在自己账号上重取。
+  </div>
+  <div class="callout" style="margin-top:1.2rem">
+    <b>接手时别踩的两条：</b>① 作业标题会进那份可被匿名读到的产物，隐私口径要自己定；
+    ② 客户端语义已经量过——<strong>ICSx⁵ 会把从产物里消失的条目清掉</strong>（2026-10-19 真机判过），
+    而 <strong>ColorOS 原生订阅永不删消失项</strong>，所以「交完自动退场」在不同客户端上不是同一件事。
+  </div>
 </section>
 
 <section id="privacy">

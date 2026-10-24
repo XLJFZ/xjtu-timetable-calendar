@@ -541,6 +541,38 @@ def test_init_publish_hint_follows_the_hosting_path(
     assert "Settings → Pages" in out and "Deploy from branch" in out
 
 
+def test_init_warns_that_github_io_needs_a_public_repo(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**换了推荐口径之后，漏 `--url-base` 的那次 init 不能只说"去开 Pages"。**
+
+    文档自 2026-10-24 起推荐路径 B（私有仓 + Cloudflare Pages），而 `derive_url_base`
+    只看远端是不是 GitHub、不看可见性，推出来的永远是 `*.github.io` ⇒ 换学期第一次
+    `init` 漏了旗标时，工具退出码 0、不打任何警告，还把用户往「仓库 Settings → Pages」
+    那两行引——而那个仓库是私有的，GitHub Pages 对免费账户的私有仓不提供托管，
+    打出来的订阅 URL 是 404。2026-10-24 在临时 home 里离线复跑，终端形状与上面这段
+    描述逐字一致。
+
+    判据仍然只有 `url_base` 前缀（工具无从知道可见性），所以这里加的是**警告**而不是
+    拒绝：告诉用户这条地址只有在仓库公开时才有内容，以及想走私有仓该怎么办。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    out = capsys.readouterr().out
+    # 那两行 GitHub 指引仍在（路径 A 是被验证过的通路，不许顺手拆掉）
+    assert "Settings → Pages" in out and "Deploy from branch" in out
+    # 新增：说清这条前缀的前提，并给出推荐路的出口
+    assert "对免费账户的私有仓库不提供托管" in out
+    assert "404" in out
+    assert "--url-base" in out
+
+    # 反向对照：走 pages.dev 的那次 init 不该看到这句 GitHub 可见性警告
+    (home / "subscribe" / f"subscribe-{SEMESTER}.json").unlink()
+    assert _init(origin, url_base="https://DEMO.pages.dev/") == 0
+    out = capsys.readouterr().out
+    assert "对免费账户的私有仓库不提供托管" not in out
+
+
 def test_publish_never_carries_a_stray_file_from_the_work_dir(
     env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:

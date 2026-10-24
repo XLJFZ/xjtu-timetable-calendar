@@ -1522,6 +1522,15 @@ def _print_hosting_hint(state: subscribe.SubscriptionState) -> None:
     if host.endswith(".github.io"):
         print("一次性开启 Pages（GitHub）：仓库 Settings → Pages → Deploy from branch，")
         print(f"分支选 {state.branch}、目录选 /(root)。完成后运行 subscribe push。")
+        # 2026-10-24：文档把私有仓 + Cloudflare Pages 定为推荐路，而 `derive_url_base`
+        # 只看远端是不是 GitHub、不看可见性 ⇒ 漏了 `--url-base` 的那次 init 会静默推出
+        # 这条前缀，然后教用户去开一个开也开不起来的 Pages。加警告，不改判据、不拒绝：
+        # 路径 A 仍是公开仓用户的正解，工具无从知道仓库到底公不公开。
+        print()
+        print("⚠️ 上面这两行只对公开仓库成立：GitHub Pages 对免费账户的私有仓库不提供托管，")
+        print("   私有仓上这条订阅 URL 是 404（而 init 不会为此报错）。想让发布仓库保持私有，")
+        print("   重新 init 时带 --url-base（例如 https://<项目名>.pages.dev/），")
+        print("   两条路的代价与步骤见 docs/user-guide/subscription.md 的「先选一条托管路」。")
         return
     print("下一步：把这个发布分支交给你的托管方对外服务（GitHub Pages 只在公开仓上提供托管）。")
     print(

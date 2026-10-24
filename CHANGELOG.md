@@ -8,7 +8,20 @@
 
 ## [未发布]
 
-暂无。当前版本号 = `pyproject.toml` 里的 `0.9.1`。
+- **`subscribe init` 推出 `*.github.io` 时补一段可见性警告**（`cli.py` 的
+  `_print_hosting_hint`）。2026-10-24 把「私有仓 + Cloudflare Pages」定为推荐路之后，
+  最常见的漏步情形变成了「换学期 `init` 忘带 `--url-base`」：`derive_url_base` 只看远端
+  是不是 GitHub、不看仓库可见性，于是工具退出码 `0`、不打任何警告，打印的订阅 URL 是
+  `https://<用户名>.github.io/<仓库>/<token>.ics`，紧接着还教用户去
+  「仓库 Settings → Pages → Deploy from branch」——而那个仓库是私有的，GitHub Pages
+  对免费账户的私有仓不提供托管，那条地址是 404（当天在临时 home 里离线复跑，终端形状
+  与这句描述逐字一致）。现在这一支在原有两行 GitHub 指引之后追加警告：这条前缀只对公开
+  仓库成立、私有仓上是 404、想保持私有就重新 init 带 `--url-base`，并指回
+  `docs/user-guide/subscription.md` 的「先选一条托管路」。
+  **只加警告、不改判据、不拒绝**：路径 A 对公开仓用户仍是正解，而工具无从知道可见性。
+  新增用例 `test_init_warns_that_github_io_needs_a_public_repo`；原有那两行 GitHub
+  文案一字未改（`test_init_publish_hint_follows_the_hosting_path` 继续钉住它）。
+  产物字节、发布事务、迁移分支一律未动。
 
 ---
 

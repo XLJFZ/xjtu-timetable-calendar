@@ -23,6 +23,7 @@ from enum import Enum
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .cancellation import load_ledger
 from .config import Settings
 from .errors import (
     SubscribeGuardError,
@@ -31,6 +32,7 @@ from .errors import (
 )
 from .fileutil import atomic_write_text
 from .logging_setup import get_logger
+from .timeutil import now_local
 
 __all__ = [
     "BYPASSABLE_INCOMPATIBILITY_REASONS",
@@ -714,10 +716,11 @@ class CompatibilityCheck:
     """构建前的相容性判定结果。"""
 
     ok: bool
-    #: `consistent` / `no_snapshot_verified`（弱判据放行）/ `pending_unresolved`（上次发布
-    #: 的结果还没裁决）/ `no_journal` / `journal_invalid` / `journal_token` / `journal_sha`
-    #: / `journal_branch`（后三格＝凭据与状态里的发布记录交叉核对不上）
-    #: / `baseline` / `course_ledger` / `exam_ledger` / `*_keep` / `uid_recipe`
+    #: `consistent` / `no_snapshot_verified`（弱判据放行）/ `ledger_pruned_by_time`
+    #: （台账差异只落在原定时刻已过去的行上，见 `_difference_is_only_time_pruning`）
+    #: / `pending_unresolved`（上次发布的结果还没裁决）/ `no_journal` / `journal_invalid`
+    #: / `journal_token` / `journal_sha` / `journal_branch`（后三格＝凭据与状态里的发布记录
+    #: 交叉核对不上）/ `baseline` / `course_ledger` / `exam_ledger` / `*_keep` / `uid_recipe`
     reason: str
     detail: str
 
@@ -801,15 +804,63 @@ def _sha_of(path: Path) -> str | None:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _difference_is_only_time_pruning(
+    published_text: str, local_path: Path, *, now: datetime, label: str
+) -> int | None:
+    """本地台账与发布凭据里那份的差异，是否**只落在"原定时刻已过去"的行上**。
+
+    是 ⇒ 返回被放行的差异行数；否 ⇒ `None`，交回原来的 fail-closed 判定。
+
+    为什么需要这一格：`export` 与发布**共用同一份台账**，而台账按 D2/D10 会剪掉原定时刻
+    已过去的行 ⇒ 两次发布之间只要过了几节课、中间跑过一次 `export`，本地台账就比凭据里那份
+    少几行，门把这条**它自己的规则造出来的差异**当成不相容、拒绝发布（2026-10-24 彩排抓到，
+    与 v0.8「门 2 误拦老用户几周」同型）。放行的代价是零：已过时刻的行本来就进不了
+    撤销候选（`cancel_candidates` 的 `start < now` 那道筛），也不是任何事件的凭据。
+
+    判据刻意写成"未过期的行必须逐字段原样在"而不是"只许少不许多"：
+    ① 本地凭空多出来的行不是退场，照旧拦；
+    ② 台账文件被读坏时 `load_ledger` 会降级成空表（D15 不抛异常），若只数"少了多少行"，
+       一份坏文件在学期末（凭据里全是已过时刻的行）会被当成"时间剪枝"放过去 ——
+       而那种时刻所有未过期行都必须原样在场，坏文件当场就露馅。
+    """
+    try:
+        local_text = local_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    published = load_ledger(published_text, label=f"发布凭据里的{label}")
+    local = load_ledger(local_text, label=f"本地{label}")
+    if not set(local) <= set(published):
+        return None
+    forgiven = 0
+    for uid, entry in published.items():
+        kept = local.get(uid)
+        if entry.start < now:
+            # 已过时刻：不在、或字段变了，都不影响任何判定 ⇒ 放行并计数
+            if kept is None or kept != entry:
+                forgiven += 1
+        elif kept != entry:
+            # 还没到点的行少了一条或字段对不上 ⇒ 正是"真退课被静默漏发撤销"的形态
+            return None
+    return forgiven
+
+
 def check_local_compatibility(
-    cfg: Settings, state: SubscriptionState, semester: str
+    cfg: Settings,
+    state: SubscriptionState,
+    semester: str,
+    *,
+    now: datetime | None = None,
 ) -> CompatibilityCheck:
     """本地四样（留底 / 两份台账 / 迁移标记）是否与"最后一次已发布版本"相容。
 
     **不碰网络**：它回答的是"本地自不自洽、有没有依据"，远端到底是不是这一版由
     `subscribe repair` 去核。`last_push is None` 直接通过（全新订阅，没有旧版本可对）
     ——但**未裁决的准备稿除外**，那是"远端可能已经推进过一次"的信号，与有没有旧版本无关。
+
+    `now`：判"时间剪枝"用的墙钟，`None` 取 `now_local()`。单测靠它把"那行到底过期了没有"
+    钉成确定性的，不去赌挂钟。
     """
+    wall_clock = now or now_local()
     unresolved = _unresolved_pending(cfg, semester)
     if unresolved is not None:
         return unresolved
@@ -916,6 +967,14 @@ def check_local_compatibility(
                 return CompatibilityCheck(False, f"{label}_keep", detail)
             continue
         if _sha_of(path_key) != hashlib.sha256(want.encode("utf-8")).hexdigest():
+            forgiven = _difference_is_only_time_pruning(want, path_key, now=wall_clock, label=human)
+            if forgiven is not None:
+                return CompatibilityCheck(
+                    True,
+                    "ledger_pruned_by_time",
+                    f"{human}有 {forgiven} 行因原定时刻已过而退场"
+                    "（`export` 与发布共用这份台账，台账按设计剪掉过期行），本次按相容放行",
+                )
             return CompatibilityCheck(
                 False,
                 label,

@@ -287,6 +287,14 @@ def _check_subscription(cfg: Settings, semester: str, state: Any) -> Check:
             "本地没有发布恢复快照（0.8.5 之前发布过的状态），留底字节与最后一次发布记录相符，"
             "但两份台账与迁移标记这次没能校验：下一次 push 会把恢复依据补落",
         )
+    if compat.reason == "ledger_pruned_by_time":
+        # 与门同口径：这一格 push 是**放行**的，所以体检只作说明、不报阻塞，
+        # 更不许催用户去做一次根本不需要的 repair。
+        return Check(
+            "subscription",
+            STATUS_WARN,
+            f"{compat.detail}：下一次 push 照常发布，不必 repair",
+        )
     last_local: Path = cfg.subscribe_dir / f"last-{semester}.ics"
     if not last_local.is_file():
         return Check("subscription", STATUS_WARN, "本地留底缺失，运行 subscribe push 重新发布")

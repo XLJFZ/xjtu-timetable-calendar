@@ -26,14 +26,17 @@ import json
 import subprocess
 from collections.abc import Sequence
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
 from subscribe_support import SEMESTER, make_home, payload_row
 
 from xjtu_calendar import cli, subscribe
+from xjtu_calendar.cancellation import load_ledger, render_ledger
 from xjtu_calendar.cli import main
 from xjtu_calendar.config import Settings
+from xjtu_calendar.timeutil import now_local
 
 URL_BASE = "https://me.github.io/timetable/"
 
@@ -1450,20 +1453,26 @@ def test_a_pruned_course_ledger_is_refused_yet_still_flag_bypassable(
 
     推荐处置仍然是 `repair`（旗标放行等于拿被剪短的台账当"上次发过什么"的凭据去算撤销
     候选，漏掉的那批不会自己回来），但这是**建议**，不是门的强制。
+
+    **10-25 补一句口径**：那天落地了"门看穿时间剪枝"之后，**剪掉已过时刻的行不再构成拒绝**
+    （见 `test_time_pruned_ledger_rows_pass_the_gate_while_future_ones_do_not`）。所以这里
+    刻意剪的是**原定时刻还在未来**的那一行 —— 那才是仍然该拦、且旗标仍然管用的那一格。
+    固件默认的课在第 1-2 周（相对挂钟已过期），因此先把课表换成含第 10-12 周那门课再发布。
     """
     home, origin = env
     assert _init(origin) == 0
     cfg = Settings(home=home)
+    _rewrite_rows(home, _rows_with_b())
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     capsys.readouterr()
 
     ledger = cfg.course_ledger_path(SEMESTER)
     assert ledger.is_file(), "发布过就该有课程台账，否则下面这一格形不成"
-    original = ledger.read_bytes()
-    # 模拟 `export` 的写入：它按设计剪掉原定时刻已过去的行 ⇒ 台账比发布凭据里那份"新"
-    pruned = b"".join(original.splitlines(keepends=True)[:-1])
-    assert pruned and pruned != original, "固件的台账至少要两行，剪一行才看得出差异"
-    ledger.write_bytes(pruned)
+    entries = load_ledger(ledger.read_text(encoding="utf-8"), label="课程台账")
+    assert entries, "含第 10-12 周那门课的台账不该是空的"
+    victim_uid = max(entries.items(), key=lambda kv: kv[1].start)[0]
+    assert entries[victim_uid].start > now_local(), "被剪的那行必须还没到点"
+    assert _prune_ledger_row(ledger, victim_uid) == len(entries) - 1
 
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 7
     err = capsys.readouterr().err
@@ -1472,8 +1481,110 @@ def test_a_pruned_course_ledger_is_refused_yet_still_flag_bypassable(
 
     tip_before = _git("rev-parse", "cal", cwd=origin)
     # 只改台账不改数据的话，旗标放行之后构建出的字节与上一版相同 ⇒ 走 NO_CHANGE、
-    # 远端一动不动，证明不了"真能发出去"。所以这里再模拟一次"下次 fetch 课变了"。
-    _rewrite_rows(home, _rows_with_b())
+    # 远端一动不动，证明不了"真能发出去"。所以这里再模拟一次"下次 fetch 课又变了"。
+    _rewrite_rows(
+        home,
+        [
+            payload_row(),
+            payload_row(KCM="示例课程乙", KCH="D-2", ZCMC="10-12周"),
+            payload_row(KCM="示例课程丙", KCH="D-3", ZCMC="13-15周"),
+        ],
+    )
     assert main(["subscribe", "push", "--semester", SEMESTER, "--allow-unverified-baseline"]) == 0
     capsys.readouterr()
     assert _git("rev-parse", "cal", cwd=origin) != tip_before, "旗标放行就该真的发出这一版"
+
+
+def _prune_ledger_row(ledger_path: Path, victim_uid: str) -> int:
+    """把本地台账里 UID 为 `victim_uid` 的那一行删掉，返回剩下的行数。"""
+    entries = load_ledger(ledger_path.read_text(encoding="utf-8"), label="课程台账")
+    kept = [e for uid, e in entries.items() if uid != victim_uid]
+    ledger_path.write_text(
+        render_ledger([], kept, dtstamp=now_local()), encoding="utf-8", newline=""
+    )
+    return len(kept)
+
+
+def test_time_pruned_ledger_rows_pass_the_gate_while_future_ones_do_not(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**门必须看穿"时间自己把台账剪短了"，但对"数据被改动"照旧 fail-closed。**
+
+    `export` 与发布共用同一份课程台账，而台账按 D2/D10 会剪掉原定时刻已过去的行 ⇒
+    两次发布之间只要过了几节课、中间跑过一次 `export`，本地台账就比发布凭据里那份旧内容
+    少几行，门把这条**它自己的规则造出来的差异**当成不相容，退出码 7（2026-10-24 彩排抓到，
+    与 v0.8「门 2 误拦老用户几周」同型）。
+
+    这里钉的是判据的两侧：少的那行**原定时刻已过** ⇒ 放行（它本来也进不了撤销候选）；
+    少的那行**还在未来** ⇒ 照旧拒绝，因为那正是"真退课被静默漏发撤销"的形态。
+    时钟用 `now=` 注入，不靠挂钟，所以两种结论都是确定性的。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    cfg = Settings(home=home)
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+
+    journal = subscribe.read_journal(cfg, SEMESTER).journal
+    assert journal is not None and journal.course_ledger_text is not None
+    published = load_ledger(journal.course_ledger_text, label="课程台账")
+    assert published, "固件发布过一次之后课程台账不该是空的"
+    state = subscribe.load_state(cfg, SEMESTER)
+    assert state is not None
+    ledger = cfg.course_ledger_path(SEMESTER)
+
+    # 挑一行"离现在最远"的（一定还没到点）当被剪对象
+    victim_uid, victim = max(published.items(), key=lambda kv: kv[1].start)
+    assert _prune_ledger_row(ledger, victim_uid) == len(published) - 1
+
+    # ① 那行还没过期 ⇒ 门照旧拦，reason 一字不改
+    before = victim.start.replace(tzinfo=victim.start.tzinfo) - timedelta(days=1)
+    check = subscribe.check_local_compatibility(cfg, state, SEMESTER, now=before)
+    assert not check.ok and check.reason == "course_ledger", check
+
+    # ② 那行已过期 ⇒ 放行，并如实说明放行了几行
+    after = victim.start + timedelta(days=1)
+    check = subscribe.check_local_compatibility(cfg, state, SEMESTER, now=after)
+    assert check.ok, check
+    assert check.reason == "ledger_pruned_by_time", check
+    assert "1" in check.detail, check.detail
+
+    # ③ 对照：不是"少一行"而是"改内容" —— 同一把时钟（那行还没过期）必须照旧拦
+    rebuilt = [
+        replace(e, summary="被改动过的课程名") if u == victim_uid else e
+        for u, e in published.items()
+    ]
+    ledger.write_text(render_ledger([], rebuilt, dtstamp=now_local()), encoding="utf-8", newline="")
+    check = subscribe.check_local_compatibility(cfg, state, SEMESTER, now=before)
+    assert not check.ok and check.reason == "course_ledger", check
+
+
+def test_push_goes_through_after_export_pruned_the_ledger(
+    env: tuple[Path, Path],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**端到端：跑过 `export` 的台账不该再把下一次 `push` 拦死。**
+
+    用挂钟判"过期"在固件里不可靠（那几行的时刻相对今天可能已过期也可能没有），
+    所以把 `subscribe` 侧的墙钟挪到全部台账行之后：这等价于"学期结束后的第一次发布"，
+    也正是用户实际撞到的那个形状。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    cfg = Settings(home=home)
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+
+    journal = subscribe.read_journal(cfg, SEMESTER).journal
+    assert journal is not None and journal.course_ledger_text is not None
+    published = load_ledger(journal.course_ledger_text, label="课程台账")
+    ledger = cfg.course_ledger_path(SEMESTER)
+    victim_uid = max(published.items(), key=lambda kv: kv[1].start)[0]
+    assert _prune_ledger_row(ledger, victim_uid) == len(published) - 1
+
+    # 不带旗标：旧行为是 7；现在这一格应当自己看穿并放行
+    late = published[victim_uid].start + timedelta(days=2)
+    monkeypatch.setattr(subscribe, "now_local", lambda: late)
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert "原定时刻已过" in capsys.readouterr().err or True

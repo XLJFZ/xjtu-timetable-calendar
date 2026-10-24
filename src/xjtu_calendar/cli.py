@@ -1758,6 +1758,13 @@ def _require_compatible_local_state(
             "本地没有发布恢复快照，按弱判据放行：留底字节与最后一次发布记录相符，"
             "但两份台账与迁移标记未能校验；本次会在推送前把恢复依据补落。"
         )
+    elif compat.reason == "ledger_pruned_by_time":
+        # 门自己放行的一类差异（台账按设计剪掉已过时刻的行，而 export 与发布共用它）。
+        # 「自动但不静默」：放行要说一声，否则用户以为四样都原样对上了。
+        logger.warning(
+            "%s —— 这不是状态散架，不必 repair；跑过 `export` 或过了几节课都会这样。",
+            compat.detail,
+        )
     return compat
 
 

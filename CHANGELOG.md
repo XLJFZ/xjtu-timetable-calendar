@@ -8,6 +8,31 @@
 
 ## [未发布]
 
+暂无。当前版本号 = `pyproject.toml` 里的 `0.9.2`。
+
+---
+
+## [0.9.2] - 2026-10-24
+
+**两条：一条是终端里把人往死路上引的指引，一条是我们自己写错的文档断言。** 产物字节一字未变，
+发布事务、撤销通路、迁移分支一律未动。
+
+- **订阅通路的对外口径改为「推荐路径 B」**（私有仓 + Cloudflare Pages；公开的 GitHub Pages
+  降为"接受仓库公开、五分钟跑通"的备选）。零代码，改的是 README / `subscription.md` /
+  `cli-reference.md` / setup skill / 站点 `index.html` 五处措辞，并顺带修掉四处被 10-20
+  「发布仓库转私有」作废的断言（其中 `index.html` 校历那格原本拿"仓库是公开的"论证
+  "来源 URL 不许带凭据参数"，改成"那份产物是匿名可读的"——对两条路都成立，论证不变）。
+  推荐语旁边三条限定同屏：代价照写、**推荐 ≠ 默认值**（`derive_url_base` 仍推 `*.github.io`，
+  所以推荐路上 `--url-base` 是 `init` 必带项）、不许变成劝阻。
+- **`subscribe push` 被 `export` 拦死那一格的文档改口**（`subscription.md` 边界清单、
+  `troubleshooting.md` 的 Q&A）。先前写的「`course_ledger` 不在
+  `BYPASSABLE_INCOMPATIBILITY_REASONS` 里 ⇒ `--allow-unverified-baseline` 救不了」**没量过、
+  是错的**：白名单里就列着 `course_ledger`（`subscribe.py:745`），判据是
+  `not (allow_unverified and compat.bypassable)`（`cli.py:1725`）⇒ 旗标**能**放行。
+  新增用例 `test_a_pruned_course_ledger_is_refused_yet_still_flag_bypassable` 钉住两种结局
+  （不带 `7`、带旗标 `0` 且远端确实收到新版）。改口时那句限定不许丢：旗标放行不解决任何
+  问题——等于拿被剪短的台账当"上次发过什么"的凭据算撤销候选，该撤的事件可能对不上而被
+  静默丢弃，只在日志留一条 warning；`repair` 仍是首选处置。
 - **`subscribe init` 推出 `*.github.io` 时补一段可见性警告**（`cli.py` 的
   `_print_hosting_hint`）。2026-10-24 把「私有仓 + Cloudflare Pages」定为推荐路之后，
   最常见的漏步情形变成了「换学期 `init` 忘带 `--url-base`」：`derive_url_base` 只看远端
@@ -21,7 +46,11 @@
   **只加警告、不改判据、不拒绝**：路径 A 对公开仓用户仍是正解，而工具无从知道可见性。
   新增用例 `test_init_warns_that_github_io_needs_a_public_repo`；原有那两行 GitHub
   文案一字未改（`test_init_publish_hint_follows_the_hosting_path` 继续钉住它）。
-  产物字节、发布事务、迁移分支一律未动。
+- **`MIN_DOC_VERSION` 保持 `(0, 7, 0)`**：skill 里新增的那段是"漏旗标时长什么样、怎么处置"
+  的解释与恢复步骤，不是新判据；按 0.7.0 那条教训，下限必须是判据能跑起来的版本，不动。
+
+门禁：`978 passed / 4 skipped`、`mypy` 28 files、`ruff check`、`ruff format --check` 115 files，
+并在 `git worktree add --detach` 的干净检出里复验过同样四条。
 
 ---
 

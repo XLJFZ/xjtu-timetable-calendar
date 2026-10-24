@@ -8,7 +8,20 @@
 
 ## [未发布]
 
-暂无。当前版本号 = `pyproject.toml` 里的 `0.9.2`。
+- **`export` 之后下一次 `subscribe push` 不再被自己的门拦死**（`subscribe.py` 的
+  `_difference_is_only_time_pruning` + `check_local_compatibility` 新增 `now=` 注入口）。
+  根因：`export` 与发布**共用同一份课程台账**，而台账按 D2/D10 会剪掉原定时刻已过去的行 ⇒
+  两次发布之间只要过了几节课、中间跑过一次 `export`，本地台账就比发布凭据里那份少几行，
+  门把这条**它自己的规则造出来的差异**判成不相容（退出码 `7`、`reason=course_ledger`），
+  用户只能先 `subscribe repair`。这是 v0.8「门 2 误拦老用户几周」的同型（2026-10-24 彩排抓到）。
+  现在的判据：**差异只落在原定时刻已过去的行上 ⇒ 放行**（那些行本来就进不了撤销候选），
+  并且如实说一声（`reason=ledger_pruned_by_time`，`push` 落一条 warning、`doctor` 同一格
+  从"阻塞"降成"说明"，体检与门保持同口径）。**没到点的行少一条、或字段对不上、或本地凭空
+  多出行 ⇒ 照旧拒绝**，那正是"真退课被静默漏发撤销"的形态。
+  考试台账走同一条代码路径（`export` 也写它），一并受益。
+  用例 `test_time_pruned_ledger_rows_pass_the_gate_while_future_ones_do_not` 钉住放行与拒绝两侧，
+  `test_push_goes_through_after_export_pruned_the_ledger` 钉端到端（把修复暂存掉复跑，两条都红）。
+  **`export` 的行为一字未改**：它照旧回写台账（CD8/§7 那条决策不变），变的是门看穿了自己造的差异。
 
 ---
 

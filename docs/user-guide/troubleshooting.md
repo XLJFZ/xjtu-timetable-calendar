@@ -77,7 +77,9 @@ ColorOS 系统日历不清（永久留着）。
 这对「已取消的活动」占位是好事，对**真课**就是误删没有回头路 —— 它不会随下一次
 `subscribe push` 自己回来，因为 UID 没变。
 
-救法（0.9.4 起）：在电脑上跑 `subscribe push --semester <学期> --revive <课程号>`，
+救法是让那门课换个 UID 重发：`subscribe push --semester <学期> --revive <课程号>`。
+**这个旗标还没随任何版本发布**（计划进 0.10.0）—— 现在从 PyPI 装的版本会报
+`unrecognized arguments: --revive`，在那之前唯一的恢复手段仍是移除订阅再重新添加。
 让那门课换个 UID 重发一次。代价与"ColorOS 上会留一条幽灵"这类限定，见
 [subscription.md](subscription.md) 的「手机上误删了一节课怎么办」。
 0.9.3 及更早只能移除整本订阅再重新添加。

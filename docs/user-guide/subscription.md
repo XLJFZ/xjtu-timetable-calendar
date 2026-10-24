@@ -319,7 +319,8 @@ ICSx⁵ 会**尊重你在手机上做的删除**：手删一条之后，下一�
 `subscribe push` 自己回来（2026-10-24 真机实测，判据见
 `docs/design/2026-10-11-subscription-followups.md` §13）。
 
-0.9.4 起有一条出口，在电脑上跑：
+**下一版（计划 0.10.0，尚未发布）**才有一条出口 —— 现在从 PyPI 装的版本
+认不出这个旗标（会报 `unrecognized arguments: --revive`）。等它发出来之后，在电脑上跑：
 
 ```bash
 python -m xjtu_calendar subscribe push --semester <学期> --revive <课程号>

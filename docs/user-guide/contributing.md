@@ -182,6 +182,12 @@ Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**�
   之后每次发布只需：合入升版提交 → 打 tag → 发 GitHub Release →
   在 Actions 里点 Run workflow。PyPI 拒绝重复版本号，误发有保险。
 - 版本号仍是 `pyproject.toml` 单一来源；升版后记得按上文重装 editable。
+  **重装之后必查一次 `src/*.egg-info`**：`pip install -e .` 会把那份老 egg-info 再生成回来，
+  而它躺在 `sys.path` 上**赢过新的 dist-info** ⇒ `tests/test_packaging.py` 两条红
+  （`installed '0.9.2' == expected '0.9.3'`），而 `python -c "import ...; print(__version__)"`
+  在仓库根目录跑却报对 —— 这个坑 2026-10-23 记过、10-25 升 0.9.3 时原样复现。
+  处置是把它挪出仓库（`mv src/xjtu_timetable_calendar.egg-info _notes/`），**别**怀疑
+  `__init__.py` 里 `importlib.metadata` + pyproject 兜底那段逻辑。四条门禁没全绿之前不推。
 - **发版之后回门户同步文案**：`XLJFZ/xjtu-student-tools` 是独立仓库、纯静态，
   工具的版本号与通路描述在那里各写了一份（`index.html` 的工具卡片 + `README.md` 的
   工具表与对应小节，两处都要改）。**版本号与发布日期那一格已由门户自己的定时任务刷**

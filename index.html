@@ -360,7 +360,7 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
   <h2>导入一次，还是订阅一条 URL</h2>
   <div class="grid">
     <div class="feature"><div class="ico">📥</div><h3>手工导入</h3><p>拿到 .ics → 双击导入。简单、零公网暴露，但课表一变就要重新导出、重新导入，多端各来一遍。导入型入口把事件一次性写进本机，<strong>此后不再回源</strong>，<code class="inline-code">subscribe push</code> 对它无效。</p></div>
-    <div class="feature"><div class="ico">🔗</div><h3>URL 订阅（subscribe）</h3><p>把同一份 .ics 发布到<strong>你自己的静态托管</strong>——GitHub Pages（公开仓库），或私有仓库 + Cloudflare Pages；文件名是不可猜的 token。客户端按 URL 定期回源。日常更新只有两条命令：<code class="inline-code">fetch</code> → <code class="inline-code">subscribe push</code>，未变动的事件在客户端保持安静，变动的事件原地更新。</p></div>
+    <div class="feature"><div class="ico">🔗</div><h3>URL 订阅（subscribe）</h3><p>把同一份 .ics 发布到<strong>你自己的静态托管</strong>——<strong>推荐私有仓库 + Cloudflare Pages</strong>，那条路上 token 才真的是一道门槛；也可以用公开的 GitHub Pages，五分钟就能跑通，代价是任何人都能列出那个文件名。文件名是不可猜的 token。客户端按 URL 定期回源。日常更新只有两条命令：<code class="inline-code">fetch</code> → <code class="inline-code">subscribe push</code>，未变动的事件在客户端保持安静，变动的事件原地更新。</p></div>
     <div class="feature"><div class="ico">🔁</div><h3>换链接（rotate）</h3><p>转发给了不该给的人、或有任何泄露疑虑时跑 <code class="inline-code">subscribe rotate</code>：新文件挂上分支、旧文件名从 tip 消失，<strong>旧 URL 自此 404</strong>。代价是所有客户端都要重新粘贴新 URL。</p></div>
     <div class="feature"><div class="ico">🏷</div><h3>日历名从产物里来</h3><p>不指定 <code class="inline-code">--name</code> 时，标题按课表自动推导成「西安交通大学课表 · 大三-上」；凡是不敢定的情况（自定义学期 key、课表里没有入学年级字段、年级出现并列）一律退回基础名，<strong>宁可少信息也不给一个错的年级</strong>。年级只影响标题，<strong>不参与 UID、不写进事件</strong>，所以订阅端不会因为换了名字而重收整学期课程。</p></div>
   </div>
@@ -442,8 +442,12 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
   <div class="callout warnbox" style="margin-top:1.3rem">
     <b>用之前先把口径读明白：</b>
     ① 刷新是<strong>纯手动</strong>的——本工具不做定时任务、不常驻进程，也不会替你 <code class="inline-code">fetch</code>；
-    ② 发布仓库是<strong>公开</strong>的，匿名浏览分支就能看到 <code class="inline-code">&lt;token&gt;.ics</code> 的文件名，
-    所以「知道 URL 才能读」这层保护在公开仓库上<strong>并不成立</strong>——转发 URL 等于授权，任何能浏览该仓库的人都能读到你的课表；
+    ② 托管<strong>推荐私有仓 + Cloudflare Pages</strong>：那条路上只有拿到 URL 的人读得到。
+    另一条（公开仓 + GitHub Pages，五分钟能跑通）上「知道 URL 才能读」<strong>并不成立</strong>——
+    匿名浏览分支就能看到 <code class="inline-code">&lt;token&gt;.ics</code> 的文件名，任何能浏览该仓库的人都能读到你的课表。
+    两条路上<strong>转发 URL 都等于授权</strong>；B 的代价是多注册一个第三方账号，且
+    <code class="inline-code">pages.dev</code> 国内<strong>间歇</strong>可达，上线前必须在关掉代理的手机上打开一次
+    （两条路的对照见 <code class="inline-code">docs/user-guide/subscription.md</code> 的「先选一条托管路」）；
     ③ 含考试发布时，考试名称、时间、考场以及 <code class="inline-code">DESCRIPTION</code> 里的座位号会进入那份公开产物，
     不愿意公开就用 <code class="inline-code">--no-exams</code>；
     ④ <strong>课程 UID 已升到 v2（0.8.0）</strong>：课程名不再参与身份，改课名走原地更新
@@ -552,9 +556,10 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
   </ul>
   <div class="callout warnbox" style="margin-top:1.3rem">
     <b>订阅通路的例外通道要说实话：</b><code class="inline-code">subscribe</code> 的风险模型与上面几条不同——
-    它把课表放到一个<strong>匿名可读</strong>的公开地址上，而发布仓库本身是公开的，
-    匿名浏览分支就能看到 <code class="inline-code">&lt;token&gt;.ics</code> 的文件名。
-    所以随机 token 挡不住「会看分支列表的人」，<strong>转发 URL 等于授权</strong>。
+    它把课表放到一个<strong>匿名可读</strong>的地址上。托管因此<strong>推荐私有仓 + Cloudflare Pages</strong>：
+    那条路上随机 token 就是唯一那道门槛，而且真的挡得住人。走公开仓 + GitHub Pages 时
+    匿名浏览分支就能看到 <code class="inline-code">&lt;token&gt;.ics</code> 的文件名，
+    token 挡不住「会看分支列表的人」。<strong>两条路上转发 URL 都等于授权</strong>。
     配套约束是：发布分支恒为无父孤儿单提交（旧版本不进 git 历史）、强推前有 tree 护栏、
     状态文件收紧权限写盘、泄露疑虑时 <code class="inline-code">subscribe rotate</code> 换链接。
     不愿意把考试名称、考场与座位号放进那份公开产物，就带 <code class="inline-code">--no-exams</code>。

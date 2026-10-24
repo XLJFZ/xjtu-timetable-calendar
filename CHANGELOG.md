@@ -8,6 +8,15 @@
 
 ## [未发布]
 
+暂无。当前版本号 = `pyproject.toml` 里的 `0.9.3`。
+
+---
+
+## [0.9.3] - 2026-10-25
+
+**一条：把「跑过 `export` 就把下一次发布拦死」这个根因修掉了。** 产物字节、发布事务、
+撤销通路、`export` 自己的行为一律未动 —— 变的是那道门怎么读台账差异。
+
 - **`export` 之后下一次 `subscribe push` 不再被自己的门拦死**（`subscribe.py` 的
   `_difference_is_only_time_pruning` + `check_local_compatibility` 新增 `now=` 注入口）。
   根因：`export` 与发布**共用同一份课程台账**，而台账按 D2/D10 会剪掉原定时刻已过去的行 ⇒
@@ -22,8 +31,6 @@
   用例 `test_time_pruned_ledger_rows_pass_the_gate_while_future_ones_do_not` 钉住放行与拒绝两侧，
   `test_push_goes_through_after_export_pruned_the_ledger` 钉端到端（把修复暂存掉复跑，两条都红）。
   **`export` 的行为一字未改**：它照旧回写台账（CD8/§7 那条决策不变），变的是门看穿了自己造的差异。
-
----
 
 ## [0.9.2] - 2026-10-24
 

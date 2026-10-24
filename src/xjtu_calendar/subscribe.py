@@ -17,7 +17,7 @@ import secrets
 import subprocess
 import urllib.error
 import urllib.request
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -113,6 +113,12 @@ class SubscriptionState:
     #: 旧版本工具读不出也写不回这个字段（`from_dict` 忽略未知键、`to_dict` 走 `asdict`），
     #: 降级再升回来会重走一次迁移分支，而那时留底已是 v2 产物 ⇒ 候选空集、无副作用（CD17）。
     uid_recipe: int | None = None
+    #: 误删恢复的"重新编号计数器"：``stable_course_key -> 第几次重新编号``。
+    #: 空 dict（= 从没用过 `--revive`）时 UID 配方与 0.9.3 逐字节相同 —— 这个不变量由
+    #: `test_revive_salt_is_absent_by_default_and_rekeys_when_given` 与
+    #: `test_push_without_revive_is_byte_identical` 一起钉住。
+    #: 机制与代价见 docs/design/2026-10-11-subscription-followups.md §16。
+    revive_salts: dict[str, int] = field(default_factory=dict)
 
     @property
     def subscription_url(self) -> str:
@@ -133,7 +139,12 @@ class SubscriptionState:
         return None
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        data = asdict(self)
+        if not self.revive_salts:
+            # 从没用过 `--revive` 的人，状态文件与 0.9.3 逐字节相同（键整个省略，而不是写个空表）。
+            # 产物字节的不变量另有 golden 用例钉；这条管的是"别给没这功能的人凭空多一行"。
+            del data["revive_salts"]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> SubscriptionState:
@@ -155,7 +166,28 @@ class SubscriptionState:
             # 缺失 = v0.7.x 写的文件（CD7）；坏值（手改/半写）按缺失处理，绝不因为
             # 一个读不懂的整数拒绝加载状态——迁移分支的最坏后果只是「多算一次空集」。
             uid_recipe=_parse_uid_recipe(data.get("uid_recipe")),
+            revive_salts=_parse_revive_salts(data.get("revive_salts")),
         )
+
+
+def _parse_revive_salts(value: object) -> dict[str, int]:
+    """状态文件里的重新编号计数器：只收「字符串键 → 正整数」，其余一律丢掉。
+
+    与 `_parse_uid_recipe` 同一个口径：**读不懂的字段按缺失处理，绝不因为一个手改坏的
+    JSON 拒绝加载状态**。丢掉脏键而不是崩，代价只是那一门课不重新编号 —— 比"整个订阅
+    状态加载失败、用户以为订阅坏了"轻得多。非正数（0 / 负 / 布尔）同样丢：盐值 0 必须与
+    "缺席"同义，否则旧状态里一个 0 就会悄悄改掉 UID。
+    """
+    if not isinstance(value, dict):
+        return {}
+    salts: dict[str, int] = {}
+    for key, raw in value.items():
+        if not isinstance(key, str) or not key.strip():
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+            continue
+        salts[key] = raw
+    return salts
 
 
 def _parse_uid_recipe(value: object) -> int | None:

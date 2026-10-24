@@ -146,7 +146,6 @@ def test_uid_differs_by_date(sample_meeting: CourseMeeting) -> None:
 def test_uid_differs_by_semester_and_course(sample_meeting: CourseMeeting) -> None:
     base = make_uid("2026-fall", sample_meeting, "2026-09-11")
     assert base != make_uid("2027-spring", sample_meeting, "2026-09-11")
-
     other = CourseMeeting(
         course_id="OTHER-1",
         course_name="另一门课",
@@ -155,6 +154,35 @@ def test_uid_differs_by_semester_and_course(sample_meeting: CourseMeeting) -> No
         weeks=[1],
     )
     assert base != make_uid("2026-fall", other, "2026-09-11")
+
+
+def test_revive_salt_is_absent_by_default_and_rekeys_when_given() -> None:
+    """**误删恢复出口的配方纪律：盐值缺席 ⇒ 字节不变；给了 ⇒ 只换那一门课。**
+
+    0.9.4 的 `subscribe push --revive <课程号>` 要在订阅状态里存一份"重新编号计数器"，
+    让被误删的那门课换 UID 重发（ICSx⁵ 的删除记忆按 UID 记，同一 UID 再出现它不补 ——
+    机制上没有第二条路，见 `docs/design/2026-10-11-subscription-followups.md` §16）。
+    代价必须被这条用例钉住：**从没用过这个旗标的人，UID 与今天逐字节相同**，
+    否则一次"救一节课"会变成整学期在所有设备上重收。
+    """
+    meeting = CourseMeeting("DEMO-1001", "示例课程甲", 5, [1, 2], [1, 2, 3])
+    pinned = "7a432aa03b4c8d0b78f09971dfd5bf08@xjtu-timetable-calendar"
+
+    # 默认（不传 / 传 None）必须等于 0.9.3 及以前算出来的那个值
+    assert make_uid("2026-fall", meeting, "2026-09-11") == pinned
+    assert make_uid("2026-fall", meeting, "2026-09-11", revive_salt=None) == pinned
+
+    # 给了盐值 ⇒ 换 UID，且同一个盐值稳定、不同盐值再换一次
+    revived = make_uid("2026-fall", meeting, "2026-09-11", revive_salt=1)
+    assert revived != pinned
+    assert revived == make_uid("2026-fall", meeting, "2026-09-11", revive_salt=1)
+    assert revived != make_uid("2026-fall", meeting, "2026-09-11", revive_salt=2)
+
+    # 盐值只作用于传入的那次调用：另一门课不受影响
+    other = CourseMeeting("DEMO-2002", "示例课程乙", 5, [3, 4], [1, 2, 3])
+    assert make_uid("2026-fall", other, "2026-09-11") == make_uid(
+        "2026-fall", other, "2026-09-11", revive_salt=None
+    )
 
 
 def test_uid_ignores_location_and_time_changes(sample_meeting: CourseMeeting) -> None:

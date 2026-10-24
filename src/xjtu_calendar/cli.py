@@ -246,6 +246,16 @@ def build_parser() -> argparse.ArgumentParser:
         "或恢复凭据**读不懂**这两格不在本旗标范围内，只能由 subscribe repair 处理）",
     )
     push_p.add_argument(
+        "--revive",
+        action="append",
+        default=[],
+        metavar="课程号",
+        help="把手机上误删的那门课重新编号后再发一次（可重复）。ICSx⁵ 的删除记忆按 UID 记，"
+        "同一 UID 再出现它不会补回来，所以救回来的唯一办法是让这门课换个 UID。"
+        "代价：这门课在所有设备上算「旧事件消失 + 新事件出现」，忽略撤销字段的客户端"
+        "（ColorOS）上旧那条会永久残留。只对订阅通路有意义，`export` 不认这个旗标。",
+    )
+    push_p.add_argument(
         "--include-calendar-events",
         action="store_true",
         help="把学期配置 events 段里的校历事件一起发布（默认不带，与 export 同口径）。"
@@ -1768,14 +1778,72 @@ def _require_compatible_local_state(
     return compat
 
 
+def _resolve_revive_requests(cfg: Settings, semester: str, requested: list[str]) -> list[str]:
+    """把 `--revive` 点名的课换算成 `stable_course_key`，认不出来就拒绝发布。
+
+    接受两种写法：课程号（`course_id`，也就是 `stable_course_key` 本身），或课程名
+    （`course_id` 缺失时配方退回 `name:课程名`，CD16 —— 那种行对改名敏感，所以按名字
+    点名是有意支持的，不是兜底）。
+
+    刻意**不静默忽略**认不出的值：用户点名的就是一节课，悄悄什么都不做比报错危险。
+    """
+    if not requested:
+        return []
+    path = cfg.raw_timetable_path(semester)
+    if not path.is_file():
+        raise XjtuCalendarError(
+            f"要用 --revive 就得先有本学期的课表快照：{path} 不存在",
+            hint="先运行 fetch --semester " + str(semester) + "，再带 --revive 重跑 push。",
+        )
+    from .parser import TimetableParser
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    parser = TimetableParser()
+    _, meetings = parser.parse(payload)
+    keys = {m.stable_course_key for m in meetings}
+    by_name = {m.course_name.strip(): m.stable_course_key for m in meetings if m.course_name}
+
+    resolved: list[str] = []
+    unknown: list[str] = []
+    for raw in requested:
+        want = raw.strip()
+        if want in keys:
+            resolved.append(want)
+        elif want in by_name:
+            resolved.append(by_name[want])
+        else:
+            unknown.append(want)
+    if unknown:
+        raise XjtuCalendarError(
+            f"--revive 点名的课在本学期课表里找不到：{'、'.join(sorted(unknown))}",
+            hint="可点名的值来自当前快照：先跑 diff 或看课表里的课程号；"
+            "已经不在课表上的课不需要 revive —— 它本来就该以撤销形态退场。",
+        )
+    # 同一门课点两次只算一次（盐值只 +1）
+    return sorted(set(resolved))
+
+
+def _revived_salts(state: subscribe.SubscriptionState, keys: list[str]) -> dict[str, int]:
+    """在现有计数器上给点名的课各 +1，返回**新**的盐值表（不改传入的 state）。"""
+    salts = dict(state.revive_salts)
+    for key in keys:
+        salts[key] = salts.get(key, 0) + 1
+    return salts
+
+
 def _publish_with_journal(
     cfg: Settings,
     state: subscribe.SubscriptionState,
     semester: str,
     result_ics: ExportResult,
     migrating: bool,
+    revive_salts: dict[str, int] | None = None,
 ) -> subscribe.PublishResult:
     """`push` 与 `rotate` **共用**的那一条发布事务（2026-10-15 审阅 P0-01）。
+
+    ``revive_salts``：本次构建实际用的重新编号表（误删恢复，§16）。**只有发布成功才回写**
+    进状态文件 —— 中途被门拦下时计数器不许前进，否则下一次构建的 UID 与"最后一次已发布
+    版本"对不上，凭空多一次重新编号。传 ``None`` 表示这次没有新的编号请求。
 
     顺序就是全部契约（spec §5 不变量 1—3）：准备稿 → 推送 → 提升已发布凭据 → 回写本地
     四样。rotate 过去直接调 `publish()` 再自己回写，等于绕过前两步：换 token 补发成功后
@@ -1851,8 +1919,11 @@ def _publish_with_journal(
     # 迁移标记是这一串回写的**最后一步**（CD7/§5 不变量 3）：发出去才算迁移过。
     # 判据只看状态文件（不猜 UID），所以「没有留底 ⇒ 没有旧 UID 可撤」的第一次成功发布
     # 也要写上标记（§7：直接 `uid_recipe: 2`、无撤销），否则下次 push 还会重走迁移分支。
-    if migrating:
-        subscribe.save_state(cfg, replace(state, uid_recipe=UID_RECIPE_VERSION))
+    updated = replace(state, uid_recipe=UID_RECIPE_VERSION) if migrating else state
+    if revive_salts is not None and revive_salts != state.revive_salts:
+        updated = replace(updated, revive_salts=revive_salts)
+    if updated is not state:
+        subscribe.save_state(cfg, updated)
     return res
 
 
@@ -1962,6 +2033,16 @@ def _subscribe_push(
         include_calendar_events=getattr(args, "include_calendar_events", False),
         baseline_text=baseline_text,
     )
+    # 误删恢复（§16）：把 --revive 点名的课在计数器上 +1，本次构建就带新盐值。
+    # 只改这几门课的 UID，其余逐字节不变 —— 这条不变量由用例钉住。
+    revive_keys = _resolve_revive_requests(cfg, semester, list(getattr(args, "revive", []) or []))
+    revive_salts = _revived_salts(state, revive_keys)
+    if revive_keys:
+        print(
+            f"重新编号 {len(revive_keys)} 门课（误删恢复）："
+            + "、".join(revive_keys)
+            + "；它们在每台客户端上都会算「旧事件消失 + 新事件出现」。"
+        )
     result_ics = build_ics_for_semester(
         cfg,
         semester,
@@ -1971,13 +2052,16 @@ def _subscribe_push(
         include_calendar_events=getattr(args, "include_calendar_events", False),
         published_baseline_text=baseline_text if migrating else None,
         allow_mass_cancellation=getattr(args, "allow_mass_cancellation", False),
+        revive_salts=revive_salts,
     )
     # 自动但不静默（CD11）：迁移豁免门 2，但规模必须在这一刻、**发布之前**说清楚。
     # `published_baseline_text` 只有 push 会传（CD3）：`export` 的产物是手工导入的，
     # 把几百条撤销交给一个永不回源的客户端比不迁移更糟。
     if result_ics.migration_summary:
         _print_migration_notice(result_ics.migration_summary)
-    res = _publish_with_journal(cfg, state, semester, result_ics, migrating)
+    res = _publish_with_journal(
+        cfg, state, semester, result_ics, migrating, revive_salts=revive_salts
+    )
     if res.outcome is subscribe.PublishOutcome.NO_CHANGE:
         print("无变化，跳过推送。")
         # 幂等跳过也要给链接：用户可能第一次没记下，这一支是他唯一能看到入口的地方。
@@ -2074,6 +2158,7 @@ def _subscribe_rotate(
             include_calendar_events=include_calendar_events,
             published_baseline_text=baseline_text if migrating else None,
             allow_mass_cancellation=allow_mass_cancellation,
+            revive_salts=state.revive_salts,
         )
         probe_cancel = int(str(probe.info.get("exam_cancellations", 0)))
         probe_migration = probe.migration_summary

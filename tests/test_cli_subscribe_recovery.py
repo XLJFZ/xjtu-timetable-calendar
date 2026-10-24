@@ -1588,3 +1588,130 @@ def test_push_goes_through_after_export_pruned_the_ledger(
     monkeypatch.setattr(subscribe, "now_local", lambda: late)
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     assert "原定时刻已过" in capsys.readouterr().err or True
+
+
+def _live_uids_by_course(text: str) -> dict[str, set[str]]:
+    """产物里的 live 事件按课程号分组：``{course_id: {UID, ...}}``（DESCRIPTION 带课程编号）。"""
+    from icalendar import Calendar
+
+    grouped: dict[str, set[str]] = {}
+    for cal in Calendar.from_ical(text).walk("VEVENT"):
+        if str(cal.get("status") or "").upper() == "CANCELLED":
+            continue
+        uid = str(cal.get("uid"))
+        desc = str(cal.get("description") or "")
+        key = next(
+            (line.split("：", 1)[1].strip() for line in desc.splitlines() if "课程编号：" in line),
+            "?",
+        )
+        grouped.setdefault(key, set()).add(uid)
+    return grouped
+
+
+def _cancelled_uids(text: str) -> set[str]:
+    from icalendar import Calendar
+
+    return {
+        str(ev.get("uid"))
+        for ev in Calendar.from_ical(text).walk("VEVENT")
+        if str(ev.get("status") or "").upper() == "CANCELLED"
+    }
+
+
+def _two_future_rows() -> list[dict[str, str]]:
+    """两门课都排在第 10-15 周：相对挂钟一定还没到点，撤销候选才不是空话。"""
+    return [
+        payload_row(KCM="示例课程甲", KCH="D-1", ZCMC="10-12周"),
+        payload_row(KCM="示例课程乙", KCH="D-2", ZCMC="13-15周"),
+    ]
+
+
+def test_revive_rekeys_only_that_course_and_cancels_the_old_uid(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**`--revive` 的契约：只有被点名的那门课换 UID，旧 UID 以撤销形态退场。**
+
+    机制与代价见 `docs/design/2026-10-11-subscription-followups.md` §16：ICSx⁵ 的删除记忆
+    按 UID 记，手机上误删的那节课同 UID 再出现也不会补回来 ⇒ 唯一的救法是换个 UID。
+    这条用例钉三件事：① 没被点名的课 UID 一字不动（否则"救一节课"变成整学期重收）；
+    ② 旧 UID 全部以 `STATUS:CANCELLED` 带着 ⇒ 其他设备上那条旧的会被撤掉，不是静默双份；
+    ③ 一门课的规模不会触发熔断（门 2 的双条件是 ≥10 条且 ≥30%，这里远不到）。
+    """
+    home, origin = env
+    _rewrite_rows(home, _two_future_rows())
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    token = _token(home)
+    first = _git("show", f"cal:{token}.ics", cwd=origin)
+
+    assert main(["subscribe", "push", "--semester", SEMESTER, "--revive", "D-1"]) == 0
+    out = capsys.readouterr().out
+    assert "重新编号" in out, "自动但不静默：换了哪门课必须说"
+    second = _git("show", f"cal:{token}.ics", cwd=origin)
+
+    before = _live_uids_by_course(first)
+    after = _live_uids_by_course(second)
+    assert set(before) == set(after) == {"D-1", "D-2"}
+    assert before["D-1"] != after["D-1"], "被点名的那门课必须换 UID"
+    assert before["D-2"] == after["D-2"], "没被点名的课一个字节都不许动"
+    assert before["D-1"] & after["D-1"] == set(), "同一门课不许新旧混着发"
+
+    cancelled = _cancelled_uids(second)
+    assert before["D-1"] <= cancelled, "旧 UID 必须带 STATUS:CANCELLED 退场，不能静默消失"
+    assert not (after["D-1"] & cancelled), "新 UID 是 live，不许同时被标成已取消"
+
+    state = subscribe.load_state(Settings(home=home), SEMESTER)
+    assert state is not None and state.revive_salts == {"D-1": 1}
+
+    # 再点一次 ⇒ 计数器前进、再换一批 UID（同一门课可以反复救）
+    assert main(["subscribe", "push", "--semester", SEMESTER, "--revive", "D-1"]) == 0
+    capsys.readouterr()
+    third = _git("show", f"cal:{token}.ics", cwd=origin)
+    assert _live_uids_by_course(third)["D-1"] != after["D-1"]
+    assert _live_uids_by_course(third)["D-2"] == after["D-2"]
+    state = subscribe.load_state(Settings(home=home), SEMESTER)
+    assert state is not None and state.revive_salts == {"D-1": 2}
+
+
+def test_revive_refuses_unknown_course_and_writes_nothing(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**点错了课号必须拒绝，而不是"什么都不做也算成功"。**
+
+    用户点名要救的就是一节课，静默忽略比报错危险得多（本项目一贯的 fail-closed）。
+    拒绝还必须在构建之前：计数器不许前进、远端不许多一次发布。
+    """
+    home, origin = env
+    _rewrite_rows(home, _two_future_rows())
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    tip_before = _git("rev-parse", "cal", cwd=origin)
+
+    code = main(["subscribe", "push", "--semester", SEMESTER, "--revive", "不存在课程号"])
+    assert code != 0
+    err = capsys.readouterr().err
+    assert "找不到" in err
+    assert _git("rev-parse", "cal", cwd=origin) == tip_before, "被拦住就不许推任何东西"
+    state = subscribe.load_state(Settings(home=home), SEMESTER)
+    assert state is not None and state.revive_salts == {}, "被拦住的这次不许留下计数器"
+
+
+def test_push_without_revive_leaves_salts_absent_and_uids_stable(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**从没用过 `--revive` 的人，状态里没有这份表、UID 与 0.9.3 逐字节相同。**
+
+    配方扩展最要紧的一条不变量：默认路径零变化。这里用"同一快照两次 push ⇒ NO_CHANGE"
+    作端到端证据（内容哈希相同才会跳过），再加一条状态文件的形状检查。
+    """
+    home, origin = env
+    _rewrite_rows(home, _two_future_rows())
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert "无变化" in capsys.readouterr().out
+    raw = (home / "subscribe" / f"subscribe-{SEMESTER}.json").read_text(encoding="utf-8")
+    assert '"revive_salts"' not in raw, "没用过就不该往状态文件里塞空表"

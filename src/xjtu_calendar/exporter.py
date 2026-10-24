@@ -83,12 +83,22 @@ def make_uid(
     semester_key: str,
     meeting: CourseMeeting,
     day: str,
+    *,
+    revive_salt: int | None = None,
 ) -> str:
     """为「某学期、某课程的某一次实际上课」生成稳定 UID（配方 v2）。
 
-    payload = ``semester_key | stable_course_key | day | periods_token``。
+    payload = ``semester_key | stable_course_key | day | periods_token``，
+    给了 ``revive_salt`` 时再追加一项 ``r<盐值>``。
     刻意**不纳入**时间、地点与课程名：作息调整、换教室、**改名**都应当被视作
     「同一事件的新版本」由客户端原地更新（v0.8.0 起改名不再产生新事件，CD2）。
+
+    ``revive_salt`` 是 0.9.4 的误删恢复出口（`subscribe push --revive <课程号>`，
+    设计见 `docs/design/2026-10-11-subscription-followups.md` §16）：ICSx⁵ 的删除记忆
+    按 UID 记，同一 UID 再出现它不补 ⇒ 要把手机上误删的那节课救回来，只能让它换个 UID。
+    **默认 `None` 时 payload 与 0.9.3 及以前逐字节相同**，这条不变量由
+    `test_revive_salt_is_absent_by_default_and_rekeys_when_given` 钉住 ——
+    否则"救一节课"会变成整学期在所有设备上重收一遍。
 
     v1 配方（≤ 0.7.x，形状存档于此，代码里已无对应实现）在 ``stable_course_key``
     之后多了一项 ``course_name.strip()``，即
@@ -118,14 +128,15 @@ def make_uid(
     True
     """
     periods_token = ",".join(str(p) for p in sorted(set(meeting.periods)))
-    payload = "|".join(
-        [
-            semester_key.strip(),
-            meeting.stable_course_key.strip(),
-            day.strip(),
-            periods_token,
-        ]
-    )
+    parts = [
+        semester_key.strip(),
+        meeting.stable_course_key.strip(),
+        day.strip(),
+        periods_token,
+    ]
+    if revive_salt is not None:
+        parts.append(f"r{revive_salt}")
+    payload = "|".join(parts)
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
     return f"{digest}@{UID_DOMAIN}"
 
@@ -176,6 +187,7 @@ def build_events(
     *,
     with_override_notes: bool = True,
     collision_sink: MutableSet[str] | None = None,
+    revive_salts: Mapping[str, int] | None = None,
 ) -> list[CalendarEvent]:
     """把课程安排展开成逐次上课的日历事件。
 
@@ -274,7 +286,12 @@ def build_events(
                     f"{exc}（课程：{meeting.course_name}）"
                 ) from exc
 
-            uid = make_uid(semester.key, meeting, day.isoformat())
+            uid = make_uid(
+                semester.key,
+                meeting,
+                day.isoformat(),
+                revive_salt=(revive_salts or {}).get(meeting.stable_course_key),
+            )
             if uid in seen_summaries:
                 # 同一课程同一天重复导入时去重，避免日历里出现双份。同名异名的处置一样
                 # （保留首个、丢弃后者）；异名 ⇒ 碰撞，冒给 collision_sink（终审裁定的
@@ -344,7 +361,12 @@ def build_events(
                     f"{exc}（课程：{meeting.course_name}）"
                 ) from exc
 
-            uid = make_uid(semester.key, meeting, day.isoformat())
+            uid = make_uid(
+                semester.key,
+                meeting,
+                day.isoformat(),
+                revive_salt=(revive_salts or {}).get(meeting.stable_course_key),
+            )
             if uid in seen_summaries:
                 if (
                     seen_summaries[uid] != meeting.course_name.strip()
@@ -742,8 +764,13 @@ def build_ics_for_semester(
     cancel_expiry_at: datetime | None = None,
     allow_mass_cancellation: bool = False,
     published_baseline_text: str | None = None,
+    revive_salts: Mapping[str, int] | None = None,
 ) -> ExportResult:
     """按学期构建 RFC 5545 文本。export 与 subscribe push 共用的唯一管线。
+
+    ``revive_salts``：``stable_course_key -> 重新编号计数器``，只影响列出的那几门课的 UID
+    （0.9.4 的 `subscribe push --revive`，见 §16）。**默认 `None` ⇒ 产物与 0.9.3 逐字节相同。**
+    只属于发布通路：`export` 不传它，手工导入的人没有"订阅端删除记忆"这个问题。
 
     ``calendar_name``：``None`` 表示由课表数据自动推导日历标题
     （「西安交通大学课表 · 大三-上」，见 :mod:`xjtu_calendar.naming`）；显式给定
@@ -861,7 +888,13 @@ def build_ics_for_semester(
     #: 形状）。碰撞意味着"分不清哪行是哪门课"，此时任何撤销判断都不可信——收集起来，
     #: 下面用它把整条课程撤销通路短路成不撤销。调课第二遍在 build_events 内共用同一个 sink。
     course_uid_collisions: set[str] = set()
-    events = build_events(meetings, academic, schedules, collision_sink=course_uid_collisions)
+    events = build_events(
+        meetings,
+        academic,
+        schedules,
+        collision_sink=course_uid_collisions,
+        revive_salts=revive_salts,
+    )
     logger.info("已展开：%d 次实际上课", len(events))
 
     # --- 考试事件（并进**日期过滤之前**；§6.5 第 1 条）---

@@ -166,6 +166,10 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
   换地址推不动任何东西；而隔几天再 push 会因为课表随日期变化而发出一次用户没要的改版），
   用只读的 `subscribe status` 确认即可。
 - 换 token（`subscribe rotate`）会让所有已添加的 URL 立刻失效，需用户明确同意。
+- 用户说"我在手机上不小心删了一节课"时，出口是 `subscribe push --semester <学期>
+  --revive <课程号>`（**0.10.0 起才有**；更早的版本报 `unrecognized arguments`，只能移除订阅重加）。
+  它按课程号生效 ⇒ 会把那门课**全部**排次重新编号，代价与"ColorOS 上旧那条会残留"要一并说清；
+  这是误操作的补救，不是刷新手段，别主动提议用户跑。
 - iOS / macOS 用户可以**试** init / push / rotate / status 四处打印的那条 `webcal://` 链接
   （它只是把同一行 `https://` URL 换个 scheme）。「点开就弹订阅确认」**没有在本项目真机验证过**，
   只能说「通常」，失败就回手动路径：iOS「设置 → 日历 → 账户 → 添加账户 → 其他 →

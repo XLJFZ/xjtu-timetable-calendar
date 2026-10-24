@@ -319,8 +319,7 @@ ICSx⁵ 会**尊重你在手机上做的删除**：手删一条之后，下一�
 `subscribe push` 自己回来（2026-10-24 真机实测，判据见
 `docs/design/2026-10-11-subscription-followups.md` §13）。
 
-**下一版（计划 0.10.0，尚未发布）**才有一条出口 —— 现在从 PyPI 装的版本
-认不出这个旗标（会报 `unrecognized arguments: --revive`）。等它发出来之后，在电脑上跑：
+0.10.0 起有一条出口（更早的版本会报 `unrecognized arguments: --revive`）。在电脑上跑：
 
 ```bash
 python -m xjtu_calendar subscribe push --semester <学期> --revive <课程号>
@@ -337,6 +336,12 @@ python -m xjtu_calendar subscribe push --semester <学期> --revive <课程号>
 
 0.9.3 及更早没有这条出口，唯一的恢复手段是在 ICSx⁵ 里移除该订阅再重新添加 —— 那会清掉
 整本日历的本地状态（包括你自己手删记录的历史），代价比换 UID 大得多。
+
+**这条读数的边界**：2026-10-25 的真机验证是**单账户、单样本、界面级判据**（删的是
+`COMP401827` 里 2027-01-02 那节，换号后同步一次就回来了，且当场确认只点了同步、没有移除重加）。
+它证明的是 ICSx⁵；**ColorOS 上"旧那条会永久残留"目前仍是推断，没有真机读数**。
+另有一条真实代价别忽略：重排一门课会给产物添上该课全部旧 UID 的撤销占位（那门课 8 节 ⇒ +8 条
+`STATUS:CANCELLED`），它们各自要等到原定时刻过去才退场。
 
 ### 隐私口径
 

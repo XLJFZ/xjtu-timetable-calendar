@@ -159,7 +159,7 @@ def test_uid_differs_by_semester_and_course(sample_meeting: CourseMeeting) -> No
 def test_revive_salt_is_absent_by_default_and_rekeys_when_given() -> None:
     """**误删恢复出口的配方纪律：盐值缺席 ⇒ 字节不变；给了 ⇒ 只换那一门课。**
 
-    0.9.4 的 `subscribe push --revive <课程号>` 要在订阅状态里存一份"重新编号计数器"，
+    0.10.0 的 `subscribe push --revive <课程号>` 要在订阅状态里存一份"重新编号计数器"，
     让被误删的那门课换 UID 重发（ICSx⁵ 的删除记忆按 UID 记，同一 UID 再出现它不补 ——
     机制上没有第二条路，见 `docs/design/2026-10-11-subscription-followups.md` §16）。
     代价必须被这条用例钉住：**从没用过这个旗标的人，UID 与今天逐字节相同**，

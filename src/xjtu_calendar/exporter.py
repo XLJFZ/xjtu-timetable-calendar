@@ -93,7 +93,7 @@ def make_uid(
     刻意**不纳入**时间、地点与课程名：作息调整、换教室、**改名**都应当被视作
     「同一事件的新版本」由客户端原地更新（v0.8.0 起改名不再产生新事件，CD2）。
 
-    ``revive_salt`` 是 0.9.4 的误删恢复出口（`subscribe push --revive <课程号>`，
+    ``revive_salt`` 是 0.10.0 的误删恢复出口（`subscribe push --revive <课程号>`，
     设计见 `docs/design/2026-10-11-subscription-followups.md` §16）：ICSx⁵ 的删除记忆
     按 UID 记，同一 UID 再出现它不补 ⇒ 要把手机上误删的那节课救回来，只能让它换个 UID。
     **默认 `None` 时 payload 与 0.9.3 及以前逐字节相同**，这条不变量由
@@ -769,7 +769,7 @@ def build_ics_for_semester(
     """按学期构建 RFC 5545 文本。export 与 subscribe push 共用的唯一管线。
 
     ``revive_salts``：``stable_course_key -> 重新编号计数器``，只影响列出的那几门课的 UID
-    （0.9.4 的 `subscribe push --revive`，见 §16）。**默认 `None` ⇒ 产物与 0.9.3 逐字节相同。**
+    （0.10.0 的 `subscribe push --revive`，见 §16）。**默认 `None` ⇒ 产物与 0.9.3 逐字节相同。**
     只属于发布通路：`export` 不传它，手工导入的人没有"订阅端删除记忆"这个问题。
 
     ``calendar_name``：``None`` 表示由课表数据自动推导日历标题

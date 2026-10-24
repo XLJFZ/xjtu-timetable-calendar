@@ -1180,6 +1180,30 @@ ICSx⁵ 对仍在产物里的 live 真课同样尊重本地删除），唯一的
 4. 它是**误操作的补救**，不是日常动作 ⇒ 文案要写清"只在确实误删时用，代价是那门课在所有
    设备上重收一次"，否则会有人拿它当"刷新"用。
 
-**待拍的问题只有一个**：要不要为了"救回一门误删的课"引入这个可选出口。
-要 ⇒ 我按 TDD 落（配方扩展 + 默认零字节变化的 golden 用例 + 撤销交互用例 + CLI + 文档），
-随下一版发；不要 ⇒ 对外口径就停在现在这句：「别在手机上删课，删了只能移除订阅重加」。
+### 16.1 已拍：做（2026-10-25 凌晨），实现随 0.9.4
+
+用户拍「做 --revive（要翻 UID 配方那条口径）」⇒ 已按 TDD 落地，`subscribe push --revive <课程号>`。
+
+**翻掉的口径**：`2026-10-12-course-cancellation-uid-v2.md` 的 non-goal 写着「不改课程 UID
+配方」。**课程侧**现在多了一个默认缺席的可选盐值组件（`r<计数>` 追加在 payload 末尾），
+**考试侧配方一字未动**。这条翻案只在这一节记，不去改那份已发布规格的原文（它是当时的
+决策记录，改了就成了事后重写历史）。
+
+实现落点：`exporter.make_uid(..., revive_salt=)`、`build_events` / `build_ics_for_semester`
+透传 `revive_salts`、`SubscriptionState.revive_salts`（空表时状态文件里连键都不写，
+所以没用过的人文件也与 0.9.3 相同）、`_resolve_revive_requests`（认课程号也认课程名，
+认不出就在构建之前拒绝）、`_publish_with_journal` 只在**发布成功之后**才把计数器落进状态。
+`rotate` 两处构建都带上已有盐值 ⇒ 换 token 不会把重新编号抹掉。
+
+四条待测项的落点：① 默认零字节变化 = `test_revive_salt_is_absent_by_default_and_rekeys_when_given`
++ `test_push_without_revive_leaves_salts_absent_and_uids_stable`；② 只换被点名的课 +
+旧 UID 带 `STATUS:CANCELLED` 退场 = `test_revive_rekeys_only_that_course_and_cancels_the_old_uid`；
+③ 点名不存在即拒绝、计数器不前进 = `test_revive_refuses_unknown_course_and_writes_nothing`；
+④ **熔断交互仍只到"一门课不触发"这一层**（该用例断言 exit 0，隐含没触发门 2），
+"多门课一起 revive 会不会撞 30% 阈值"**没有专门用例** —— 按 CD12 的双条件，
+一学期里同时救 ≥10 门且占未过期台账 ≥30% 才会响，真到那一步的用户本来也该停一下。
+留作已知未覆盖项，不当已验证。
+
+对外文案四处已跟上：README 的 ICSx⁵ 那条、`subscription.md` 新增「手机上误删了一节课怎么办」、
+`troubleshooting.md` 新增一条 Q&A、CHANGELOG `[未发布]`。
+`index.html` 与 setup skill 两处留到升版那次一起改（措辞要带版本号）。

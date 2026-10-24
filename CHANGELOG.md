@@ -8,7 +8,21 @@
 
 ## [未发布]
 
-暂无。当前版本号 = `pyproject.toml` 里的 `0.9.3`。
+- **新增 `subscribe push --revive <课程号>`：把手机上误删的那门课救回来**（0.9.4）。
+  判据来自 2026-10-24 线 C 的实测：ICSx⁵ 对**仍在产物里的 live 真课**同样尊重本地删除，
+  手删一节课后它不会随下一次发布自己回来，此前唯一的恢复手段是移除整本订阅再重新添加
+  （那会清掉整本日历的本地状态）。删除记忆是按 **UID** 记的 ⇒ 机制上唯一的救法是让那门课
+  换一个 UID。实现：订阅状态里加一份 `revive_salts`（`stable_course_key -> 第几次重新编号`），
+  点名一门就在计数器上 +1，`make_uid` 的 payload 末尾多一项 `r<盐值>`。
+  **默认（从没用过这个旗标）状态文件与产物字节与 0.9.3 逐字节相同** —— 盐值表为空时键整个
+  省略、盐值为 `None` 时不参与 payload，两条都有用例钉
+  （`test_push_without_revive_leaves_salts_absent_and_uids_stable`、
+  `test_revive_salt_is_absent_by_default_and_rekeys_when_given`）。
+  代价必须说清：被点名的那门课在**每台**客户端上都是「旧事件消失 + 新事件出现」，旧 UID 会以
+  `STATUS:CANCELLED` 带着退场（Google / ICSx⁵ 会清掉，**ColorOS 不会** ⇒ 那里会留下一条幽灵）；
+  没被点名的课一个字节都不动。点名的课号在当前快照里找不到 ⇒ 构建之前就拒绝、计数器不前进。
+  `rotate` 会带上状态里已有的盐值，换 token 不会把重新编号抹掉。设计、代价与四条待测项见
+  `docs/design/2026-10-11-subscription-followups.md` §16。
 
 ---
 

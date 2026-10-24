@@ -1,0 +1,76 @@
+name: Release on tag
+
+# 推一个 `v*` 附注标签 = 自动建 GitHub Release 并把 sdist + wheel 挂上去。
+#
+# 为什么要新加一条、而不是复用 `release.yml`：`release.yml` 监听 `release: published`，
+# 而那一步过去必须由人在网页上点「发布发行版」。而**用仓库自带的 GITHUB_TOKEN 建出来的
+# Release 不会再去触发别的工作流**（GitHub 刻意阻止这种递归触发）——所以就算这条建好了
+# Release，`release.yml` 也不会跑，构建与上传必须在**本条里一次做完**。
+#
+# 万一上面那条平台规则其实不成立（例如 GitHub 改了行为），最坏结果是 `release.yml` 也对
+# 同一个 Release 跑一遍、用 `--clobber` 重挂同一批资产：多一次构建，不产生重复文件、
+# 不动 PyPI。失败模式是温和的，所以这里不额外加互斥锁。
+#
+# 与 `release.yml` 的分工：本条 = 推 tag 自动跑；`release.yml` 留给人手工建 Release 的场合
+# （例如从别的分支补发、或草稿改好后手点）。两条都用 `gh release upload --clobber`，
+# 所以谁跑第二次都只是覆盖资产。
+#
+# PyPI 仍然**只有手动**（`publish-pypi.yml`，workflow_dispatch，且它自己从被触发的 ref 构建
+# ——所以触发时务必钉在 tag 上，不要用 main）。不可撤回的上传不交给自动触发，这是本仓的
+# 既定红线（AGENTS.md「提交 ≠ 推送」同一族）。
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-on-tag-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: create release & attach assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # 要读附注标签的正文当发行说明，浅克隆拿不到 tag 对象。
+          fetch-depth: 0
+
+      - name: Create the GitHub Release from the annotated tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在（多半是人手工建的），不重复创建、也不改它的说明"
+          else
+            git fetch --force --tags origin "refs/tags/$TAG" >/dev/null 2>&1 || true
+            git tag -l --format='%(contents)' "$TAG" > notes.md
+            if [ ! -s notes.md ]; then
+              echo "附注标签没有正文：不许发一个空说明的 Release（发行说明是用户看到的唯一解释）" >&2
+              exit 1
+            fi
+            gh release create "$TAG" --target "$GITHUB_SHA" --notes-file notes.md --latest
+          fi
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Sanity check metadata
+        run: |
+          python -m pip install twine
+          python -m twine check dist/*
+          ls -l dist
+
+      - name: Upload to this GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber

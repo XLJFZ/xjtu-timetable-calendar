@@ -169,9 +169,16 @@ Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**�
 
 ### 发布
 
-- **GitHub Release 全自动挂资产**：Release 一旦发布（`published`），
-  `.github/workflows/release.yml` 构建 sdist + wheel、过 `twine check`，
-  并上传到该 Release。CI 的质量门禁仍由 `ci.yml` 独立负责，两者互不干扰。
+- **GitHub Release 全自动挂资产**，有两条入口，产物完全一样：
+  - **推 `v*` 附注标签** → `.github/workflows/release-on-tag.yml` 建 Release（说明取标签正文，
+    `--latest`）并挂上 sdist + wheel。**这是常规路径，网页上不用再点任何东西。**
+  - **人手工发布 Release**（`published` 事件）→ `.github/workflows/release.yml` 构建并上传。
+    留给"标签已经在那儿、但想自己控制 Release 说明"这类场合。
+  两条为什么要分开：用仓库自带的 `GITHUB_TOKEN` 建出来的 Release **不会再触发别的工作流**
+  （GitHub 刻意阻止这种递归触发），所以自动那条必须在同一个 job 里把构建与上传做完，
+  不能指望 `release.yml` 接手。万一这条平台规则哪天变了，最坏结果是两条都跑、
+  `--clobber` 重挂同一批资产 —— 多一次构建，不产生重复文件。
+  CI 的质量门禁仍由 `ci.yml` 独立负责，发布两条都不做门禁。
 - **PyPI 走手动可信发布**：`.github/workflows/publish-pypi.yml` 需在
   Actions 页手动触发（workflow_dispatch），使用 OIDC trusted publishing，
   **仓库不保存任何 token**。一次性前置**已完成**（2026-10-07）：已在
@@ -179,8 +186,11 @@ Python 3.11 / 3.12 / 3.13 上跑上述三条；另有一个 `wheel` 任务会**�
   `xjtu-timetable-calendar`、Publisher type **GitHub Actions**、owner
   `XLJFZ`、repository `xjtu-timetable-calendar`、workflow name
   `publish-pypi.yml`、**Environment 留空**），v0.3.0 首传已自动建项目并绑定。
-  之后每次发布只需：合入升版提交 → 打 tag → 发 GitHub Release →
-  在 Actions 里点 Run workflow。PyPI 拒绝重复版本号，误发有保险。
+  之后每次发布只需：合入升版提交 → **打 tag 并推上去（Release 自己长出来）** →
+  在 Actions 里点一次 Run workflow 发 PyPI。PyPI 拒绝重复版本号，误发有保险。
+  ⚠️ 点那一下时**触发 ref 必须是 tag，不能是 main**：`publish-pypi.yml` 从被触发的 ref
+  检出自建产物，用 main 就会把"这个版本刻意不发"的东西以当前版本号发上 PyPI，
+  而版本号一旦上传改不掉（2026-10-25 差点踩到，脚本已钉在 tag 上）。
 - 版本号仍是 `pyproject.toml` 单一来源；升版后记得按上文重装 editable。
   **重装之后必查一次 `src/*.egg-info`**：`pip install -e .` 会把那份老 egg-info 再生成回来，
   而它躺在 `sys.path` 上**赢过新的 dist-info** ⇒ `tests/test_packaging.py` 两条红

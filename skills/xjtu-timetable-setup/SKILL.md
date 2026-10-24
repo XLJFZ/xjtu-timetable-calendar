@@ -134,6 +134,13 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
   推导只看"远端是不是 GitHub"，不看仓库是否私有，而私有仓上 GitHub Pages 不提供托管，
   推出来的那条是 404，且 init 不会报任何错。也就是说**按下面推荐的私有仓 + Cloudflare Pages
   走时这条默认要带**（`--url-base https://<项目名>.pages.dev/`），别指望工具替你推。
+  漏带的形状要认出来说给用户听：退出码仍是 `0`，订阅 URL 打成
+  `https://<用户名>.github.io/<仓库>/<token>.ics`，紧跟着还打印「仓库 Settings → Pages →
+  Deploy from branch」那两行 —— 而私有仓上 GitHub Pages 不提供托管，那条地址是 404。
+  （0.9.1 及更早版本到这里就没了；下一版起 `init` 会多打一段这个警告。）
+  处置照文档：手工把状态文件 `subscribe/subscribe-<学期>.json` 里的 `url_base` 改成
+  pages.dev 那个前缀，再用只读的 `subscribe status` 确认；**别**删状态文件重 init，
+  那会换掉 token。两种情况下都不要在改好之前把订阅地址交出去。
 - 证据：`subscribe status` 显示留底一致，且 `doctor --verify` 的「URL 自检」通过（HTTP 200）。
 - 必须如实告知用户两件事，不许淡化：
   1. 订阅 URL 里的随机 token **等价于凭据**，不要提交、不要发到群里；

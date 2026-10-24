@@ -1432,3 +1432,48 @@ def test_rotate_still_checks_the_unresolved_pending_when_the_local_copy_is_missi
     assert "未裁决" in err
     assert _token(home) == old_token, "被拦住就不该把 token 换掉"
     assert pending.is_file(), "准备稿是唯一的裁决线索，不许被顺手清理"
+
+
+def test_a_pruned_course_ledger_is_refused_yet_still_flag_bypassable(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**`export` 剪短课程台账：门拦住（7），但这一格是旗标**放行得了**的那一类。**
+
+    这条用例是来纠文档的账，不是来改行为的。2026-10-24 写进
+    `docs/user-guide/troubleshooting.md` 的那句「这一格不在 `--allow-unverified-baseline`
+    的放行范围内」**没有量过**：`subscribe.BYPASSABLE_INCOMPATIBILITY_REASONS` 里明确
+    列着 `course_ledger`，而 `cli._enforce_local_compatibility` 的判据是
+    `not (allow_unverified and compat.bypassable)` ⇒ 带旗标就放行，只在日志里留一条
+    warning（"SEQUENCE 基线与撤销判定可能建立在过期留底上"）。
+    那段 hint 里"不在放行范围内"那一句是按 `compat.bypassable` 拼上去的，
+    对这一格根本不会出现——先跑一次带旗标的 push，看远端收不收，比读文案可靠。
+
+    推荐处置仍然是 `repair`（旗标放行等于拿被剪短的台账当"上次发过什么"的凭据去算撤销
+    候选，漏掉的那批不会自己回来），但这是**建议**，不是门的强制。
+    """
+    home, origin = env
+    assert _init(origin) == 0
+    cfg = Settings(home=home)
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+
+    ledger = cfg.course_ledger_path(SEMESTER)
+    assert ledger.is_file(), "发布过就该有课程台账，否则下面这一格形不成"
+    original = ledger.read_bytes()
+    # 模拟 `export` 的写入：它按设计剪掉原定时刻已过去的行 ⇒ 台账比发布凭据里那份"新"
+    pruned = b"".join(original.splitlines(keepends=True)[:-1])
+    assert pruned and pruned != original, "固件的台账至少要两行，剪一行才看得出差异"
+    ledger.write_bytes(pruned)
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 7
+    err = capsys.readouterr().err
+    assert "课程台账" in err
+    assert "不在旗标的放行范围内" not in err, "这一格旗标管用，hint 不该把它说成拦死"
+
+    tip_before = _git("rev-parse", "cal", cwd=origin)
+    # 只改台账不改数据的话，旗标放行之后构建出的字节与上一版相同 ⇒ 走 NO_CHANGE、
+    # 远端一动不动，证明不了"真能发出去"。所以这里再模拟一次"下次 fetch 课变了"。
+    _rewrite_rows(home, _rows_with_b())
+    assert main(["subscribe", "push", "--semester", SEMESTER, "--allow-unverified-baseline"]) == 0
+    capsys.readouterr()
+    assert _git("rev-parse", "cal", cwd=origin) != tip_before, "旗标放行就该真的发出这一版"

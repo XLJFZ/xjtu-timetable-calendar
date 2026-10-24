@@ -322,11 +322,12 @@ Cloudflare 给的是 `"4072cca93c0596a2aabba7a6a8cf296b"` 这种不透明校验�
 - **不许变成劝阻**。用户明确选 A 就按 A 走完。setup skill 里那句"让用户自己选，别替他定"
   换成"推荐可以替用户给，注册第三方账号不能替他做"，判据不变：不替他决定，只把推荐说清楚。
 
-改动落点（本仓）：`README.md` 两条口径与「订阅 URL 的风险口径」、`docs/user-guide/subscription.md`
-（开头、「先选一条托管路」、两个小标题、隐私口径第 2 条、已知边界）、`docs/user-guide/cli-reference.md`
-的 `subscribe` 那一行、`skills/xjtu-timetable-setup/SKILL.md` 第 7 步、`index.html` 三处
-（订阅卡片、「用之前先把口径读明白」②、隐私 callout）。门户仓库另有一处卡片与 README 表格行，
-按「发版不等于同步完」回那边改。
+改动落点（本仓）：`README.md` 的「最要紧的几条口径」、风险口径那一节、路线图里两处托管措辞；
+`docs/user-guide/subscription.md`（开头、「先选一条托管路」、两个小标题、隐私口径第 2 条、
+已知边界、work 目录警告）；`docs/user-guide/cli-reference.md` 的 `subscribe` 那一行；
+`skills/xjtu-timetable-setup/SKILL.md` 第 7 步；`index.html` 三处
+（订阅卡片、「用之前先把口径读明白」②、隐私 callout）。
+门户仓库另有 `index.html` 卡片那一段与 `README.md` 的一条要点，按「发版不等于同步完」回那边改。
 
 **顺带修掉的三处过期断言**（都是同一段话里的、被 10-20 转私有作废的"仓库必须是公开的"）：
 `README.md` 风险口径那句、`index.html` 隐私 callout 那句、`subscription.md` work 目录警告里的

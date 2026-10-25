@@ -14,11 +14,17 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 from icalendar import Calendar
 
 from xjtu_calendar.academic_calendar import AcademicCalendar, DateOverride
+from xjtu_calendar.cancellation import (
+    CANCELLATION_SUMMARY,
+    LedgerEntry,
+    build_cancellation_events,
+)
 from xjtu_calendar.errors import CalendarExportError
 from xjtu_calendar.exporter import (
     PRODID,
@@ -185,8 +191,12 @@ def test_revive_salt_is_absent_by_default_and_rekeys_when_given() -> None:
     )
 
 
-def test_uid_ignores_location_and_time_changes(sample_meeting: CourseMeeting) -> None:
-    """换教室不应产生新事件，只应更新原事件——因此 UID 不含地点。"""
+def test_uid_ignores_location_changes(sample_meeting: CourseMeeting) -> None:
+    """换教室不应产生新事件，只应更新原事件——因此 UID 不含地点。
+
+    「时间」不在本条：星期/节次本来就参与 UID（改时间算新事件），由
+    `test_uid_differs_by_periods` 钉住；这个用例只证明地点不参与。
+    """
     moved = CourseMeeting(
         course_id=sample_meeting.course_id,
         course_name=sample_meeting.course_name,
@@ -941,3 +951,40 @@ def test_every_rendered_vevent_property_is_covered_by_fingerprint(
     for component in Calendar.from_ical(render_ics(events)).walk("VEVENT"):
         extra = set(component.keys()) - allowed
         assert not extra, f"该属性未被 sequence.py 的指纹覆盖: {sorted(extra)}"
+
+
+def test_rendered_cancellation_properties_are_the_minimal_set() -> None:
+    """撤销条目也要有一份属性白名单——它们**不经** SEQUENCE 指纹，漏检更隐蔽。
+
+    live 事件那条守卫盯的是「新增属性忘了进指纹」；撤销条目按 D23 不进指纹，
+    于是同一类遗漏没人接。除属性集外，这里还钉住隐私边界：台账里的标题/地点/原文
+    一律不许出现在撤销事件里。
+    """
+    tz = ZoneInfo(TZ_NAME)
+    entry = LedgerEntry(
+        uid="cancel@xjtu-timetable-calendar",
+        start=datetime(2026, 11, 1, 8, tzinfo=tz),
+        end=datetime(2026, 11, 1, 9, 35, tzinfo=tz),
+        summary="示例课程甲",
+        location="某教学楼 101",
+        description="课程编号：D-1",
+    )
+    components = list(
+        Calendar.from_ical(render_ics(build_cancellation_events([entry]))).walk("VEVENT")
+    )
+    assert len(components) == 1
+    component = components[0]
+    assert set(component.keys()) == {
+        "UID",
+        "DTSTAMP",
+        "SEQUENCE",
+        "LAST-MODIFIED",
+        "DTSTART",
+        "DTEND",
+        "SUMMARY",
+        "STATUS",
+    }, "撤销条目的属性集变了：先确认新字段该不该下发，再更新这条白名单"
+    assert str(component.get("status")) == "CANCELLED"
+    assert str(component.get("summary")) == CANCELLATION_SUMMARY
+    assert component.get("location") is None, "撤销条目不许带地点原文"
+    assert component.get("description") is None, "撤销条目不许带描述原文"

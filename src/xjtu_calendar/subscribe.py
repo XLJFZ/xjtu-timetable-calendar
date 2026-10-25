@@ -763,7 +763,8 @@ class CompatibilityCheck:
     #: （台账差异只落在原定时刻已过去的行上，见 `_difference_is_only_time_pruning`）
     #: / `pending_unresolved`（上次发布的结果还没裁决）/ `no_journal` / `journal_invalid`
     #: / `journal_token` / `journal_sha` / `journal_branch`（后三格＝凭据与状态里的发布记录
-    #: 交叉核对不上）/ `baseline` / `course_ledger` / `exam_ledger` / `*_keep` / `uid_recipe`
+    #: 交叉核对不上）/ `revive_salts`（重新编号计数器与快照不一致）/ `baseline` /
+    #: `course_ledger` / `exam_ledger` / `*_keep` / `uid_recipe`
     reason: str
     detail: str
 
@@ -944,6 +945,22 @@ def check_local_compatibility(
             "journal_branch",
             f"恢复快照记录的发布分支是 {journal.branch}，与当前订阅的 {state.branch} 不符，"
             "它描述的是另一条发布通道上的产物",
+        )
+    # 收尾那次 `save_state` 崩掉时，`last_push` / 留底 / 台账都已是新版，只有盐值还停在
+    # 旧值——上面几格全部相符。不在这里比对，下一次普通 push 会按旧盐值重建，把刚救回来
+    # 的课重新算回旧 UID（手机上已被删过、删除记忆不补 ⇒ 等于又抹掉一次）。
+    # 旧格式快照没有这一项（None）＝ 不知道，跳过；repair 会把知道的表落回状态。
+    if (
+        journal is not None
+        and journal.revive_salts is not None
+        and state.revive_salts != journal.revive_salts
+    ):
+        return CompatibilityCheck(
+            False,
+            "revive_salts",
+            "状态里的重新编号计数器与恢复快照记录的不一致"
+            f"（快照 {len(journal.revive_salts)} 门 / 状态 {len(state.revive_salts)} 门）："
+            "下一次发布会把换过 UID 的课重新算回旧值",
         )
     if journal is None:
         # 没有依据可查（0.8.5 之前发布过的状态、或凭据被删）。退回一条**不依赖快照**的

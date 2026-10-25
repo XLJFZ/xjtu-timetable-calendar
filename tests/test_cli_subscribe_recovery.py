@@ -1114,7 +1114,7 @@ def test_a_rotate_that_crashed_after_push_is_adjudicated_by_repair(
 
     monkeypatch.setattr(subscribe, "save_state", blow_up)
     fuse["on"] = True
-    assert main(["subscribe", "rotate", "--semester", SEMESTER]) != 0
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 7
     capsys.readouterr()
     fuse["on"] = False
 
@@ -1583,11 +1583,11 @@ def test_push_goes_through_after_export_pruned_the_ledger(
     victim_uid = max(published.items(), key=lambda kv: kv[1].start)[0]
     assert _prune_ledger_row(ledger, victim_uid) == len(published) - 1
 
-    # 不带旗标：旧行为是 7；现在这一格应当自己看穿并放行
+    # 不带旗标：旧行为是 7；现在这一格应当自己看穿并放行，且必须留下"为什么放行"的话。
     late = published[victim_uid].start + timedelta(days=2)
     monkeypatch.setattr(subscribe, "now_local", lambda: late)
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
-    assert "原定时刻已过" in capsys.readouterr().err or True
+    assert "原定时刻已过" in capsys.readouterr().err, "放行必须说清是哪几行因过期退场，不能静默"
 
 
 def _live_uids_by_course(text: str) -> dict[str, set[str]]:
@@ -1687,6 +1687,11 @@ def test_revive_refuses_unknown_course_and_writes_nothing(
     assert _init(origin) == 0
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     capsys.readouterr()
+    # 先成功救一次，让计数器非空：这样"不前进"才是可观察的，而不是从空表起空对空。
+    assert main(["subscribe", "push", "--semester", SEMESTER, "--revive", "D-1"]) == 0
+    capsys.readouterr()
+    state = subscribe.load_state(Settings(home=home), SEMESTER)
+    assert state is not None and state.revive_salts == {"D-1": 1}
     tip_before = _git("rev-parse", "cal", cwd=origin)
 
     code = main(["subscribe", "push", "--semester", SEMESTER, "--revive", "不存在课程号"])
@@ -1695,7 +1700,7 @@ def test_revive_refuses_unknown_course_and_writes_nothing(
     assert "找不到" in err
     assert _git("rev-parse", "cal", cwd=origin) == tip_before, "被拦住就不许推任何东西"
     state = subscribe.load_state(Settings(home=home), SEMESTER)
-    assert state is not None and state.revive_salts == {}, "被拦住的这次不许留下计数器"
+    assert state is not None and state.revive_salts == {"D-1": 1}, "被拦住的这次不许留下计数器"
 
 
 def test_push_without_revive_leaves_salts_absent_and_uids_stable(
@@ -1792,6 +1797,68 @@ def test_a_revive_push_that_crashed_before_state_save_keeps_the_counter(
 
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     assert "无变化" in capsys.readouterr().out, "计数器回来了，重建就该与线上逐字节相同"
+    assert _live_uids_by_course(_git("show", f"cal:{_token(home)}.ics", cwd=origin)) == revived
+
+
+def test_a_revive_push_that_crashed_at_the_final_state_save_is_blocked_until_repair(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """**收尾那次 `save_state` 崩掉：门必须拦住下一次 push，不能把换号悄悄抹回去。**
+
+    与上一条的区别：`publish()` 自己那次 `save_state` 已经成功（`last_push` 是新版），
+    死的是 CLI 收尾写盐值的那一次。此时留底、台账、凭据全是新版，只剩状态里的计数器旧了
+    ——若相容性检查不看盐值，门会放行，下一次普通 push 按旧盐值重建，救回来的课再次消失。
+    """
+    home, origin = env
+    _rewrite_rows(home, _two_future_rows())
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    base = _live_uids_by_course(_git("show", f"cal:{_token(home)}.ics", cwd=origin))
+
+    cfg = Settings(home=home)
+    real_save = subscribe.save_state
+    fuse = {"on": False, "calls": 0}
+
+    def blow_up(_cfg: Settings, _state: object) -> None:
+        # 第 1 次是 publish 写 last_push；第 2 次才是 CLI 收尾写盐值。
+        fuse["calls"] += 1
+        if fuse["on"] and fuse["calls"] > 1:
+            raise OSError("disk is full")
+        real_save(_cfg, _state)
+
+    monkeypatch.setattr(subscribe, "save_state", blow_up)
+    fuse["on"] = True
+    assert main(["subscribe", "push", "--semester", SEMESTER, "--revive", "D-1"]) != 0
+    capsys.readouterr()
+    fuse["on"] = False
+
+    remote = _git("show", f"cal:{_token(home)}.ics", cwd=origin)
+    remote_bytes = _git_bytes(f"cal:{_token(home)}.ics", origin)
+    revived = _live_uids_by_course(remote)
+    assert revived["D-1"] != base["D-1"], "前提：远端已经是换号后的产物"
+    state = subscribe.load_state(cfg, SEMESTER)
+    assert state is not None and state.last_push is not None
+    assert state.last_push.content_sha256 == hashlib.sha256(remote_bytes).hexdigest(), (
+        "前提：publish 自己那次 save_state 已经成功"
+    )
+    assert state.revive_salts == {}, "前提：崩在收尾写盐值之前"
+
+    tip_before = _git("rev-parse", "cal", cwd=origin)
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 7, (
+        "计数器与快照不一致时，门必须拒绝，而不是按旧盐值重发"
+    )
+    assert _git("rev-parse", "cal", cwd=origin) == tip_before, "被拦住就不许推任何东西"
+
+    assert main(["subscribe", "repair", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    repaired = subscribe.load_state(cfg, SEMESTER)
+    assert repaired is not None and repaired.revive_salts == {"D-1": 1}
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert "无变化" in capsys.readouterr().out
     assert _live_uids_by_course(_git("show", f"cal:{_token(home)}.ics", cwd=origin)) == revived
 
 

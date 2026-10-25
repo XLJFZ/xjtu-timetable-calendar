@@ -61,7 +61,7 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
     在管道里永远等不到，表现成"卡住"，还会留一个占住会话目录的浏览器窗口。
   - 不要相信"我已经登录过了"。工具用的是**独立浏览器实例**，用户平时浏览器里的
     eHall 登录态对它毫无作用——必须在它自己弹出的那个窗口里认证。
-  - 不要相信 `login` 打印的"已检测到本地会话"。不带 `--force` 时它看到旧会话文件就
+  - 不要相信 `login` 打印的"沿用本地会话（未验证有效性）"。不带 `--force` 时它看到旧会话文件就
     直接退出，不看那份文件是否早已过期。
 - 那个窗口打开后**什么都不渲染**时才按灰页处置。判据是"窗口里没有可见内容"，
   **不是**地址栏尾巴有没有 `?browser=no`——那是 eHall 服务端在 CAS 回跳时给落地页
@@ -89,15 +89,17 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
   而第 8 步的收尾判据正是 doctor 退出码 `0`——等于永远交付不了。
   `examples/academic_calendar.example.json` 里那条演示值已刻意写成 `2099-11-14`，
   照抄整份文件不会撞上；但只要用户（或你自己）把日期换成"看起来更像真的"，就会撞。
-  不需要这个字段就删掉整段；确实需要且能接受缺课时，加 `--allow-unsupported-adjustments`
-  并如实告诉用户少了哪几个时段。
+  不需要这个字段就删掉整段；确实需要且能接受缺课时，只有 `export` 有
+  `--allow-unsupported-adjustments` 这个放行口（`subscribe push` **没有**这个旗标，
+  带了会报 `unrecognized arguments`）——走订阅通路时只能把这个字段从学期配置里去掉，
+  或者 `export --allow-unsupported-adjustments` 导出后手工导入，并如实告诉用户少了哪几个时段。
 
 ## 第 4 步 作息表
 
 - 动作：先 `xjtu-calendar schedule` 预览，确认后
   `xjtu-calendar schedule --semester <学期标识> --apply` 才真正合并落盘
   （抓官方作息页，切换点取自页面原文，解析不了的行会逐条列出且拒绝写入）。
-  **不带 `--apply` 时它只预览、不写任何文件**（它会自己打印「以上为解析结果预览
+  **不带 `--apply` 时它只预览、不写任何文件**（它会自己打印「以上为预览
   （未写入任何文件）」），照抄不带 `--apply` 的写法永远拿不到本步的证据；
   `--apply` 还必须带 `--semester`（生效区间的覆盖范围来自该学期校历）。
   抓不到就让用户按「必须由你配置的内容 → 2. 作息表」的模板手工填写
@@ -109,15 +111,15 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 
 ## 第 5 步 抓课表
 
-- 动作：`xjtu-calendar fetch`。
+- 动作：`xjtu-calendar fetch --semester <学期标识>`。
 - 证据：`doctor` 的「课表快照」通过；渲染项报出的事件数 > 0。
 - 若「考试快照」是警告：正常。未排考时接口本来就没有数据，**不要**为此重登或改配置。
 
 ## 第 6 步 导出与自检
 
-- 动作：`xjtu-calendar export -o <路径>`，然后**再导出一次**比对 UID。
+- 动作：`xjtu-calendar export --semester <学期标识> -o <路径>`，然后**再导出一次**比对 UID。
 - 证据：两次导出的 UID 集合一致（这是订阅端能原地更新的前提；变了就说明配置或数据在动）。
-- 用 `inspect` 看脱敏结构，用 `diff` 看与上一份快照的差异；解析跳过的条目要逐条向用户复述。
+- 用 `inspect` 看脱敏结构，用 `diff --semester <学期标识>` 看与上一份快照的差异；解析跳过的条目要逐条向用户复述。
   `diff` 在**第一次 fetch 之后必然报**「[错误] 旧课表快照不存在」（退出码非 0）——
   基线是 fetch 轮转出来的 `*.prev.json`，刚装完还没有。这不是故障，别为此回头重登或重抓；
   要立刻比对就 `--old` 指一份自己留底的 raw。
@@ -125,10 +127,11 @@ description: 把西安交通大学 eHall 课表（含考试安排）导出为 .i
 ## 第 7 步 发布成订阅
 
 - 动作：`subscribe init --repo <发布仓库的 git 远端 URL> --semester <学期标识>`
-  登记发布目标 → `subscribe push` 发布。
+  登记发布目标 → `subscribe push --semester <学期标识>` 发布。
   **`--repo` 与 `--semester` 都是必填**：照抄不带它们的 `subscribe init` 一步都走不出去——
-  缺 `--repo` 停在「the following arguments are required: --repo」，
-  缺 `--semester` 停在「[错误] 未指定学期」（两处都是退出码 1，不是"配置错了"）。
+  缺 `--repo` 停在 argparse 的「the following arguments are required: --repo」（**退出码 2**，
+  与「未登录」同码，按提示文字区分），
+  缺 `--semester` 停在「[错误] 未指定学期」（**退出码 1**，这才是业务错误的口径）。
   `--branch` 默认 `cal`。`--url-base`：**GitHub 公开仓**可以不写（自动推导成
   `https://<用户名>.github.io/<仓库>/`）；**其余一切情形都必须显式给**——
   推导只看"远端是不是 GitHub"，不看仓库是否私有，而私有仓上 GitHub Pages 不提供托管，

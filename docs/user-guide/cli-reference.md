@@ -12,10 +12,10 @@
 | `status` | 查看会话与配置状态（不发起网络请求） |
 | `fetch [--semester S] [--source auto\|http\|browser] [--from-file F] [--no-exams]` | 获取课表原始 JSON（HTTP 路径同时抓考试安排；覆盖前把上一份**复制**到 `*.prev.json` 作为 `diff` 基线 —— 复制式轮转，新快照写失败时当前那份仍在原位） |
 | `diff [--semester S] [--old F] [--new F]` | 比对新旧课表快照：新增/删除课程、时段增减、周次/教室/教师变化；并列「考试变更」小节（新增/取消/时间/教室/座位；纯本地；`--old/--new` 只对课表生效） |
-| `export [--semester S] [-o OUT] [--input F] [--name N] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence] [--no-exams] [--allow-mass-cancellation] [--include-calendar-events]` | 生成 `.ics`（默认并入考试事件；`--name` 不给时标题按课表自动推导，见上文「导出」；`--allow-mass-cancellation` 放行课程侧熔断，见「升级到 v0.8」；`--include-calendar-events` 把学期配置 `events` 段的校历事件并进来，默认**不带**） |
+| `export [--semester S] [-o OUT] [--input F] [--name N] [--calendar-config F] [--schedule-config F] [--from-date D] [--to-date D] [--sequence-from ICS] [--no-sequence] [--no-exams] [--allow-mass-cancellation] [--include-calendar-events] [--allow-unsupported-adjustments]` | 生成 `.ics`（默认并入考试事件；`--name` 不给时标题按课表自动推导，见上文「导出」；`--allow-mass-cancellation` 放行课程侧熔断，见「升级到 v0.8」；`--include-calendar-events` 把学期配置 `events` 段的校历事件并进来，默认**不带**；`--allow-unsupported-adjustments` 在 `unsupported_adjustments` 声明的日期落在本学期时放行构建（代价是缺那几个时段）——**只有 export 有这个旗标**，`subscribe push` 没有） |
 | `notice --url U \| --from-file F [--semester S] [--apply]` | 解析停课/调课通知，预览或合并进学期配置 |
 | `schedule [--url U \| --from-file F] [--semester S] [--apply]` | 解析官方「学生作息时间表」页，预览或合并进作息表配置 |
-| `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F] [--no-exams] [--allow-mass-cancellation] [--allow-unverified-baseline] [--include-calendar-events]` \| `subscribe rotate [--no-exams] [--allow-mass-cancellation] [--allow-unverified-baseline] [--include-calendar-events]` \| `subscribe status [--verify]` \| `subscribe repair`（均可带 `--semester S`） | 把 .ics 发布到自己的订阅 URL（**推荐**私有仓 + Cloudflare Pages，这种托管 init 必须带 `--url-base`；也可用公开仓 + GitHub Pages），日历客户端按 URL 订阅（见上文「URL 订阅」；push/rotate 默认并入考试，`--no-exams` 同样生效；push 首次会自动做 v1→v2 UID 迁移，`--allow-mass-cancellation` 放行课程侧熔断；rotate 的补发与 push 共用同一条发布事务与同一道相容性检查，门在换 token **之前**；`repair` 按发布恢复快照把本地留底/台账对齐到线上那一版，不产生新发布；`--include-calendar-events` 两侧同口径——**rotate 也必须带**，不带时上一次发布过的校历事件会被这次补发丢掉，那道门会直接拒绝并返回 `8`） |
+| `subscribe init --repo U [--branch B] [--url-base U]` \| `subscribe push [--input F] [--no-exams] [--allow-mass-cancellation] [--allow-unverified-baseline] [--include-calendar-events] [--revive 课程号]` \| `subscribe rotate [--no-exams] [--allow-mass-cancellation] [--allow-unverified-baseline] [--include-calendar-events]` \| `subscribe status [--verify]` \| `subscribe repair`（均可带 `--semester S`） | 把 .ics 发布到自己的订阅 URL（**推荐**私有仓 + Cloudflare Pages，这种托管 init 必须带 `--url-base`；也可用公开仓 + GitHub Pages），日历客户端按 URL 订阅（见上文「URL 订阅」；push/rotate 默认并入考试，`--no-exams` 同样生效；push 首次会自动做 v1→v2 UID 迁移，`--allow-mass-cancellation` 放行课程侧熔断；**0.10.0 起** `--revive` 让手机上误删的那门课换 UID 重发，可重复，认课程号也认课程名；rotate 的补发与 push 共用同一条发布事务与同一道相容性检查，门在换 token **之前**；`repair` 按发布恢复快照把本地留底/台账对齐到线上那一版，不产生新发布；`--include-calendar-events` 两侧同口径——**rotate 也必须带**，不带时上一次发布过的校历事件会被这次补发丢掉，那道门会直接拒绝并返回 `8`） |
 | `inspect [--input F] [-o OUT]` | 对原始 JSON 做**脱敏**结构分析 |
 | `doctor [--semester S] [--verify] [--include-calendar-events]` | **只读体检**：版本 / 会话 / 校历 / 作息 / 快照 / 渲染 / **校历事件** / 订阅留底一次看全。不写任何文件、默认不发请求（`--verify` 才对订阅 URL 做一次匿名 GET），也**不代跑修复**。有阻塞项时退出码为 `5`；`--include-calendar-events` 决定这一格按哪条发布路径判定（不带 = 按普通 push 判，带了 = 按带校历事件的 push 判），因为体检与门必须对同一状态给同一结论 |
 
@@ -27,7 +27,7 @@
 |---|---|
 | `0` | 成功 |
 | `1` | 一般错误（网络、解析、导出） |
-| `2` | 未登录，需要先跑 `login` |
+| `2` | 未登录，需要先跑 `login`；命令行参数写法错误（argparse）也返回 `2`，按提示文字区分 |
 | `3` | 登录态已失效，需要重新 `login --force`（不带 `--force` 会直接沿用这份已失效的会话） |
 | `4` | 当前账号无权限访问该资源 |
 | `5` | `doctor` 检出阻塞项（警告不算，仍 `0`）。含「本地发布状态与已发布版本不相容」——同一状态 `subscribe push` 会返回 `7`，处置都是先跑 `subscribe repair` |

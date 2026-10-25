@@ -8,9 +8,23 @@
 
 ## [未发布]
 
-暂无。当前版本号 = `pyproject.toml` 里的 `0.10.1`。
+暂无。当前版本号 = `pyproject.toml` 里的 `0.10.2`。
 
 ---
+
+## [0.10.2] - 2026-10-25
+
+**修复：`--revive` 的计数器会在崩溃窗口里丢。** `push --revive` 已经推上远端、`save_state`
+之前崩掉时，发布恢复快照里没有盐值：`repair` 能把产物、台账与 `last_push` 拉回来，却补不回
+计数器；下一次普通 `push` 会按旧盐值重建，刚救回来的课再次被抹掉（与 0.10.1 修的 rotate
+是同一后果，只是窗口窄得多）。
+
+- 发布恢复快照新增 `revive_salts`：**`None` = 0.10.1 及更早的旧快照、不知道**，
+  `repair` 对这种情况保持状态原值；空表才是"确定没用过 `--revive`"。新快照记实际表，
+  `repair` 据此把计数器落回状态。
+- 新增 `test_a_revive_push_that_crashed_before_state_save_keeps_the_counter`（崩 → repair →
+  下一次 push 是 NO_CHANGE）与 `test_an_old_journal_without_salts_does_not_wipe_existing_salts`。
+- 没用过 `--revive` 的用户，产物与状态文件不变。
 
 ## [0.10.1] - 2026-10-25
 

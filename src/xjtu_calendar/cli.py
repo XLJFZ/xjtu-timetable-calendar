@@ -1689,6 +1689,11 @@ def _subscribe_repair(cfg: Settings, state: subscribe.SubscriptionState, semeste
     if journal.uid_recipe is not None and new_state.uid_recipe != journal.uid_recipe:
         new_state = replace(new_state, uid_recipe=journal.uid_recipe)
         restored.append("迁移标记")
+    # 旧格式快照没有这一项（None）＝ 不知道那次发布用了什么盐值，保持状态原值；
+    # 新快照带着实际表（空 dict 也合法）⇒ 恢复到与线上那一版一致的编号。
+    if journal.revive_salts is not None and new_state.revive_salts != journal.revive_salts:
+        new_state = replace(new_state, revive_salts=journal.revive_salts)
+        restored.append("重新编号计数器")
     if new_state is not state:
         subscribe.save_state(cfg, new_state)
     if not restored and not notes:
@@ -1871,6 +1876,10 @@ def _publish_with_journal(
         course_ledger_text=result_ics.course_ledger_text,
         exam_ledger_text=result_ics.exam_ledger_text,
         uid_recipe=UID_RECIPE_VERSION if migrating else state.uid_recipe,
+        # 崩溃窗口的最后一格：远端可能已经收下这一版，状态却还没落盘。快照必须带着
+        # 这次构建实际用的盐值，否则 repair 只能把产物拉回来、计数器永远补不回，
+        # 下一次普通 push 会把刚救回来的课又抹掉（与 rotate 那个缺陷同一后果）。
+        revive_salts=revive_salts if revive_salts is not None else state.revive_salts,
     )
     try:
         res = subscribe.publish(cfg, state, result_ics.ics)

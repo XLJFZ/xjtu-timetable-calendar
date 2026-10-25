@@ -1742,6 +1742,91 @@ def test_revive_accepts_a_course_name(
     assert state is not None and state.revive_salts == {"D-1": 1}, "计数器要落在课程号上"
 
 
+def test_a_revive_push_that_crashed_before_state_save_keeps_the_counter(
+    env: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """**崩溃窗口里的 `--revive` 不许丢计数器。**
+
+    现场：`push --revive D-1` 已经推上远端，`save_state` 却抛了 ⇒ 恢复快照里是换号后的产物，
+    状态文件还停在旧盐值。`repair` 若只补留底/台账/`last_push`，下一次普通 push 会按旧盐值
+    重新构建：旧 UID 回来、新 UID 消失，手机上那节课再次丢掉（与 rotate 那个缺陷同一后果）。
+
+    期望：恢复快照本身带盐值，`repair` 把它一并落回状态 ⇒ 下一次 push 是 NO_CHANGE。
+    """
+    home, origin = env
+    _rewrite_rows(home, _two_future_rows())
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    base = _live_uids_by_course(_git("show", f"cal:{_token(home)}.ics", cwd=origin))
+
+    cfg = Settings(home=home)
+    real_save = subscribe.save_state
+    fuse = {"on": False}
+
+    def blow_up(_cfg: Settings, _state: object) -> None:
+        if fuse["on"]:
+            raise OSError("disk is full")
+        real_save(_cfg, _state)
+
+    monkeypatch.setattr(subscribe, "save_state", blow_up)
+    fuse["on"] = True
+    assert main(["subscribe", "push", "--semester", SEMESTER, "--revive", "D-1"]) != 0
+    capsys.readouterr()
+    fuse["on"] = False
+
+    remote = _git("show", f"cal:{_token(home)}.ics", cwd=origin)
+    revived = _live_uids_by_course(remote)
+    assert revived["D-1"] != base["D-1"], "前提：远端已经是换号后的产物"
+    state = subscribe.load_state(cfg, SEMESTER)
+    assert state is not None and state.revive_salts == {}, "前提：崩在状态落盘之前"
+
+    assert main(["subscribe", "repair", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    repaired = subscribe.load_state(cfg, SEMESTER)
+    assert repaired is not None and repaired.revive_salts == {"D-1": 1}, (
+        "恢复快照要带着盐值，repair 必须把计数器落回状态"
+    )
+
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    assert "无变化" in capsys.readouterr().out, "计数器回来了，重建就该与线上逐字节相同"
+    assert _live_uids_by_course(_git("show", f"cal:{_token(home)}.ics", cwd=origin)) == revived
+
+
+def test_an_old_journal_without_salts_does_not_wipe_existing_salts(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """0.10.1 及更早写下的恢复快照没有盐值键 ⇒ `repair` 不许把它当成"空表"。
+
+    升级上来的现场可能同时有"状态里有盐值"与"旧格式快照"。修复只能补**知道的**事实；
+    旧快照不知道那次发布用了什么表，保持状态原值才是唯一诚实的做法。
+    """
+    home, origin = env
+    _rewrite_rows(home, _two_future_rows())
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    assert main(["subscribe", "push", "--semester", SEMESTER, "--revive", "D-1"]) == 0
+    capsys.readouterr()
+
+    cfg = Settings(home=home)
+    for path in (
+        subscribe.journal_path(cfg, SEMESTER),
+        subscribe.pending_path(cfg, SEMESTER),
+    ):
+        if not path.is_file():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload.pop("revive_salts", None)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    assert main(["subscribe", "repair", "--semester", SEMESTER]) == 0
+    state = subscribe.load_state(cfg, SEMESTER)
+    assert state is not None and state.revive_salts == {"D-1": 1}, "旧快照不知道，就不许改状态"
+
+
 def test_rotate_keeps_the_revive_rekeying(
     env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -520,6 +520,10 @@ class PublishJournal:
     course_ledger_sha256: str | None = None
     exam_ledger_sha256: str | None = None
     uid_recipe: int | None = None
+    #: 这次构建实际用的重新编号表（误删恢复，§16）。``None`` = 0.10.1 及更早写下的
+    #: 旧快照，字段缺席 ⇒ **不知道**那次发布用了什么表，`repair` 不许据此覆盖状态里的现表；
+    #: 空 dict 才是"确定没用过 `--revive`"。
+    revive_salts: dict[str, int] | None = None
     created_at: str = ""
 
     def to_dict(self) -> dict[str, object]:
@@ -548,6 +552,11 @@ class PublishJournal:
                 None if data.get("exam_ledger_sha256") is None else str(data["exam_ledger_sha256"])
             ),
             uid_recipe=None if data.get("uid_recipe") is None else int(str(data["uid_recipe"])),
+            revive_salts=(
+                None
+                if data.get("revive_salts") is None
+                else _parse_revive_salts(data.get("revive_salts"))
+            ),
             created_at=str(data.get("created_at") or ""),
         )
 
@@ -682,6 +691,7 @@ def write_journal(
     course_ledger_text: str | None,
     exam_ledger_text: str | None,
     uid_recipe: int | None,
+    revive_salts: dict[str, int] | None = None,
 ) -> PublishJournal:
     """在**推送远端之前**把这次的目标状态落成「准备稿」（pending）。
 
@@ -704,6 +714,7 @@ def write_journal(
             None if exam_ledger_text is not None else _sha_of(cfg.exam_ledger_path(semester))
         ),
         uid_recipe=uid_recipe,
+        revive_salts=None if revive_salts is None else dict(revive_salts),
         created_at=datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
     )
     _dump_journal(pending_path(cfg, semester), journal)

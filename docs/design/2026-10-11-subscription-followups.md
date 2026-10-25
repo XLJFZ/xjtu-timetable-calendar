@@ -1246,3 +1246,19 @@ live UID 是 `206d249004/f6fc150e99/f7c761db86`；`rotate` 后回到 `c2a737cd6b
 这条不变量在带盐值时成立）。新增 `test_rotate_keeps_the_revive_rekeying` 钉住
 「rotate 前后 live UID 不变、旧 UID 撤销占位不丢」。**这格此前没有用例，CHANGELOG 却已按
 "做了"写** —— 记在这里，别再拿未测项当已验证；0.10.0 的对外说明已加指向 0.10.1 的修正。
+
+### 16.4 补记（2026-10-25 中午）：崩溃窗口里的计数器，0.10.2 补上
+
+0.10.1 修完 rotate 后，同一族还剩一格：`push --revive` **推送成功、`save_state` 之前崩掉**。
+发布恢复快照（`PublishJournal`）只记 ICS、两份台账、迁移标记，没有盐值 ⇒ `repair` 用远端字节
+把产物与 `last_push` 拉回来，计数器却停在旧值；下一次普通 `push` 按旧盐值重建，旧 UID 回来、
+新 UID 消失，手机上那节课再次丢掉。
+
+修法：快照增加 `revive_salts`，三态语义 —— `None` = 0.10.1 及更早的旧快照（不知道，`repair`
+不许覆盖状态现表）、空 dict = 确定没用过旗标、非空 = 那次构建实际用的表。`write_journal`
+由 push/rotate 的发布事务传入实际表；`repair` 只恢复非 `None` 的值，并在输出里报
+「重新编号计数器」。
+
+用例：`test_a_revive_push_that_crashed_before_state_save_keeps_the_counter`
+（崩 → repair → 下一次 push 命中 NO_CHANGE）、
+`test_an_old_journal_without_salts_does_not_wipe_existing_salts`（旧格式快照不改状态）。

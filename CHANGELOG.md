@@ -8,9 +8,22 @@
 
 ## [未发布]
 
-暂无。当前版本号 = `pyproject.toml` 里的 `0.10.0`。
+暂无。当前版本号 = `pyproject.toml` 里的 `0.10.1`。
 
 ---
+
+## [0.10.1] - 2026-10-25
+
+**修复：`subscribe rotate` 会把 `--revive` 换过的 UID 抹回旧值。** 换 token 后的真实重建
+漏传了 `revive_salts`（探针传了、真渲染没传），于是刚救回来的那门课在 rotate 之后回到旧 UID：
+手机上旧 UID 已经被删过、删除记忆不补，新课又不在产物里 ⇒ 等于救了一次又被抹掉，产物里还多出
+指向新 UID 的撤销占位。0.10.0 的 CHANGELOG 承诺过「rotate 不会把重新编号抹掉」，实际没有做到。
+
+- 修复：`rotate` 的真实重建与探针读同一份盐值表（`revive_salts=state.revive_salts`），
+  换 token 前后被点名那门课的 live UID 不变、旧 UID 的撤销占位不丢。
+- 新增 `test_rotate_keeps_the_revive_rekeying` 钉住这条序列；另补
+  `test_revive_accepts_a_course_name`，把文档里「认课程名」的入口也钉住。
+- 没用过 `--revive` 的用户，产物与状态文件与 0.10.0 逐字节相同。
 
 ## [0.10.0] - 2026-10-25
 
@@ -31,7 +44,8 @@
   代价必须说清：被点名的那门课在**每台**客户端上都是「旧事件消失 + 新事件出现」，旧 UID 会以
   `STATUS:CANCELLED` 带着退场（Google / ICSx⁵ 会清掉，**ColorOS 不会** ⇒ 那里会留下一条幽灵）；
   没被点名的课一个字节都不动。点名的课号在当前快照里找不到 ⇒ 构建之前就拒绝、计数器不前进。
-  `rotate` 会带上状态里已有的盐值，换 token 不会把重新编号抹掉。设计、代价与四条待测项见
+  `rotate` 会带上状态里已有的盐值，换 token 不会把重新编号抹掉（**这一条在 0.10.0 里没有做到，
+  见 [0.10.1]**）。设计、代价与四条待测项见
   `docs/design/2026-10-11-subscription-followups.md` §16。
 
 ## [0.9.3] - 2026-10-25

@@ -300,6 +300,30 @@ def test_rotate_carries_the_flag_and_the_same_gate(env: tuple[Path, Path]) -> No
 # --------------------------------------------------------------------------- #
 
 
+def test_a_broken_event_still_trips_the_missing_flag_gate(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**写坏的那条 `source_id` 也要算「曾声明过」**，不能被漏旗标门放过去。
+
+    §12.4 的判据是「上一版发布过校历事件、这一版没带旗标」，而"用户是不是要删光它们"
+    要看配置里**声明过**哪些 `source_id`——包括写坏、构建不出来的那些。若只从可渲染的
+    `specs` 反推，一条日期抄反的事件会让门误判成"用户已经删光"，下一次 push 就把线上
+    那条校历事件静默丢掉（它不接撤销通路，客户端连已取消都收不到）。
+    """
+    home, origin = env
+    write_calendar_config(home, [event_item()])
+    assert _init(origin) == 0
+    assert push("--include-calendar-events") == 0
+    capsys.readouterr()
+
+    # 同一条 source_id 写坏（结束早于开始），但**没有**删掉这个声明。
+    write_calendar_config(home, [event_item(start="2027-02-28", end="2027-01-18")])
+    assert push() == 8
+    err = capsys.readouterr().err
+    assert "--include-calendar-events" in err, "拒绝必须指出要补的旗标"
+    assert "删" in err or "清空" in err, err
+
+
 def test_forgetting_the_flag_after_publishing_events_is_refused(
     env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:

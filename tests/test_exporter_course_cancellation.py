@@ -512,3 +512,62 @@ def test_no_baseline_makes_gate2_unreachable(tmp_path: Path) -> None:
     assert "STATUS:CANCELLED" not in result.ics
     assert result.info["course_cancellations"] == 0
     assert result.migration_summary is None
+
+
+def test_no_sequence_suppresses_the_whole_cancellation_path(tmp_path: Path) -> None:
+    """`--no-sequence` 不只是"全部按新增"：它关掉基线后，撤销也一条都发不出来。
+
+    台账与留底都在、数据也真的少了一门课，但调用方明确关掉 SEQUENCE 时，
+    `cancel_candidates` 失去可发性凭据 ⇒ 产物里不许出现任何 CANCELLED。
+    这条防止未来把撤销判定改成"不依赖基线"，那会让 `--no-sequence` 变成危险开关。
+    """
+    rows = _rows()
+    cfg = make_home(tmp_path, rows, semester=SEMESTER)
+    retained = _publish_baseline(tmp_path, cfg, rows=rows)
+    _rewrite_snapshot(cfg, [r for r in rows if r["KCH"] != "D-4"])
+
+    with_baseline = build_ics_for_semester(
+        cfg, SEMESTER, baseline_probe=str(retained), cancel_expiry_at=NOW
+    )
+    assert with_baseline.info["course_cancellations"] == 2, "前提：同一现场本来会发撤销"
+
+    suppressed = build_ics_for_semester(
+        cfg, SEMESTER, baseline_probe=str(retained), cancel_expiry_at=NOW, no_sequence=True
+    )
+    assert suppressed.info["course_cancellations"] == 0
+    assert _cancelled_uids(suppressed.ics) == set()
+    assert "STATUS:CANCELLED" not in suppressed.ics
+
+
+def test_renamed_course_keeps_uid_and_bumps_sequence(tmp_path: Path) -> None:
+    """端到端钉住 CD2：同一 `course_id` 改名 ⇒ UID 不变、SEQUENCE +1、不产生撤销。
+
+    `make_uid` 的单测只证明配方不含名字；这里走两次真实构建，证明
+    「改名在客户端表现为原地更新」这句话在产物层面成立。
+    """
+    rows = _rows()
+    cfg = make_home(tmp_path, rows, semester=SEMESTER)
+    retained = _publish_baseline(tmp_path, cfg, rows=rows)
+    baseline_text = retained.read_text(encoding="utf-8")
+    old_uids = _uids_by_course(baseline_text, "示例课程甲")
+    old_sequences = {
+        str(v.get("uid")): int(str(v.get("sequence")))
+        for v in Calendar.from_ical(baseline_text).walk("VEVENT")
+    }
+    assert old_uids
+
+    renamed = [dict(r, KCM="示例课程甲（改名）") if r["KCH"] == "D-1" else r for r in rows]
+    _rewrite_snapshot(cfg, renamed)
+    result = build_ics_for_semester(
+        cfg, SEMESTER, baseline_probe=str(retained), cancel_expiry_at=NOW
+    )
+
+    new_uids = _uids_by_course(result.ics, "示例课程甲（改名）")
+    assert new_uids == old_uids, "改名换掉了 UID ⇒ 客户端会多出一份，而不是原地更新"
+    new_sequences = {
+        str(v.get("uid")): int(str(v.get("sequence")))
+        for v in Calendar.from_ical(result.ics).walk("VEVENT")
+    }
+    for uid in old_uids:
+        assert new_sequences[uid] == old_sequences[uid] + 1, "改名必须 bump 一次 SEQUENCE"
+    assert _cancelled_uids(result.ics) == set(), "改名不是消失，不许发撤销"

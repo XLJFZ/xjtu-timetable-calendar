@@ -290,3 +290,60 @@ def test_a_broken_events_block_stays_silent_when_the_flag_is_off(tmp_path: Path)
     joined = "\n".join(record.getMessage() for record in records)
     assert "校历事件配置错误" in joined, joined
     assert on.info["calendar_config_errors"] == 1, on.info
+
+
+def test_migration_never_cancels_a_published_calendar_uid(tmp_path: Path) -> None:
+    """§5 硬边界：迁移分支的候选（留底 − live）必须显式排掉校历 UID。
+
+    场景：上一版带着校历事件发布过；这一次没开旗标，同时状态缺少迁移标记
+    （模拟从 v0.7.x 升级）。若迁移候选只减课程/考试 live，校历 UID 会以
+    `STATUS:CANCELLED` 退场——等于用一套已冻结的机制去掩盖"消失就是从 feed 消失"。
+    """
+    cfg = home_with_calendar(tmp_path, [event_item()])
+    first = build(cfg, include=True)
+    assert f"UID:{WINTER_UID}" in first.ics
+    baseline = tmp_path / "published.ics"
+    baseline.write_text(first.ics, encoding="utf-8", newline="")
+
+    migrated = build(
+        cfg,
+        include=False,
+        baseline_probe=str(baseline),
+        published_baseline_text=first.ics,
+    )
+
+    assert "STATUS:CANCELLED" not in migrated.ics, "迁移不许给校历事件发撤销"
+    assert migrated.info["calendar_events"] == 0
+
+
+def test_sequence_stats_see_calendar_events(tmp_path: Path) -> None:
+    """`sequence_stats` 吃「课程 + live 考试 + live 校历」；基线只含课程时新增必须恰为 1。
+
+    只断言 `is not None` 或 `>= 1` 都不可证伪：前者无基线恒 None，后者课程本身就够。
+    先落一份**只含课程**的基线，再带上校历重建 —— 唯一的新增只能是那条校历事件。
+    """
+    cfg = home_with_calendar(tmp_path, [event_item()])
+    courses_only = build(cfg)
+    baseline = tmp_path / "courses-only.ics"
+    baseline.write_text(courses_only.ics, encoding="utf-8", newline="")
+
+    result = build(cfg, include=True, baseline_probe=str(baseline))
+
+    stats = result.sequence_stats
+    assert stats is not None
+    assert stats["added"] == 1, "校历事件没进 stats ⇒ 新增数会少 1"
+    assert stats["updated"] == 0
+    assert result.info["calendar_events"] == 1
+
+
+def test_date_window_also_cuts_calendar_events(tmp_path: Path) -> None:
+    """`--from-date/--to-date` 对三类事件同口径：窗口外的校历事件不进产物。"""
+    cfg = home_with_calendar(tmp_path, [event_item()])
+
+    outside = build(cfg, include=True, from_date="2026-09-01", to_date="2026-09-30")
+    assert f"UID:{WINTER_UID}" not in outside.ics
+    assert outside.info["calendar_events"] == 0
+
+    inside = build(cfg, include=True, from_date="2026-09-01", to_date="2027-03-01")
+    assert f"UID:{WINTER_UID}" in inside.ics
+    assert inside.info["calendar_events"] == 1

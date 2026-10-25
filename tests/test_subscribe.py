@@ -142,6 +142,46 @@ def test_verify_url_reports_fetch_failure_without_network() -> None:
     assert not ok and "请求失败" in msg
 
 
+class _FakeResponse:
+    def __init__(self, status: int, body: bytes) -> None:
+        self.status = status
+        self._body = body
+
+    def read(self, _n: int) -> bytes:
+        return self._body
+
+    def __enter__(self) -> _FakeResponse:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+
+def test_verify_url_accepts_a_valid_ics_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    """成功分支：200 + 开头是 `BEGIN:VCALENDAR` 才算通过。
+
+    `status --verify` 的这条判据此前只有失败用例；这里把包装器换掉，不碰网络。
+    """
+    monkeypatch.setattr(
+        subscribe.urllib.request,
+        "urlopen",
+        lambda *_a, **_k: _FakeResponse(200, b"BEGIN:VCALENDAR\r\nVERSION:2.0\r\n"),
+    )
+    ok, msg = subscribe.verify_url("https://example.com/x.ics")
+    assert ok and msg == "HTTP 200"
+
+
+def test_verify_url_rejects_200_with_a_non_ics_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """200 不代表成功：正文不是日历时判失败，避免把 Cloudflare 错误页当订阅。"""
+    monkeypatch.setattr(
+        subscribe.urllib.request,
+        "urlopen",
+        lambda *_a, **_k: _FakeResponse(200, b"<!DOCTYPE html><html>not found</html>"),
+    )
+    ok, msg = subscribe.verify_url("https://example.com/x.ics")
+    assert not ok and msg == "HTTP 200"
+
+
 def _state_for(url_base: str) -> SubscriptionState:
     """只给 url_base 的最小状态：webcal 判定只看 scheme，其余字段与本用例无关。"""
     return SubscriptionState(

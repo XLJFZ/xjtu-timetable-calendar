@@ -36,6 +36,7 @@ from xjtu_calendar import cli, subscribe
 from xjtu_calendar.cancellation import load_ledger, render_ledger
 from xjtu_calendar.cli import main
 from xjtu_calendar.config import Settings
+from xjtu_calendar.exporter import UID_RECIPE_VERSION
 from xjtu_calendar.timeutil import now_local
 
 URL_BASE = "https://me.github.io/timetable/"
@@ -1860,6 +1861,106 @@ def test_a_revive_push_that_crashed_at_the_final_state_save_is_blocked_until_rep
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
     assert "无变化" in capsys.readouterr().out
     assert _live_uids_by_course(_git("show", f"cal:{_token(home)}.ics", cwd=origin)) == revived
+
+
+def test_rotate_mass_cancellation_exits_six_without_the_flag(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**rotate 也要过门 2：熔断返回 6，而不是悄悄换掉 token 再失败。**
+
+    现有用例只证明旗标能被 argparse 接受（带旗标 ⇒ 0）；这一格钉的是
+    「不带旗标、真触发熔断」时 rotate 的退出码与远端形态：token 已经换了，
+    但新文件没有发出去，旧 URL 仍能读到上一版。
+    """
+    home, origin = env
+    many = [payload_row(KCM=f"示例课程{i}", KCH=f"D-{i}", ZCMC="10-15周") for i in range(1, 7)]
+    _rewrite_rows(home, many)
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    old_token = _token(home)
+
+    _rewrite_rows(home, many[:1])  # 12 个 live 事件只剩 2 个 ⇒ 候选 10、占比足够高
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 6
+    assert _token(home) != old_token, "rotate 先换 token 再构建，失败时 token 已变"
+    files = _git("ls-tree", "-r", "--name-only", "cal", cwd=origin).split()
+    assert files == [f"{old_token}.ics"], "熔断时远端不许出现新文件，旧 URL 仍可用"
+
+
+def test_rotate_flag_bypasses_a_bypassable_incompatibility(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--allow-unverified-baseline` 在 rotate 上同样有效，且门在换 token **之前**。
+
+    现有旗标用例都在 push；rotate 若只在 push 一侧接线，用户换 token 时会卡在 7
+    却没有出口。这里把课程台账改成空表制造 `course_ledger` 不相容：
+    不带旗标 ⇒ 7、token 不动；带旗标 ⇒ 0、token 换新并补发。
+    """
+    home, origin = env
+    _rewrite_rows(home, _two_future_rows())
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    cfg = Settings(home=home)
+    cfg.course_ledger_path(SEMESTER).write_text(
+        render_ledger([], [], dtstamp=now_local()), encoding="utf-8", newline=""
+    )
+    old_token = _token(home)
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 7
+    assert _token(home) == old_token, "门必须在换 token 之前停手"
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER, "--allow-unverified-baseline"]) == 0
+    new_token = _token(home)
+    assert new_token != old_token
+    assert f"{new_token}.ics" in _git("ls-tree", "-r", "--name-only", "cal", cwd=origin).split()
+
+
+def test_a_revive_push_blocked_by_the_guard_does_not_advance_the_counter(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """构建完成后才被发布护栏拦下：计数器不前进、准备稿不残留、远端不动。
+
+    现有拒绝用例在解析阶段就返回；这一格是「已经构建出换号产物、死在下发之前」，
+    正是 `_publish_with_journal` 的“失败不留痕”要保证的形态。
+    """
+    home, origin = env
+    _rewrite_rows(home, _two_future_rows())
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    cfg = Settings(home=home)
+    _pollute_remote(origin, branch="cal")
+
+    assert main(["subscribe", "push", "--semester", SEMESTER, "--revive", "D-1"]) != 0
+    state = subscribe.load_state(cfg, SEMESTER)
+    assert state is not None and state.revive_salts == {}, "被护栏拦下的这次不许留下计数器"
+    assert not subscribe.pending_path(cfg, SEMESTER).exists(), "确定没推出去 ⇒ 准备稿要丢掉"
+    assert _git("ls-tree", "-r", "--name-only", "cal", cwd=origin).split() == ["stray.txt"]
+
+
+def test_repair_restores_the_missing_uid_recipe_marker(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`repair` 不只补留底/台账/`last_push`，也要补状态里的迁移标记。
+
+    现场：迁移发布已成功（快照记着 `uid_recipe: 2`），但状态文件里的标记没写上。
+    只补前三样的实现会让下一次 push 再进一次迁移分支；`repair` 必须把它一起修对。
+    """
+    home, origin = env
+    _rewrite_rows(home, _two_future_rows())
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    cfg = Settings(home=home)
+    state = subscribe.load_state(cfg, SEMESTER)
+    assert state is not None and state.uid_recipe == UID_RECIPE_VERSION
+    subscribe.save_state(cfg, replace(state, uid_recipe=None))
+
+    assert main(["subscribe", "repair", "--semester", SEMESTER]) == 0
+    assert "迁移标记" in capsys.readouterr().out
+    fixed = subscribe.load_state(cfg, SEMESTER)
+    assert fixed is not None and fixed.uid_recipe == UID_RECIPE_VERSION
 
 
 def test_an_old_journal_without_salts_does_not_wipe_existing_salts(

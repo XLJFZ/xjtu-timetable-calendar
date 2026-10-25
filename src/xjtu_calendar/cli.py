@@ -2206,6 +2206,11 @@ def _subscribe_rotate(
             include_calendar_events=include_calendar_events,
             published_baseline_text=baseline_text if migrating else None,
             allow_mass_cancellation=allow_mass_cancellation,
+            # 换 token 是补发同一份订阅，不是"重新开始"：盐值必须与 push 读同一份状态。
+            # 漏传会让救回来的课退回旧 UID（手机上已被删过、删除记忆不补），
+            # 等于把 0.10.0 的补救悄悄抹掉；探针与真实渲染也必须是同一份表，
+            # 否则警告条数对不上实发。
+            revive_salts=state.revive_salts,
         )
         # P0-01：补发走的是与 push **同一条**事务——先落准备稿、再推送、成功后提升凭据，
         # 最后才回写留底/台账/迁移标记。探针渲染的那份台账文本在这里**不参与**：

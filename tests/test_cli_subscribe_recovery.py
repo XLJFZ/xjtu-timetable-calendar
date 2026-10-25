@@ -1715,3 +1715,66 @@ def test_push_without_revive_leaves_salts_absent_and_uids_stable(
     assert "无变化" in capsys.readouterr().out
     raw = (home / "subscribe" / f"subscribe-{SEMESTER}.json").read_text(encoding="utf-8")
     assert '"revive_salts"' not in raw, "没用过就不该往状态文件里塞空表"
+
+
+def test_revive_accepts_a_course_name(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--revive` 认课程名——文档承诺过的入口，别只被课程号用例盖住。
+
+    课程名只在 `course_id` 缺失时才进入 UID 配方（CD16），但点名救人时它同样能定位到
+    那门课；解析结果必须落回 `stable_course_key`，计数器也只记那一门。
+    """
+    home, origin = env
+    _rewrite_rows(home, _two_future_rows())
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    before = _live_uids_by_course(_git("show", f"cal:{_token(home)}.ics", cwd=origin))
+
+    assert main(["subscribe", "push", "--semester", SEMESTER, "--revive", "示例课程甲"]) == 0
+    assert "重新编号" in capsys.readouterr().out
+    after = _live_uids_by_course(_git("show", f"cal:{_token(home)}.ics", cwd=origin))
+    assert after["D-1"] != before["D-1"], "按名字点名的课也必须换 UID"
+    assert after["D-2"] == before["D-2"], "另一门课不许动"
+
+    state = subscribe.load_state(Settings(home=home), SEMESTER)
+    assert state is not None and state.revive_salts == {"D-1": 1}, "计数器要落在课程号上"
+
+
+def test_rotate_keeps_the_revive_rekeying(
+    env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """**换 token 不许把救回来的那门课又抹掉。**
+
+    `rotate` 会重新构建整份产物，所以它必须与 `push` 读同一份盐值表；否则救回来的课
+    退回旧 UID —— 而旧 UID 在手机上已经被删过、删除记忆不补，等于救了一次又被抹掉。
+    这条用例钉住 0.10.0 对外承诺过的形态：rotate 前后，被点名那门课的 live UID 不变，
+    没被点名的课也不动，旧 UID 的撤销占位继续在。
+    """
+    home, origin = env
+    _rewrite_rows(home, _two_future_rows())
+    assert _init(origin) == 0
+    assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    first = _git("show", f"cal:{_token(home)}.ics", cwd=origin)
+    base = _live_uids_by_course(first)
+
+    assert main(["subscribe", "push", "--semester", SEMESTER, "--revive", "D-1"]) == 0
+    capsys.readouterr()
+    revived_text = _git("show", f"cal:{_token(home)}.ics", cwd=origin)
+    revived = _live_uids_by_course(revived_text)
+    assert revived["D-1"] != base["D-1"]
+
+    assert main(["subscribe", "rotate", "--semester", SEMESTER]) == 0
+    capsys.readouterr()
+    after_text = _git("show", f"cal:{_token(home)}.ics", cwd=origin)
+    after = _live_uids_by_course(after_text)
+
+    assert after["D-1"] == revived["D-1"], "rotate 后必须还是换号后的 UID"
+    assert after["D-2"] == revived["D-2"], "没被点名的课也不许动"
+    assert base["D-1"] <= _cancelled_uids(after_text), "旧 UID 的撤销占位不许丢"
+    assert not (after["D-1"] & _cancelled_uids(after_text)), "新 UID 是 live"
+
+    state = subscribe.load_state(Settings(home=home), SEMESTER)
+    assert state is not None and state.revive_salts == {"D-1": 1}

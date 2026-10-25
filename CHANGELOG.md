@@ -8,9 +8,26 @@
 
 ## [未发布]
 
-暂无。当前版本号 = `pyproject.toml` 里的 `0.10.2`。
+暂无。当前版本号 = `pyproject.toml` 里的 `0.10.3`。
 
 ---
+
+## [0.10.3] - 2026-10-25
+
+**修复：收尾那次 `save_state` 崩掉时，相容性门没有比对重新编号计数器。** `push --revive`
+推送成功、`publish()` 自己那次状态落盘也成功，只有 CLI 收尾写盐值那次崩掉时，留底、台账、
+`last_push` 全是新版，只有状态里的计数器停在旧值。`check_local_compatibility` 原来不看它
+⇒ 下一次普通 `push` 会按旧盐值重建，把刚救回来的课重新算回旧 UID（手机上已被删过、
+删除记忆不补，等于又抹掉一次）。
+
+- 新增 `revive_salts` 这一格不相容判定：快照记录了计数器（非 `None`）而状态与它不一致时，
+  `push` / `rotate` 返回 `7`，`doctor` 判阻塞，先跑 `subscribe repair`。
+  旧格式快照（`None`）不知道那次用了什么表，仍按原行为跳过。
+- 新增 `test_a_revive_push_that_crashed_at_the_final_state_save_is_blocked_until_repair`：
+  崩 → 门拒 7 → repair 恢复计数器 → 下一次 push 是 `NO_CHANGE`。
+- 顺手把五处弱断言改实：过期台账放行的日志用 `capsys` 钉住、rotate 崩溃断言 `7`、
+  `--revive` 点错名时从非空计数器起断言、撤销条目补独立属性白名单、UID 用例改名
+  （时间本来参与 UID，地点不参与）。
 
 ## [0.10.2] - 2026-10-25
 

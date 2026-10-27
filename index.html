@@ -104,7 +104,7 @@ section>h3{font-size:1.12rem;margin:2rem 0 .8rem}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1.1rem}
 .feature{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:1.25rem 1.3rem}
 .feature .ico{width:38px;height:38px;border-radius:10px;background:var(--chip);display:flex;align-items:center;justify-content:center;font-size:1.15rem;margin-bottom:.75rem}
-.feature h3{font-size:1.02rem;margin-bottom:.4rem}
+.feature h3,.feature h4{font-size:1.02rem;margin-bottom:.4rem}
 .feature p{color:var(--sub);font-size:.92rem}
 
 .pipeline{display:flex;align-items:stretch;gap:.5rem;flex-wrap:wrap;justify-content:center;margin-top:.6rem}
@@ -169,22 +169,69 @@ footer{border-top:1px solid var(--line);background:var(--card);margin-top:2rem}
   .tablewrap td:first-child::before{content:none}
   .tablewrap td small{font-size:.8rem}
 }
+
+/* 阅读层级：保留全部说明，让首次访问者先看到上手路径。 */
+section,.chapter-heading{scroll-margin-top:100px}
+.nav-links a{white-space:nowrap}
+.agentband{border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.agentband>summary{cursor:pointer;padding:.65rem .85rem;font-size:.88rem;font-weight:600}
+.agentband>summary span{color:var(--sub);font-size:.78rem;font-weight:400;margin-left:.45rem}
+.agentband pre{margin:0 .7rem .7rem}
+.reading-path{max-width:1060px;margin:0 auto;padding:0 1.25rem 1.2rem}
+.reading-path>p{font-size:.9rem;color:var(--sub);margin-bottom:.65rem}
+.path-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem}
+.path-card{display:block;border:1px solid var(--line);background:var(--card);border-radius:12px;padding:1rem 1.1rem;color:var(--ink)}
+.path-card:hover{border-color:var(--blue2);text-decoration:none}
+.path-card b{display:block;margin:.35rem 0 .2rem;font-size:1rem}
+.path-card small{display:block;color:var(--sub);font-size:.84rem;line-height:1.6}
+.topic-tag{display:inline-block;color:var(--blue);background:var(--chip);border:1px solid var(--chip-line);border-radius:999px;padding:.12rem .55rem;font-size:.73rem;font-weight:600}
+.chapter-heading{max-width:1060px;margin:0 auto;padding:2.3rem 1.25rem .75rem}
+.chapter-heading h2{margin:.2rem 0 .3rem;font-size:1.5rem}
+.chapter-heading p{color:var(--sub);font-size:.9rem}
+.topic-section{padding:.45rem 1.25rem}
+.topic-card{border:1px solid var(--line);border-radius:var(--radius);background:var(--card);overflow:hidden}
+.topic-card>summary{list-style:none;cursor:pointer;position:relative;padding:1.05rem 3rem 1.05rem 1.25rem}
+.topic-card>summary::-webkit-details-marker{display:none}
+.topic-card>summary::after{content:"+";position:absolute;right:1.15rem;top:1.25rem;font-size:1.4rem;color:var(--blue);line-height:1}
+.topic-card[open]>summary::after{content:"−"}
+.topic-card>summary h3{font-size:1.12rem;margin:.3rem 0 .25rem;line-height:1.5}
+.topic-card>summary .topic-description{display:block;font-size:.88rem;color:var(--sub)}
+.topic-card[open]>summary{border-bottom:1px solid var(--line)}
+.topic-body{padding:1.25rem;overflow-wrap:anywhere;min-width:0}
+.topic-body>h4{font-size:1.12rem;margin:2rem 0 .8rem}
+.topic-body .feature{box-shadow:none}
+summary:focus-visible,.path-card:focus-visible,.nav-links a:focus-visible{outline:3px solid var(--blue2);outline-offset:3px}
+@media(max-width:820px){
+  .nav-in{gap:.6rem 1rem}
+  .nav-links{display:flex;order:3;flex-basis:100%;flex-wrap:nowrap;overflow-x:auto;gap:1rem;padding:.2rem 0;font-size:.85rem}
+  .hero{padding-top:2.5rem;padding-bottom:2rem}
+  section,.chapter-heading{scroll-margin-top:125px}
+}
+@media(max-width:600px){
+  .path-grid{grid-template-columns:1fr}
+  .path-card{padding:.8rem 1rem}
+  .path-card b{display:inline;margin-left:.45rem}
+  .path-card small{margin-top:.3rem}
+  .topic-card>summary{padding-left:1rem}
+  .topic-card>summary h3{font-size:1.02rem}
+  .topic-body{padding:1rem}
+  .agentband>summary span{display:block;margin:.1rem 0 0}
+}
+.topic-card>summary:focus-visible{outline-offset:-4px}
+.topic-body .grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr))}
+.steps{grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr))}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 </style>
 </head>
 <body>
 
-<nav>
+<nav aria-label="主导航">
   <div class="nav-in">
     <span class="logo"><span class="logo-mark">交</span>XJTU 课表日历</span>
-    <div class="nav-links">
-      <a href="#why">设计核心</a>
-      <a href="#quickstart">快速开始</a>
-      <a href="#exams">考试与撤销</a>
-      <a href="#calendar">校历事件</a>
-      <a href="#subscribe">订阅 · 客户端</a>
-      <a href="#automate">体检 · 配置</a>
-      <a href="#commands">命令参考</a>
-      <a href="#open">未排期</a>
+    <div class="nav-links" aria-label="页面目录">
+      <a href="#quickstart">开始使用</a>
+      <a href="#daily">日常功能</a>
+      <a href="#reference">帮助与原理</a>
       <a href="#privacy">隐私与安全</a>
     </div>
     <span class="nav-cta"><a class="btn btn-primary" href="https://github.com/XLJFZ/xjtu-timetable-calendar">GitHub</a></span>
@@ -203,8 +250,8 @@ footer{border-top:1px solid var(--line);background:var(--card);margin-top:2rem}
       <a class="btn btn-ghost" href="#subscribe">手机到底订哪个客户端</a>
       <a class="btn btn-ghost" href="https://github.com/XLJFZ/xjtu-timetable-calendar#readme">完整文档</a>
     </div>
-    <div class="agentband">
-      <p><strong>想直接交给编码 Agent？</strong>整段复制下面这段，粘贴给你正在用的 Agent 即可。</p>
+    <details class="agentband">
+      <summary>交给助手部署 <span>展开复制提示词</span></summary>
       <pre>请帮我部署西安交通大学 eHall 课表（含考试安排）日历。先执行：
 
 git clone https://github.com/XLJFZ/xjtu-timetable-calendar.git
@@ -216,7 +263,7 @@ git clone https://github.com/XLJFZ/xjtu-timetable-calendar.git
 ③ 每一步按 SKILL.md 写的证据验收，最后跑
    xjtu-calendar doctor --verify --semester &lt;学期标识&gt;
    退出码 0 才算完成；阻塞项没清完之前，不要说「应该没问题了」。</pre>
-    </div>
+    </details>
     <div class="badges">
       <span class="badge">Python 3.11+</span>
       <span class="badge">MIT 许可</span>
@@ -235,30 +282,15 @@ git clone https://github.com/XLJFZ/xjtu-timetable-calendar.git
   </aside>
 </header>
 
-<section id="why">
-  <div class="sec-kicker">设计核心</div>
-  <h2>为什么不是简单的「课表转 ICS」</h2>
-  <div class="grid">
-    <div class="feature"><div class="ico">🕐</div><h3>钟点不属于课表事实</h3><p>课程只存「星期 + 节次 + 教学周」。<code class="inline-code">08:00</code> 这类钟点由当天生效的作息表在导出时现算——学期中途换季，数据模型毫发无损。</p></div>
-    <div class="feature"><div class="ico">🧩</div><h3>不用一条 RRULE 糊弄一学期</h3><p>重复规则只携带第一个钟点，作息一换整条都错。本项目为每一次实际上课生成独立 VEVENT，几百个事件对现代日历毫无负担，换来逻辑可靠。</p></div>
-    <div class="feature"><div class="ico">🔁</div><h3>UID 稳定 + SEQUENCE 版本</h3><p>反复导出同一节课得到同一 UID；内容变了就递增 SEQUENCE——重新导入时日历客户端知道该「原地更新」，而不是无视或翻倍。v0.8 起课程名不再参与 UID 身份，改课名同样原地更新（<code class="inline-code">course_id</code> 缺失的行除外）。</p></div>
-    <div class="feature"><div class="ico">🛡</div><h3>绝不静默缺课</h3><p>周次越界报错、解析不了的行拒绝写盘、无法表达的调课默认终止导出。宁可当场失败，也不给你一份「看起来正常、实则少课」的日历。</p></div>
+<main>
+<div class="reading-path" aria-label="按需要阅读">
+  <p>不用一次读完，按你现在要做的事选择。</p>
+  <div class="path-grid">
+    <a class="path-card" href="#quickstart"><span class="topic-tag">01 · 入门</span><b>第一次使用</b><small>从登录、获取课表到导出日历。</small></a>
+    <a class="path-card" href="#daily"><span class="topic-tag">02 · 日常</span><b>已经开始使用</b><small>选择订阅客户端，了解考试与校历事件。</small></a>
+    <a class="path-card" href="#reference"><span class="topic-tag">03 · 参考</span><b>遇到问题或想了解更多</b><small>查体检命令、技术原理与未排期事项。</small></a>
   </div>
-
-  <div class="pipeline" aria-label="数据流水线">
-    <div class="step"><b>eHall</b><small>本人在浏览器登录</small></div><span class="arrow">→</span>
-    <div class="step"><b>Parser</b><small>接口变更唯一适配点</small></div><span class="arrow">→</span>
-    <div class="step"><b>CourseMeeting</b><small>星期+节次+教学周</small></div><span class="arrow">→</span>
-    <div class="step"><b>校历 + 作息表</b><small>换算成真实日期钟点</small></div><span class="arrow">→</span>
-    <div class="step"><b>.ics</b><small>逐次上课一个事件</small></div>
-  </div>
-  <p class="note" style="text-align:center">考试走的是同一套尾部管线：独立的考试快照 + 独立的 UID 配方，撤销条目则对照本地台账（<code class="inline-code">last-exams-&lt;学期&gt;.ics</code>）生成，因此需要上一次发布的留底作 SEQUENCE 基线。</p>
-
-  <div class="callout" style="margin-top:1.4rem">
-    <b>⚠️ 这不是时区 DST。</b>中国全年恒为 <code class="inline-code">Asia/Shanghai</code>。真正变化的是「第 N 节课对应的钟点」——学校的作息规则问题，本项目把两者彻底解耦，导出的 ICS 还按 RFC 5545 内嵌了 VTIMEZONE。
-  </div>
-</section>
-
+</div>
 <section id="quickstart">
   <div class="sec-kicker">快速开始</div>
   <h2>三步拿到第一份日历</h2>
@@ -313,59 +345,19 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     <pre style="margin-top:.7rem">python -m xjtu_calendar <span class="p">doctor</span> --semester 2026-2027-1 --verify</pre>
   </div>
 </section>
-
-<section id="exams">
-  <div class="sec-kicker">v0.5 / v0.6</div>
-  <h2>考试安排也进同一份日历</h2>
+<div class="chapter-heading" id="daily"><div class="sec-kicker">02 · 日常使用</div><h2>需要哪一项，就展开哪一项</h2><p>考试、订阅和校历各自独立，不用先读完技术说明。</p></div>
+<section id="subscribe" class="topic-section">
+  <details class="topic-card">
+    <summary><span class="topic-tag">订阅与客户端</span><h3>导入文件，还是订阅更新？</h3><span class="topic-description">先选适合你的入口；课表变化后仍需手动 fetch → push。</span></summary>
+    <div class="topic-body">
   <div class="grid">
-    <div class="feature"><div class="ico">📝</div><h3>不必再手抄期末</h3><p><code class="inline-code">fetch</code> 的 HTTP 路径在抓课表的同时抓「我的考试安排」，<code class="inline-code">export</code> / <code class="inline-code">subscribe push</code> 把考试并进<strong>同一份 .ics、同一个订阅 URL</strong>。考试是单场绝对时刻的 VEVENT：不用 RRULE、不写 VALARM，提醒交给客户端设置。</p></div>
-    <div class="feature"><div class="ico">🎫</div><h3>类型词原样带出</h3><p>标题形如「示例课程甲（期末考试）」，类型词取自接口原文——期中考、结课考，以及「补考」「缓考」都原样呈现，不做白名单。考场在 <code class="inline-code">LOCATION</code>，座位号与课程号、学分、主考教师写在 <code class="inline-code">DESCRIPTION</code>。</p></div>
-    <div class="feature"><div class="ico">🚦</div><h3>三态判定：状态未知绝不覆盖</h3><p>「本学期没有考试」和「查询没成功」返回的行数<strong>都是空</strong>，所以判定落在响应的 <code class="inline-code">extParams.code</code> 上：有考试 / 确认无考试 / 状态未知。未知时宁可沿用旧快照（warning 里报出它是哪一天的）也不覆盖——课程是主功能，考试侧任何失败都不会让 <code class="inline-code">fetch</code>、<code class="inline-code">export</code> 非零退出。</p></div>
-    <div class="feature"><div class="ico">🔻</div><h3>撤销自动下发（v0.6）</h3><p>已发布到订阅端的考试若在本次数据里消失（改期、取消、或确认无考试），下一份产物把那条旧事件标上 <code class="inline-code">STATUS:CANCELLED</code> 再发一次，保留到它的原定时刻自然过去。撤销条目只带最小字段——<strong>没有考场、座位、教师，也没有课程名</strong>。</p></div>
-  </div>
-  <div class="callout warnbox" style="margin-top:1.4rem">
-    <b>⚠️ 但「取消」在手机上不一定表现为消失。</b>2026-10 真机演练：Google 日历（网页版）会据此移除日程；
-    <strong>Outlook.com 与 ColorOS 系统日历实测忽略 <code class="inline-code">STATUS:CANCELLED</code></strong>，把撤销条目当普通事件导入。
-    自 v0.6.1 起那条日程带一个固定标题「<strong>已取消的活动</strong>」（此前是不带标题的「无主题」残条），
-    一眼能认出是废弃条目。<strong>它不会自动消失</strong>：要等原定时刻过去、条目从产物里退场，而退场之后
-    归谁清理是按通路分的——ICSx⁵ 与 Google 网页版会删（前者 2026-10-19 正式订阅真机、后者 2026-10-13 试验田），
-    <strong>ColorOS 系统日历不会</strong>，那条日程永久留着、还单条删不掉；Outlook 从没拿到过回源读数。
-    分通路的判据见下面的行为矩阵。
-    一次性导入型客户端不回源，撤销对它完全无从生效——仍需手动删除。
-  </div>
-</section>
-
-<section id="calendar">
-  <div class="sec-kicker">v0.9</div>
-  <h2>校历事件：开学、考试周、寒暑假也标进同一份日历</h2>
-  <div class="grid">
-    <div class="feature"><div class="ico">🗓</div><h3>只做有出处的五类</h3><p><code class="inline-code">semester_start</code>（起课）、<code class="inline-code">registration</code>（报到）、<code class="inline-code">exam_period</code>（期末考试周）、<code class="inline-code">vacation</code>（寒暑假）、<code class="inline-code">holiday</code>（放假调休）——都是全天事件，判据是「学校公布过」。清单之外一律不做，尤其不许拿总周次反推考试周；工具也不抓取校历，这几条由你从官方校历图和教务处通知抄进配置，逐条附来源。</p></div>
-    <div class="feature"><div class="ico">🔗</div><h3>每条都得给一个校内公开页</h3><p><code class="inline-code">source_id</code> / <code class="inline-code">category</code> / <code class="inline-code">title</code> / <code class="inline-code">start</code> / <code class="inline-code">end</code> / <code class="inline-code">source_url</code> 六项必填。来源域名必须落在 <code class="inline-code">xjtu.edu.cn</code> 上（按点边界匹配，<code class="inline-code">evilxjtu.edu.cn</code> 不算），并且不许带 <code class="inline-code">ticket</code>、<code class="inline-code">token</code>、<code class="inline-code">session</code> 一类认证参数——那份产物是匿名可读的，一个带凭据的地址等于把凭据公开。</p></div>
-    <div class="feature"><div class="ico">📏</div><h3>配置写闭区间，产物发互斥钟点</h3><p>配置里的 <code class="inline-code">end</code> 含当天，只有渲染那一步才换成 RFC 5545 要求的互斥 <code class="inline-code">DTEND</code>，全项目也只在这一处转。中秋那条写 <code class="inline-code">2026-09-25</code> 至 <code class="inline-code">2026-09-27</code>，发出去是 <code class="inline-code">DTSTART;VALUE=DATE:20260925</code> 配 <code class="inline-code">DTEND;VALUE=DATE:20260928</code>，日历里显示的是 25、26、27 三天。</p></div>
-    <div class="feature"><div class="ico">🏷</div><h3>身份是 <code class="inline-code">source_id</code>，不是标题</h3><p>UID 由「学期 | cal | <code class="inline-code">source_id</code>」推导，类别中文名和标题都不参与。把「国庆节放假」改成别的说法是原地更新，订阅端不会重收；改 <code class="inline-code">source_id</code> 才是换了一条事件，等于旧的消失、新的重来。</p></div>
-  </div>
-  <div class="callout warnbox" style="margin-top:1.4rem">
-    <b>⚠️ 它默认不带，而且不接撤销通路。</b>加 <code class="inline-code">--include-calendar-events</code> 才会进产物（0.9 起默认不带）。
-    从配置里删掉一条，就是让它<strong>从 feed 消失</strong>，工具不会替它发 <code class="inline-code">STATUS:CANCELLED</code>——
-    之后会发生什么按通路分：<strong>ICSx⁵ 会清掉</strong>（2026-10-19 真机：两条过期退场的占位同步后界面上都不在了，
-    界面级判据）、
-    <strong>Google 网页版会删</strong>（2026-10-13 试验田实测）、<strong>ColorOS 系统日历不删</strong>，那条日程会永久留着。
-    发布前还有三道准入：配置有错、来源之间有未解决的冲突、上一版带过校历事件而这次忘了开旗标——
-    任一命中即退出码 <code class="inline-code">8</code>，<strong>零写盘、不发版</strong>，改的是配置而不是加 <code class="inline-code">--allow-*</code>。
-  </div>
-</section>
-
-<section id="subscribe">
-  <div class="sec-kicker">交付方式</div>
-  <h2>导入一次，还是订阅一条 URL</h2>
-  <div class="grid">
-    <div class="feature"><div class="ico">📥</div><h3>手工导入</h3><p>拿到 .ics → 双击导入。简单、零公网暴露，但课表一变就要重新导出、重新导入，多端各来一遍。导入型入口把事件一次性写进本机，<strong>此后不再回源</strong>，<code class="inline-code">subscribe push</code> 对它无效。</p></div>
-    <div class="feature"><div class="ico">🔗</div><h3>URL 订阅（subscribe）</h3><p>把同一份 .ics 发布到<strong>你自己的静态托管</strong>——<strong>推荐私有仓库 + Cloudflare Pages</strong>，那条路上 token 才真的是一道门槛；也可以用公开的 GitHub Pages，五分钟就能跑通，代价是任何人都能列出那个文件名。文件名是不可猜的 token。客户端按 URL 定期回源。日常更新只有两条命令：<code class="inline-code">fetch</code> → <code class="inline-code">subscribe push</code>，未变动的事件在客户端保持安静，变动的事件原地更新。</p></div>
-    <div class="feature"><div class="ico">🔁</div><h3>换链接（rotate）</h3><p>转发给了不该给的人、或有任何泄露疑虑时跑 <code class="inline-code">subscribe rotate</code>：新文件挂上分支、旧文件名从 tip 消失，<strong>旧 URL 自此 404</strong>。代价是所有客户端都要重新粘贴新 URL。</p></div>
-    <div class="feature"><div class="ico">🏷</div><h3>日历名从产物里来</h3><p>不指定 <code class="inline-code">--name</code> 时，标题按课表自动推导成「西安交通大学课表 · 大三-上」；凡是不敢定的情况（自定义学期 key、课表里没有入学年级字段、年级出现并列）一律退回基础名，<strong>宁可少信息也不给一个错的年级</strong>。年级只影响标题，<strong>不参与 UID、不写进事件</strong>，所以订阅端不会因为换了名字而重收整学期课程。</p></div>
+    <div class="feature"><div class="ico">📥</div><h4>手工导入</h4><p>拿到 .ics → 双击导入。简单、零公网暴露，但课表一变就要重新导出、重新导入，多端各来一遍。导入型入口把事件一次性写进本机，<strong>此后不再回源</strong>，<code class="inline-code">subscribe push</code> 对它无效。</p></div>
+    <div class="feature"><div class="ico">🔗</div><h4>URL 订阅（subscribe）</h4><p>把同一份 .ics 发布到<strong>你自己的静态托管</strong>——<strong>推荐私有仓库 + Cloudflare Pages</strong>，那条路上 token 才真的是一道门槛；也可以用公开的 GitHub Pages，五分钟就能跑通，代价是任何人都能列出那个文件名。文件名是不可猜的 token。客户端按 URL 定期回源。日常更新只有两条命令：<code class="inline-code">fetch</code> → <code class="inline-code">subscribe push</code>，未变动的事件在客户端保持安静，变动的事件原地更新。</p></div>
+    <div class="feature"><div class="ico">🔁</div><h4>换链接（rotate）</h4><p>转发给了不该给的人、或有任何泄露疑虑时跑 <code class="inline-code">subscribe rotate</code>：新文件挂上分支、旧文件名从 tip 消失，<strong>旧 URL 自此 404</strong>。代价是所有客户端都要重新粘贴新 URL。</p></div>
+    <div class="feature"><div class="ico">🏷</div><h4>日历名从产物里来</h4><p>不指定 <code class="inline-code">--name</code> 时，标题按课表自动推导成「西安交通大学课表 · 大三-上」；凡是不敢定的情况（自定义学期 key、课表里没有入学年级字段、年级出现并列）一律退回基础名，<strong>宁可少信息也不给一个错的年级</strong>。年级只影响标题，<strong>不参与 UID、不写进事件</strong>，所以订阅端不会因为换了名字而重收整学期课程。</p></div>
   </div>
 
-  <h3>客户端行为矩阵（2026-10 真机演练；单账户单样本，别当厂商承诺）</h3>
+  <h4>客户端行为矩阵（2026-10 真机演练；单账户单样本，别当厂商承诺）</h4>
   <div class="tablewrap">
   <table>
     <thead><tr><th>客户端</th><th>订阅入口</th><th>收到 <code>STATUS:CANCELLED</code></th><th>条目从 feed 静默消失</th><th>自动回源</th><th>用 <code>X-WR-CALNAME</code> 命名</th></tr></thead>
@@ -407,7 +399,7 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     另外，客户端通常在<strong>添加那一刻</strong>取一次日历名就不再更新：产物后来改了名，已加好的日历未必跟着改——
     退订再重新添加**通常**有效，但本仓库未在真机上验证过改名这一项；而且 2026-10-12 的整学期迁移演练里，ColorOS 上「删除日历 + 重新添加」并**没有**清掉本地产物里已不存在的旧条目——所以别把重加当保证，改完要让用户确认日历确实变干净了。</p>
 
-  <h3>所以手机侧到底订哪个</h3>
+  <h4>所以手机侧到底订哪个</h4>
   <ul class="checks">
     <li><strong>iPhone / Apple 日历</strong>：原生「添加日历 → 订阅」，直接贴 URL；CLI 也会顺手打一行把 <code class="inline-code">https://</code> 换成 <code class="inline-code">webcal://</code> 的同址链接，iOS 上<strong>通常</strong>点开即弹订阅确认——这条本仓库未做真机验证，失败就回手动路径。</li>
     <li><strong>Android（不分 ROM）：就装 ICSx⁵，不用按机型试别的通路</strong>（<code class="inline-code">at.bitfire.icsdroid</code>）——
@@ -467,17 +459,68 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     URL 已下线），仍按小规模实测写「通常会移除」。详见 <a href="docs/user-guide/subscription.md">「升级到 v0.8」</a>；
     ⑤ 发布分支永远是「无父孤儿单提交 + 强推」，课表旧版本不进 git 历史。
   </div>
-</section>
 
-<section id="automate">
-  <div class="sec-kicker">自动化 · 体检</div>
-  <h2>配置不用手抄，状态不用猜</h2>
+    </div>
+  </details>
+</section>
+<section id="exams" class="topic-section">
+  <details class="topic-card">
+    <summary><span class="topic-tag">考试安排</span><h3>考试、改期与取消怎么处理</h3><span class="topic-description">与课程共用一份日历；取消条目的显示方式取决于客户端。</span></summary>
+    <div class="topic-body">
   <div class="grid">
-    <div class="feature"><div class="ico">📰</div><h3>notice · 停课/调课通知</h3><p>解析教务处通知页的调课表格，与校历周次交叉校验后合并进配置——只新增、识别不了的行拒绝写盘。</p></div>
-    <div class="feature"><div class="ico">⏰</div><h3>schedule · 作息表</h3><p>从教务处公开「学生作息时间表」页直接读第 1~10 节课两季钟点，切换点取自页面原文，幂等合并。</p></div>
-    <div class="feature"><div class="ico">🔍</div><h3>diff · 调课检测</h3><p>纯本地比对两次 fetch 的快照：哪门课新增删除、哪个时段改了周次/教室/教师，并列出「考试变更」（新增 / 取消 / 时间 / 教室 / 座位）。</p></div>
-    <div class="feature"><div class="ico">🩺</div><h3>doctor · 只读体检</h3><p>版本 / 会话 / 校历 / 作息 / 课表快照 / 考试快照 / 渲染 / <strong>校历事件</strong> / 订阅留底一次看全。不写任何文件、不触发 <code class="inline-code">fetch</code>，默认一个 HTTP 请求都不发（只有 <code class="inline-code">--verify</code> 才对订阅 URL 做一次匿名 GET）。<strong>0 = 无阻塞（警告不阻塞）、5 = 有阻塞项</strong>，脚本与 Agent 可以直接判定成败。</p></div>
-    <div class="feature"><div class="ico">🧩</div><h3>skills/ · 交给编码 Agent</h3><p>仓库根两个技能：<code class="inline-code">xjtu-timetable-setup</code>（八步部署向导，登录一步显式禁止后台执行器与管道，收尾以 <code class="inline-code">doctor</code> 退出码定成败）与 <code class="inline-code">timetable-api-archaeology</code>（给陌生学校的接口考古方法论，含「什么时候该停下来」）。整个目录复制进你所用 Agent 的 skills 目录即可，内容不假设任何特定产品。只想试一次的话，<strong>页首有一段可整段复制的提示词</strong>。</p></div>
+    <div class="feature"><div class="ico">📝</div><h4>不必再手抄期末</h4><p><code class="inline-code">fetch</code> 的 HTTP 路径在抓课表的同时抓「我的考试安排」，<code class="inline-code">export</code> / <code class="inline-code">subscribe push</code> 把考试并进<strong>同一份 .ics、同一个订阅 URL</strong>。考试是单场绝对时刻的 VEVENT：不用 RRULE、不写 VALARM，提醒交给客户端设置。</p></div>
+    <div class="feature"><div class="ico">🎫</div><h4>类型词原样带出</h4><p>标题形如「示例课程甲（期末考试）」，类型词取自接口原文——期中考、结课考，以及「补考」「缓考」都原样呈现，不做白名单。考场在 <code class="inline-code">LOCATION</code>，座位号与课程号、学分、主考教师写在 <code class="inline-code">DESCRIPTION</code>。</p></div>
+    <div class="feature"><div class="ico">🚦</div><h4>三态判定：状态未知绝不覆盖</h4><p>「本学期没有考试」和「查询没成功」返回的行数<strong>都是空</strong>，所以判定落在响应的 <code class="inline-code">extParams.code</code> 上：有考试 / 确认无考试 / 状态未知。未知时宁可沿用旧快照（warning 里报出它是哪一天的）也不覆盖——课程是主功能，考试侧任何失败都不会让 <code class="inline-code">fetch</code>、<code class="inline-code">export</code> 非零退出。</p></div>
+    <div class="feature"><div class="ico">🔻</div><h4>撤销自动下发（v0.6）</h4><p>已发布到订阅端的考试若在本次数据里消失（改期、取消、或确认无考试），下一份产物把那条旧事件标上 <code class="inline-code">STATUS:CANCELLED</code> 再发一次，保留到它的原定时刻自然过去。撤销条目只带最小字段——<strong>没有考场、座位、教师，也没有课程名</strong>。</p></div>
+  </div>
+  <div class="callout warnbox" style="margin-top:1.4rem">
+    <b>⚠️ 但「取消」在手机上不一定表现为消失。</b>2026-10 真机演练：Google 日历（网页版）会据此移除日程；
+    <strong>Outlook.com 与 ColorOS 系统日历实测忽略 <code class="inline-code">STATUS:CANCELLED</code></strong>，把撤销条目当普通事件导入。
+    自 v0.6.1 起那条日程带一个固定标题「<strong>已取消的活动</strong>」（此前是不带标题的「无主题」残条），
+    一眼能认出是废弃条目。<strong>它不会自动消失</strong>：要等原定时刻过去、条目从产物里退场，而退场之后
+    归谁清理是按通路分的——ICSx⁵ 与 Google 网页版会删（前者 2026-10-19 正式订阅真机、后者 2026-10-13 试验田），
+    <strong>ColorOS 系统日历不会</strong>，那条日程永久留着、还单条删不掉；Outlook 从没拿到过回源读数。
+    分通路的判据见下面的行为矩阵。
+    一次性导入型客户端不回源，撤销对它完全无从生效——仍需手动删除。
+  </div>
+
+    </div>
+  </details>
+</section>
+<section id="calendar" class="topic-section">
+  <details class="topic-card">
+    <summary><span class="topic-tag">可选功能</span><h3>开学、考试周和假期也放进日历</h3><span class="topic-description">默认关闭，确认学校校历并显式开启后才加入。</span></summary>
+    <div class="topic-body">
+  <div class="grid">
+    <div class="feature"><div class="ico">🗓</div><h4>只做有出处的五类</h4><p><code class="inline-code">semester_start</code>（起课）、<code class="inline-code">registration</code>（报到）、<code class="inline-code">exam_period</code>（期末考试周）、<code class="inline-code">vacation</code>（寒暑假）、<code class="inline-code">holiday</code>（放假调休）——都是全天事件，判据是「学校公布过」。清单之外一律不做，尤其不许拿总周次反推考试周；工具也不抓取校历，这几条由你从官方校历图和教务处通知抄进配置，逐条附来源。</p></div>
+    <div class="feature"><div class="ico">🔗</div><h4>每条都得给一个校内公开页</h4><p><code class="inline-code">source_id</code> / <code class="inline-code">category</code> / <code class="inline-code">title</code> / <code class="inline-code">start</code> / <code class="inline-code">end</code> / <code class="inline-code">source_url</code> 六项必填。来源域名必须落在 <code class="inline-code">xjtu.edu.cn</code> 上（按点边界匹配，<code class="inline-code">evilxjtu.edu.cn</code> 不算），并且不许带 <code class="inline-code">ticket</code>、<code class="inline-code">token</code>、<code class="inline-code">session</code> 一类认证参数——那份产物是匿名可读的，一个带凭据的地址等于把凭据公开。</p></div>
+    <div class="feature"><div class="ico">📏</div><h4>配置写闭区间，产物发互斥钟点</h4><p>配置里的 <code class="inline-code">end</code> 含当天，只有渲染那一步才换成 RFC 5545 要求的互斥 <code class="inline-code">DTEND</code>，全项目也只在这一处转。中秋那条写 <code class="inline-code">2026-09-25</code> 至 <code class="inline-code">2026-09-27</code>，发出去是 <code class="inline-code">DTSTART;VALUE=DATE:20260925</code> 配 <code class="inline-code">DTEND;VALUE=DATE:20260928</code>，日历里显示的是 25、26、27 三天。</p></div>
+    <div class="feature"><div class="ico">🏷</div><h4>身份是 <code class="inline-code">source_id</code>，不是标题</h4><p>UID 由「学期 | cal | <code class="inline-code">source_id</code>」推导，类别中文名和标题都不参与。把「国庆节放假」改成别的说法是原地更新，订阅端不会重收；改 <code class="inline-code">source_id</code> 才是换了一条事件，等于旧的消失、新的重来。</p></div>
+  </div>
+  <div class="callout warnbox" style="margin-top:1.4rem">
+    <b>⚠️ 它默认不带，而且不接撤销通路。</b>加 <code class="inline-code">--include-calendar-events</code> 才会进产物（0.9 起默认不带）。
+    从配置里删掉一条，就是让它<strong>从 feed 消失</strong>，工具不会替它发 <code class="inline-code">STATUS:CANCELLED</code>——
+    之后会发生什么按通路分：<strong>ICSx⁵ 会清掉</strong>（2026-10-19 真机：两条过期退场的占位同步后界面上都不在了，
+    界面级判据）、
+    <strong>Google 网页版会删</strong>（2026-10-13 试验田实测）、<strong>ColorOS 系统日历不删</strong>，那条日程会永久留着。
+    发布前还有三道准入：配置有错、来源之间有未解决的冲突、上一版带过校历事件而这次忘了开旗标——
+    任一命中即退出码 <code class="inline-code">8</code>，<strong>零写盘、不发版</strong>，改的是配置而不是加 <code class="inline-code">--allow-*</code>。
+  </div>
+
+    </div>
+  </details>
+</section>
+<div class="chapter-heading" id="reference"><div class="sec-kicker">03 · 帮助与原理</div><h2>遇到问题时，再往下看</h2><p>配置工具、命令与原理保留在这里，默认收起。</p></div>
+<section id="automate" class="topic-section">
+  <details class="topic-card">
+    <summary><span class="topic-tag">排查与配置</span><h3>体检、调课检测和配置工具</h3><span class="topic-description">先用 doctor 查看状态，再按需了解 diff、notice 与 schedule。</span></summary>
+    <div class="topic-body">
+  <div class="grid">
+    <div class="feature"><div class="ico">📰</div><h4>notice · 停课/调课通知</h4><p>解析教务处通知页的调课表格，与校历周次交叉校验后合并进配置——只新增、识别不了的行拒绝写盘。</p></div>
+    <div class="feature"><div class="ico">⏰</div><h4>schedule · 作息表</h4><p>从教务处公开「学生作息时间表」页直接读第 1~10 节课两季钟点，切换点取自页面原文，幂等合并。</p></div>
+    <div class="feature"><div class="ico">🔍</div><h4>diff · 调课检测</h4><p>纯本地比对两次 fetch 的快照：哪门课新增删除、哪个时段改了周次/教室/教师，并列出「考试变更」（新增 / 取消 / 时间 / 教室 / 座位）。</p></div>
+    <div class="feature"><div class="ico">🩺</div><h4>doctor · 只读体检</h4><p>版本 / 会话 / 校历 / 作息 / 课表快照 / 考试快照 / 渲染 / <strong>校历事件</strong> / 订阅留底一次看全。不写任何文件、不触发 <code class="inline-code">fetch</code>，默认一个 HTTP 请求都不发（只有 <code class="inline-code">--verify</code> 才对订阅 URL 做一次匿名 GET）。<strong>0 = 无阻塞（警告不阻塞）、5 = 有阻塞项</strong>，脚本与 Agent 可以直接判定成败。</p></div>
+    <div class="feature"><div class="ico">🧩</div><h4>skills/ · 交给编码 Agent</h4><p>仓库根两个技能：<code class="inline-code">xjtu-timetable-setup</code>（八步部署向导，登录一步显式禁止后台执行器与管道，收尾以 <code class="inline-code">doctor</code> 退出码定成败）与 <code class="inline-code">timetable-api-archaeology</code>（给陌生学校的接口考古方法论，含「什么时候该停下来」）。整个目录复制进你所用 Agent 的 skills 目录即可，内容不假设任何特定产品。只想试一次的话，<strong>页首有一段可整段复制的提示词</strong>。</p></div>
   </div>
   <pre style="margin-top:1.2rem">python -m xjtu_calendar <span class="p">notice</span>   --url &lt;通知页地址&gt; --semester 2026-2027-1 --apply
 python -m xjtu_calendar <span class="p">schedule</span> --semester 2026-2027-1 --apply
@@ -488,11 +531,14 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
     照抄走查过一轮（抓出并修好五处「照抄就跑不通 / 绿灯撒谎」），但<strong>真人从零跑第 2 步登录</strong>
     仍未覆盖——离线环境造不出真凭据。技能文档的「已知边界」写着同一句话。
   </div>
-</section>
 
-<section id="commands">
-  <div class="sec-kicker">参考</div>
-  <h2>命令一览</h2>
+    </div>
+  </details>
+</section>
+<section id="commands" class="topic-section">
+  <details class="topic-card">
+    <summary><span class="topic-tag">命令参考</span><h3>命令与退出码一览</h3><span class="topic-description">需要查参数或判断失败原因时展开。</span></summary>
+    <div class="topic-body">
   <div class="tablewrap">
   <table>
     <thead><tr><th>命令</th><th>作用</th><th>联网？</th></tr></thead>
@@ -510,11 +556,41 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
   </table>
   </div>
   <p style="color:var(--sub);font-size:.9rem;margin-top:.8rem">退出码有语义（2=未登录、3=登录失效、4=接口拒绝——最常见是登录停在「请选择身份」的半截会话，见 README 的 403 一条、5=<code>doctor</code> 检出阻塞项、6=成批撤销被熔断拒绝、7=本地发布状态与线上不相容（跑 <code>subscribe repair</code>）、8=校历事件的发布准入没过（<strong>改配置</strong>，不是 <code>repair</code> 也不是 <code>--allow-*</code>）），方便脚本串联。完整参数与客户端订阅入口见 <a href="https://github.com/XLJFZ/xjtu-timetable-calendar#命令参考">README · 命令参考</a>。</p>
-</section>
 
-<section id="open">
-  <div class="sec-kicker">未排期 · 欢迎接手</div>
-  <h2>思源学堂的作业 DDL：取证做完了，本仓库不实现</h2>
+    </div>
+  </details>
+</section>
+<section id="why" class="topic-section">
+  <details class="topic-card">
+    <summary><span class="topic-tag">技术原理</span><h3>课表如何变成日历事件</h3><span class="topic-description">冬夏作息、稳定事件标识与更新机制的设计说明。</span></summary>
+    <div class="topic-body">
+  <div class="grid">
+    <div class="feature"><div class="ico">🕐</div><h4>钟点不属于课表事实</h4><p>课程只存「星期 + 节次 + 教学周」。<code class="inline-code">08:00</code> 这类钟点由当天生效的作息表在导出时现算——学期中途换季，数据模型毫发无损。</p></div>
+    <div class="feature"><div class="ico">🧩</div><h4>不用一条 RRULE 糊弄一学期</h4><p>重复规则只携带第一个钟点，作息一换整条都错。本项目为每一次实际上课生成独立 VEVENT，几百个事件对现代日历毫无负担，换来逻辑可靠。</p></div>
+    <div class="feature"><div class="ico">🔁</div><h4>UID 稳定 + SEQUENCE 版本</h4><p>反复导出同一节课得到同一 UID；内容变了就递增 SEQUENCE——重新导入时日历客户端知道该「原地更新」，而不是无视或翻倍。v0.8 起课程名不再参与 UID 身份，改课名同样原地更新（<code class="inline-code">course_id</code> 缺失的行除外）。</p></div>
+    <div class="feature"><div class="ico">🛡</div><h4>绝不静默缺课</h4><p>周次越界报错、解析不了的行拒绝写盘、无法表达的调课默认终止导出。宁可当场失败，也不给你一份「看起来正常、实则少课」的日历。</p></div>
+  </div>
+
+  <div class="pipeline" aria-label="数据流水线">
+    <div class="step"><b>eHall</b><small>本人在浏览器登录</small></div><span class="arrow">→</span>
+    <div class="step"><b>Parser</b><small>接口变更唯一适配点</small></div><span class="arrow">→</span>
+    <div class="step"><b>CourseMeeting</b><small>星期+节次+教学周</small></div><span class="arrow">→</span>
+    <div class="step"><b>校历 + 作息表</b><small>换算成真实日期钟点</small></div><span class="arrow">→</span>
+    <div class="step"><b>.ics</b><small>逐次上课一个事件</small></div>
+  </div>
+  <p class="note" style="text-align:center">考试走的是同一套尾部管线：独立的考试快照 + 独立的 UID 配方，撤销条目则对照本地台账（<code class="inline-code">last-exams-&lt;学期&gt;.ics</code>）生成，因此需要上一次发布的留底作 SEQUENCE 基线。</p>
+
+  <div class="callout" style="margin-top:1.4rem">
+    <b>⚠️ 这不是时区 DST。</b>中国全年恒为 <code class="inline-code">Asia/Shanghai</code>。真正变化的是「第 N 节课对应的钟点」——学校的作息规则问题，本项目把两者彻底解耦，导出的 ICS 还按 RFC 5545 内嵌了 VTIMEZONE。
+  </div>
+
+    </div>
+  </details>
+</section>
+<section id="open" class="topic-section">
+  <details class="topic-card">
+    <summary><span class="topic-tag">未排期</span><h3>作业截止时间：取证与接手说明</h3><span class="topic-description">尚未实现，不属于当前版本的功能。</span></summary>
+    <div class="topic-body">
   <p>
     把「还没交的作业」的截止时间也写进同一份日历，这个提案在 2026-10-21 做过一次
     <strong>只读取证</strong>，规格与判据都写进了
@@ -542,8 +618,10 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
     ② 客户端语义已经量过——<strong>ICSx⁵ 会把从产物里消失的条目清掉</strong>（2026-10-19 真机判过），
     而 <strong>ColorOS 原生订阅永不删消失项</strong>，所以「交完自动退场」在不同客户端上不是同一件事。
   </div>
-</section>
 
+    </div>
+  </details>
+</section>
 <section id="privacy">
   <div class="sec-kicker">隐私与安全</div>
   <h2>你的数据只属于你</h2>
@@ -572,6 +650,8 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
     <b>非官方声明：</b>本项目为个人开发的开源工具，与西安交通大学无隶属关系；课表数据归学校与本人所有，导出行为仅限当前登录账号本人正常可访问的范围。
   </div>
 </section>
+</main>
+
 
 <footer>
   <div class="foot-in">
@@ -581,5 +661,32 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
   </div>
 </footer>
 
+<script>
+// 折叠不改变原有章节地址；打开书签时先展开目标内容。
+function revealLinkedTopic(){
+  let id;
+  try { id=decodeURIComponent(location.hash.slice(1)); } catch { return; }
+  if(!id)return;
+  const target=document.getElementById(id);
+  if(!target)return;
+  const own=target.querySelector(':scope > details.topic-card');
+  if(own)own.open=true;
+  for(let parent=target.parentElement;parent;parent=parent.parentElement){
+    if(parent.tagName==='DETAILS')parent.open=true;
+  }
+  requestAnimationFrame(()=>target.scrollIntoView({block:'start'}));
+}
+document.addEventListener('click',event=>{
+  if(event.defaultPrevented||event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
+  const link=event.target instanceof Element?event.target.closest('a[href^="#"]'):null;
+  if(!link)return;
+  const hash=link.getAttribute('href');
+  requestAnimationFrame(()=>{
+    if(location.hash===hash)revealLinkedTopic();
+  });
+});
+window.addEventListener('hashchange',revealLinkedTopic);
+revealLinkedTopic();
+</script>
 </body>
 </html>

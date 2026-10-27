@@ -1783,7 +1783,9 @@ def _require_compatible_local_state(
     return compat
 
 
-def _resolve_revive_requests(cfg: Settings, semester: str, requested: list[str]) -> list[str]:
+def _resolve_revive_requests(
+    cfg: Settings, semester: str, requested: list[str], *, input_path: str | None = None
+) -> list[str]:
     """把 `--revive` 点名的课换算成 `stable_course_key`，认不出来就拒绝发布。
 
     接受两种写法：课程号（`course_id`，也就是 `stable_course_key` 本身），或课程名
@@ -1794,7 +1796,7 @@ def _resolve_revive_requests(cfg: Settings, semester: str, requested: list[str])
     """
     if not requested:
         return []
-    path = cfg.raw_timetable_path(semester)
+    path = Path(input_path) if input_path is not None else cfg.raw_timetable_path(semester)
     if not path.is_file():
         raise XjtuCalendarError(
             f"要用 --revive 就得先有本学期的课表快照：{path} 不存在",
@@ -2044,7 +2046,12 @@ def _subscribe_push(
     )
     # 误删恢复（§16）：把 --revive 点名的课在计数器上 +1，本次构建就带新盐值。
     # 只改这几门课的 UID，其余逐字节不变 —— 这条不变量由用例钉住。
-    revive_keys = _resolve_revive_requests(cfg, semester, list(getattr(args, "revive", []) or []))
+    revive_keys = _resolve_revive_requests(
+        cfg,
+        semester,
+        list(getattr(args, "revive", []) or []),
+        input_path=getattr(args, "input", None),
+    )
     revive_salts = _revived_salts(state, revive_keys)
     if revive_keys:
         print(

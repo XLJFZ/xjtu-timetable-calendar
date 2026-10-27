@@ -988,6 +988,7 @@ def check_local_compatibility(
             "baseline",
             f"本地留底与最后一次已发布的 ICS 不一致（{baseline.name}）",
         )
+    pruning_notes: list[str] = []
     for label, human, path_key, want, keep_sha in (
         (
             "course_ledger",
@@ -1029,12 +1030,9 @@ def check_local_compatibility(
         if _sha_of(path_key) != hashlib.sha256(want.encode("utf-8")).hexdigest():
             forgiven = _difference_is_only_time_pruning(want, path_key, now=wall_clock, label=human)
             if forgiven is not None:
-                return CompatibilityCheck(
-                    True,
-                    "ledger_pruned_by_time",
-                    f"{human}有 {forgiven} 行因原定时刻已过而退场"
-                    "（`export` 与发布共用这份台账，台账按设计剪掉过期行），本次按相容放行",
-                )
+                pruning_notes.append(f"{human}有 {forgiven} 行因原定时刻已过而退场")
+                # 只放行这份台账的差异；其余台账和迁移标记仍须逐项核对。
+                continue
             return CompatibilityCheck(
                 False,
                 label,
@@ -1045,6 +1043,13 @@ def check_local_compatibility(
             False,
             "uid_recipe",
             f"状态文件里的 UID 配方标记与已发布版本不一致（应为 {journal.uid_recipe}）",
+        )
+    if pruning_notes:
+        return CompatibilityCheck(
+            True,
+            "ledger_pruned_by_time",
+            "；".join(pruning_notes)
+            + "（`export` 与发布共用台账，按设计剪掉过期行），其余状态均相容，本次放行",
         )
     return CompatibilityCheck(True, "consistent", "留底、两份台账与迁移标记均与已发布版本相容")
 

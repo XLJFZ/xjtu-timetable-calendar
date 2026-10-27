@@ -388,8 +388,12 @@ python -m xjtu_calendar <span class="p">subscribe push</span> --semester 2026-20
     被删那条的原定时刻还在两个多月之外 ⇒ 对照成立，源码那条推论被否证。
     <strong>2026-10-24 再补一格</strong>：把被删的对象换成<strong>仍在产物里的一条 live 真课</strong>，
     同步之后同样没有回来 ⇒ "尊重本地删除"不限于取消条目。这条反过来也是一句提醒：
-    <strong>别在手机上删课</strong>——误删一节课不会随下一次发布自己回来，唯一的恢复手段是
-    在 ICSx⁵ 里移除该订阅再重新添加，而那会清掉整本日历的本地状态。
+    <strong>别在手机上删课</strong>——误删一节课不会随下一次发布自己回来。
+    <strong>0.10.0 起有一条出口</strong>：在电脑上跑
+    <code class="inline-code">subscribe push --semester &lt;学期&gt; --revive &lt;课程号&gt;</code>，
+    让那门课换一个 UID 重发（2026-10-25 真机验过：被删那节确实回来了，单账户单样本、界面级判据）；
+    代价是它在每台设备上都算「旧事件消失 + 新事件出现」，ColorOS 上旧那条会永久残留。
+    0.10.0 之前只能移除整本订阅再重新添加，那会清掉整本日历的本地状态。
     限制要跟着写：判据是<strong>界面级</strong>（库里那一行是硬删还是打软删除标记未取），
     且这条只属于 ICSx⁵——ColorOS 原生订阅仍然三条路全部删不掉。判据见
     <code class="inline-code">docs/design/2026-10-11-subscription-followups.md</code> §13。</p>
@@ -572,7 +576,7 @@ python -m xjtu_calendar <span class="p">doctor</span>   --semester 2026-2027-1 -
 <footer>
   <div class="foot-in">
     <span>XJTU 课表日历 · MIT License · 开源免费</span>
-    <span>本页核对到 v0.10.0 · 版本号与默认值以 PyPI 与仓库 README 为准 · 客户端读数来自 2026-10 真机演练（单账户单样本）</span>
+    <span>本页核对到 v0.10.3 · 版本号与默认值以 PyPI 与仓库 README 为准 · 客户端读数来自 2026-10 真机演练（单账户单样本）</span>
     <span><a href="https://github.com/XLJFZ/xjtu-timetable-calendar">GitHub 仓库</a> · <a href="https://github.com/XLJFZ/xjtu-timetable-calendar/issues">问题反馈</a></span>
   </div>
 </footer>

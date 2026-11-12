@@ -1627,6 +1627,23 @@ def _two_future_rows() -> list[dict[str, str]]:
     ]
 
 
+def _roll_semester_forward(home: Path) -> None:
+    """把固件学期挪到下周一。
+
+    这几条用例要的是「事件还没到点」，而固件学期写死在 2026-09-07：
+    2026-11-13（第 10 周）起，第 10 周的课已经过去，D2 筛把它们踢出台账，
+    `STATUS:CANCELLED` 占位自然消失——是时间炸弹，不是实现回归。
+    """
+    path = home / "semesters" / f"{SEMESTER}.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    today = now_local().date()
+    monday = today + timedelta(days=7 - today.weekday())
+    data["semester"]["first_week_monday"] = monday.isoformat()
+    data["semester"]["start_date"] = monday.isoformat()
+    data["semester"]["end_date"] = (monday + timedelta(weeks=16, days=-1)).isoformat()
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def test_revive_rekeys_only_that_course_and_cancels_the_old_uid(
     env: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1639,6 +1656,7 @@ def test_revive_rekeys_only_that_course_and_cancels_the_old_uid(
     ③ 一门课的规模不会触发熔断（门 2 的双条件是 ≥10 条且 ≥30%，这里远不到）。
     """
     home, origin = env
+    _roll_semester_forward(home)
     _rewrite_rows(home, _two_future_rows())
     assert _init(origin) == 0
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0
@@ -2006,6 +2024,7 @@ def test_rotate_keeps_the_revive_rekeying(
     没被点名的课也不动，旧 UID 的撤销占位继续在。
     """
     home, origin = env
+    _roll_semester_forward(home)
     _rewrite_rows(home, _two_future_rows())
     assert _init(origin) == 0
     assert main(["subscribe", "push", "--semester", SEMESTER]) == 0

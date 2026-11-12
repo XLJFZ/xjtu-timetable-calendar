@@ -76,6 +76,7 @@ README 里保留同名小节作入口；CLI 报错文案指的「必须由你配
 |---|---|
 | `excluded_dates` | **停课日**：该日不生成任何事件。 |
 | `overrides[date].source_date` | **调课日**：该日原课程停上，改为按 `source_date` 所在教学周 + 星期的课表上课。 |
+| `overrides[date].add_meetings` | **按日期加课**：只新增指定的课，不动该日其它课（补课 / 调入）。 |
 | `overrides[date].cancel` | 仅停课（不调入其他课表）。 |
 | `overrides[date].note` / `location` | 附加备注 / 覆盖教室。 |
 
@@ -94,9 +95,34 @@ README 里保留同名小节作入口；CLI 报错文案指的「必须由你配
   （例如冬春季作息切换后补课自动用新钟点）；
 - UID 与普通事件同一规则，稳定可复现。
 
+**`overrides[date].add_meetings`（按日期加课）。** 用于教务调课记录里的
+「补课 / 调入」——这类安排主课表里往往看不出来，只在调课记录里多一条：
+
+```json
+"overrides": {
+  "2026-11-14": {
+    "add_meetings": [
+      {
+        "course_id": "COMP401727",
+        "periods": [5, 6, 7, 8],
+        "location": "3-4007",
+        "note": "补课（教务调课记录）"
+      }
+    ]
+  }
+}
+```
+
+- `course_id` / `course_name` 至少给一个，引用课表里已有的课程安排；
+- `periods` 必填，钟点按**该日**适用作息解析；
+- `location` / `teacher` / `note` 可选，不填沿用被引用课程；
+- **只加不删**：该日其它课程照常生成（与 `source_date` 的「整日换课表」不同）；
+- 引用不到课程、或同一门课有多条安排又无法用 `periods` 唯一匹配时报错，不替用户猜。
+
 配置校验（fail-closed）：`source_date` 等于自身、落在学期范围外、
-目标日又在 `excluded_dates` 中、或同一日期残留
-`unsupported_adjustments` 旧声明 —— 加载时即报错。
+目标日又在 `excluded_dates` 中、同一日期同时声明 `cancel` 与 `add_meetings`、
+加课日落在停课日或学期范围外、或同一日期残留 `unsupported_adjustments` 旧声明
+—— 加载时即报错。
 
 **`unsupported_adjustments`（可选）：声明「已知但本工具无法表达」的调课。**
 

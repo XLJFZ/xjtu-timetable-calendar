@@ -18,7 +18,9 @@
 `notice` 子命令解析教务处发布的结构化通知页，把「停课日」与「按某日课表上课」
 的调课整理进学期配置（周次与学期起始日交叉校验）；解析不了的行逐条列出且不落盘，
 只要存在无法可靠解析的行，`--apply` 就整体拒绝写入（fail-closed）。
-当然也可以随时手工录 `excluded_dates` 与 `overrides`。
+当然也可以随时手工录 `excluded_dates` 与 `overrides`；单门课的补课/调入用
+`overrides[日期].add_meetings`（只新增那一节课，不动当天其它课，写法见
+[配置模板](config-templates.md)）。
 **作息表**的自动获取同样已经实现 —— 见上文
 [4. 作息表自动获取](#4-作息表自动获取schedule-子命令可选)（`schedule` 子命令，
 官方作息页，切换点取自页面原文，fail-closed 同口径）。

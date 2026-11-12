@@ -24,7 +24,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .academic_calendar import AcademicCalendar
+from .academic_calendar import AcademicCalendar, AddedMeeting
 from .calendar_events import make_calendar_uid
 from .config import Settings
 from .errors import (
@@ -399,8 +399,121 @@ def build_events(
                 )
             )
 
+    # ---- 第三遍：按日期加课（add_meetings） ----
+    #
+    # 与第二遍的区别：source_date 是「整日换成另一天课表」，本遍只往指定
+    # 日期叠加上课，不动该日其它课（补课 / 调入场景）。
+    for day, override in sorted(calendar.overrides.items()):
+        if not override.add_meetings:
+            continue
+        week = calendar.date_to_week(day)
+        total = semester.total_weeks
+        if week < 1:
+            raise CalendarExportError(
+                f"add_meetings 的日期 {day.isoformat()} 早于第 1 教学周星期一，无法换算教学周。"
+            )
+        if total is not None and week > total:
+            raise CalendarExportError(
+                f"add_meetings 的日期 {day.isoformat()} 落在第 {week} 教学周，"
+                f"超出学期总周数 {total}。"
+            )
+
+        for added in override.add_meetings:
+            base = _resolve_added_meeting(meetings, added, day)
+            sorted_periods = sorted(set(added.periods))
+            try:
+                start, end = schedules.resolve_period_time(day, sorted_periods)
+            except Exception as exc:
+                raise CalendarExportError(
+                    f"解析加课日 {day.isoformat()} 第 {sorted_periods} 节的上课时间失败："
+                    f"{exc}（课程：{base.course_name}）"
+                ) from exc
+
+            meeting = CourseMeeting(
+                course_id=base.course_id,
+                course_name=base.course_name,
+                weekday=day.isoweekday(),
+                periods=sorted_periods,
+                weeks=[week],
+                teacher=added.teacher or base.teacher,
+                location=added.location or base.location,
+                campus=base.campus,
+                grade_year=base.grade_year,
+            )
+
+            uid = make_uid(
+                semester.key,
+                meeting,
+                day.isoformat(),
+                revive_salt=(revive_salts or {}).get(meeting.stable_course_key),
+            )
+            if uid in seen_summaries:
+                if (
+                    seen_summaries[uid] != meeting.course_name.strip()
+                    and collision_sink is not None
+                ):
+                    collision_sink.add(uid)
+                continue
+            seen_summaries[uid] = meeting.course_name.strip()
+
+            description = _build_description(meeting, week)
+            note = added.note or override.note
+            if with_override_notes and note:
+                description = f"{description}\n备注：{note}"
+
+            events.append(
+                CalendarEvent(
+                    uid=uid,
+                    summary=meeting.course_name.strip(),
+                    start=start,
+                    end=end,
+                    location=meeting.full_location,
+                    description=description,
+                    meeting=meeting,
+                )
+            )
+
     events.sort(key=sort_key)
     return events
+
+
+def _resolve_added_meeting(
+    meetings: Sequence[CourseMeeting],
+    added: AddedMeeting,
+    day: date,
+) -> CourseMeeting:
+    """为一条件 ``add_meetings`` 找到它引用的既有课程安排。
+
+    找不到就报错（fail-closed）：静默跳过会产出一份悄悄缺课的日历。
+    同名多安排时，用 ``periods`` 精确匹配一次；仍不唯一就报错，让配置者
+    自己消歧，绝不替用户猜。
+    """
+    if added.course_id:
+        target = added.course_id.strip().upper()
+        matches = [m for m in meetings if (m.course_id or "").strip().upper() == target]
+        ref = f"课程编号 {added.course_id}"
+    else:
+        target = (added.course_name or "").strip()
+        matches = [m for m in meetings if m.course_name.strip() == target]
+        ref = f"课程名称 {added.course_name}"
+
+    if not matches:
+        raise CalendarExportError(
+            f"add_meetings（{day.isoformat()}）找不到课程：{ref}。"
+            f"请核对课程编号/名称是否与课表一致。"
+        )
+    if len(matches) == 1:
+        return matches[0]
+
+    exact = [m for m in matches if sorted(set(m.periods)) == sorted(set(added.periods))]
+    if len(exact) == 1:
+        return exact[0]
+
+    raise CalendarExportError(
+        f"add_meetings（{day.isoformat()}）引用的{ref}有多条安排"
+        f"（星期 {sorted({m.weekday for m in matches})}），无法唯一确定；"
+        f"请让 periods 与其中一条完全一致，以便消歧。"
+    )
 
 
 def collect_unsupported(

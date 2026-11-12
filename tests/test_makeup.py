@@ -329,3 +329,68 @@ def test_cancel_only_override_unaffected() -> None:
     meetings = [CourseMeeting("DEMO-3001", "示例课程辛", 3, [1, 2], [1])]
     events = build_events(meetings, calendar, schedules)
     assert _events_on(events, "2026-09-16") == []
+
+
+# --------------------------------------------------------------------------- #
+# 5. 按日期加课（add_meetings）：调课记录里「只新增、不删旧」的那一类
+# --------------------------------------------------------------------------- #
+
+
+def _payload_with_added(target: str, entry: dict) -> dict:
+    payload = copy.deepcopy(SEMESTER_PAYLOAD)
+    payload.setdefault("overrides", {})
+    payload["overrides"].setdefault(target, {})
+    payload["overrides"][target]["add_meetings"] = [entry]
+    return payload
+
+
+def test_add_meeting_creates_event_with_new_periods_and_room() -> None:
+    payload = _payload_with_added(
+        "2026-11-13",
+        {"course_id": "DEMO-1001", "periods": [5, 6], "location": "B-2002", "note": "补课"},
+    )
+    calendar, schedules = _build(payload)
+    events = build_events(_make_meetings(), calendar, schedules)
+    on_day = _events_on(events, "2026-11-13")
+    assert [e.summary for e in on_day] == ["示例课程甲"]
+    event = on_day[0]
+    # 11-14 在冬春季作息区间：第 5 节 14:00、第 6 节 15:00 起
+    assert (event.start.hour, event.start.minute) == (14, 0)
+    assert (event.end.hour, event.end.minute) == (15, 50)
+    assert event.location == "B-2002"
+    assert "备注：补课" in event.description
+
+
+def test_add_meeting_unknown_course_fails_closed() -> None:
+    from xjtu_calendar.errors import CalendarExportError
+
+    payload = _payload_with_added("2026-11-13", {"course_id": "NOPE-9999", "periods": [5, 6]})
+    calendar, schedules = _build(payload)
+    with pytest.raises(CalendarExportError, match="找不到课程"):
+        build_events(_make_meetings(), calendar, schedules)
+
+
+def test_add_meeting_uid_is_stable_and_distinct_from_regular_slot() -> None:
+    payload = _payload_with_added("2026-11-13", {"course_id": "DEMO-1001", "periods": [5, 6]})
+    calendar, schedules = _build(payload)
+    first = _events_on(build_events(_make_meetings(), calendar, schedules), "2026-11-13")[0]
+    second = _events_on(build_events(_make_meetings(), calendar, schedules), "2026-11-13")[0]
+    assert first.uid == second.uid
+    regular = [
+        e
+        for e in build_events(_make_meetings(), calendar, schedules)
+        if e.summary == "示例课程甲" and e.start.date() != date(2026, 11, 13)
+    ]
+    assert all(e.uid != first.uid for e in regular)
+
+
+def test_add_meeting_requires_course_and_periods() -> None:
+    with pytest.raises(ParseError, match="课程"):
+        _build(_payload_with_added("2026-11-13", {"periods": [5, 6]}))
+    with pytest.raises(ParseError, match="节次"):
+        _build(_payload_with_added("2026-11-13", {"course_id": "DEMO-1001"}))
+
+
+def test_add_meeting_on_excluded_date_rejected() -> None:
+    with pytest.raises(ParseError, match="停课日"):
+        _build(_payload_with_added("2026-10-01", {"course_id": "DEMO-1001", "periods": [5, 6]}))

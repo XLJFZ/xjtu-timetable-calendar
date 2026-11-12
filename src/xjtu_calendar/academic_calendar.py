@@ -29,7 +29,38 @@ from .calendar_events import CalendarEventConfig, parse_calendar_events
 from .errors import ParseError, SemesterNotConfigured
 from .models import CourseMeeting, Semester, UnsupportedAdjustment
 
-__all__ = ["AcademicCalendar", "DateOverride"]
+__all__ = ["AcademicCalendar", "AddedMeeting", "DateOverride"]
+
+
+@dataclass(frozen=True)
+class AddedMeeting:
+    """某日期上叠加的一次额外上课。
+
+    这是「补课 / 调入」这一类调课记录的最小表达：只新增一次上课，
+    不删除、不移动任何既有事件。课程的身份（``stable_course_key``）来自
+    配置里引用的既有 :class:`CourseMeeting`，因此 UID 与普通事件同一配方、
+    同样稳定。
+
+    Attributes
+    ----------
+    periods:
+        本次额外上课的节次序号（必填）。
+    course_id / course_name:
+        引用哪门课。优先 ``course_id``；只给 ``course_name`` 时按名称匹配。
+    location:
+        覆盖本次上课的地点（教室）。不填则沿用被引用课程的地点。
+    teacher:
+        覆盖本次上课的教师。不填则沿用。
+    note:
+        追加到 DESCRIPTION 的说明，例如 ``"补课"``。
+    """
+
+    periods: tuple[int, ...]
+    course_id: str | None = None
+    course_name: str | None = None
+    location: str | None = None
+    teacher: str | None = None
+    note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +93,9 @@ class DateOverride:
         覆盖上课地点（换教室场景）。
     note:
         附加到 DESCRIPTION 的说明，例如 ``"调课补课"``。
+    add_meetings:
+        该日**额外新增**的上课（补课 / 调入）。与 ``source_date`` 的区别：
+        后者是「整日换成另一天课表」，本条只叠加指定的课，不动其它课。
     """
 
     day: date
@@ -70,6 +104,7 @@ class DateOverride:
     skip_meeting_keys: frozenset[str] = frozenset()
     location: str | None = None
     note: str | None = None
+    add_meetings: tuple[AddedMeeting, ...] = ()
 
     def skips(self, meeting: CourseMeeting) -> bool:
         """该日是否跳过 ``meeting`` 的**原生**安排。
@@ -204,6 +239,9 @@ class AcademicCalendar:
                 skip_meeting_keys=skip_keys,
                 location=value.get("location"),
                 note=value.get("note"),
+                add_meetings=_added_meetings_from_dict(
+                    value.get("add_meetings"), f"overrides[{key}].add_meetings"
+                ),
             )
             overrides[day] = _validate_override(overrides[day], semester, excluded)
 
@@ -249,6 +287,59 @@ class AcademicCalendar:
         return cls.from_dict(payload)
 
 
+def _added_meetings_from_dict(raw: Any, label: str) -> tuple[AddedMeeting, ...]:
+    """解析 ``overrides[日期].add_meetings``（可为空 / 缺省）。
+
+    期望结构::
+
+        "add_meetings": [
+            {"course_id": "COMP401727", "periods": [5, 6, 7, 8],
+             "location": "3-4007", "note": "补课"}
+        ]
+
+    一条写坏就整体拒绝（fail-closed）：半份调课日历比没有更糟。
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ParseError(f"{label} 必须是数组，实际为 {type(raw).__name__}")
+
+    out: list[AddedMeeting] = []
+    for index, item in enumerate(raw, 1):
+        item_label = f"{label}[{index}]"
+        if not isinstance(item, dict):
+            raise ParseError(f"{item_label} 必须是对象，实际为 {type(item).__name__}")
+
+        course_id = item.get("course_id")
+        course_name = item.get("course_name")
+        if not course_id and not course_name:
+            raise ParseError(f"{item_label} 缺少课程标识：至少给 course_id 或 course_name 之一")
+
+        periods_raw = item.get("periods")
+        if not periods_raw:
+            raise ParseError(f"{item_label} 缺少节次列表 periods")
+        if not isinstance(periods_raw, list):
+            raise ParseError(f"{item_label}.periods 必须是数组")
+        try:
+            periods = tuple(int(p) for p in periods_raw)
+        except (TypeError, ValueError) as exc:
+            raise ParseError(f"{item_label}.periods 必须是整数数组") from exc
+        if any(p < 1 for p in periods):
+            raise ParseError(f"{item_label}.periods 里的节次必须 >= 1，实际为 {list(periods)}")
+
+        out.append(
+            AddedMeeting(
+                periods=periods,
+                course_id=str(course_id) if course_id else None,
+                course_name=str(course_name) if course_name else None,
+                location=item.get("location"),
+                teacher=item.get("teacher"),
+                note=item.get("note"),
+            )
+        )
+    return tuple(out)
+
+
 def _validate_override(
     override: DateOverride,
     semester: Semester,
@@ -259,6 +350,29 @@ def _validate_override(
     调课声明里的错误如果等到导出阶段才炸，用户会面对一份「看起来生成
     成功实则错乱」的日历；在配置加载时就拒绝，才能把问题挡在最早一步。
     """
+    if override.add_meetings:
+        if override.cancel:
+            raise ParseError(
+                f"overrides[{override.day.isoformat()}] 同时声明 cancel 与 add_meetings："
+                f"整日停课与当日加课互相矛盾，请只保留其一。"
+            )
+        if override.day in excluded:
+            raise ParseError(
+                f"{override.day.isoformat()} 同时出现在 excluded_dates 与"
+                f" overrides.add_meetings 中：全校停课日上不能加课，两者只能保留其一。"
+            )
+        week = (override.day - semester.first_week_monday).days // 7 + 1
+        if override.day < semester.first_week_monday or week < 1:
+            raise ParseError(
+                f"overrides[{override.day.isoformat()}].add_meetings 的日期早于"
+                f"第 1 教学周星期一（{semester.first_week_monday.isoformat()}）。"
+            )
+        if semester.total_weeks is not None and week > semester.total_weeks:
+            raise ParseError(
+                f"overrides[{override.day.isoformat()}].add_meetings 落在第 {week} 教学周，"
+                f"超出学期总周数 {semester.total_weeks}。"
+            )
+
     if override.source_date is None:
         return override
 

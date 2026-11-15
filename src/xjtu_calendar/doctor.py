@@ -238,9 +238,15 @@ def _check_exam_snapshot(cfg: Settings, semester: str) -> Check:
     return Check("exam_snapshot", STATUS_OK, f"考试快照 {age:.1f} 天前")
 
 
-def _check_render(cfg: Settings, semester: str) -> Check:
+def _check_render(cfg: Settings, semester: str, state: Any) -> Check:
     try:
-        result = build_ics_for_semester(cfg, semester)
+        result = build_ics_for_semester(
+            cfg,
+            semester,
+            # 与 `subscribe push` 同一条构建路径：漏掉换号盐值的话，换号课的旧 UID 会被
+            # 当成撤销候选，体检报出一串假的「无法安全下发撤销」（2026-11-15 现场）。
+            revive_salts=None if state is None else state.revive_salts,
+        )
     except XjtuCalendarError as exc:
         return Check("render", STATUS_FAIL, f"渲染失败：{exc}")
     events = int(str(result.info.get("events", 0)))
@@ -468,6 +474,7 @@ def run_checks(
     cfg: Settings, semester: str, *, verify: bool = False, include_calendar_events: bool = False
 ) -> list[Check]:
     """跑完全部判据。顺序即 CLI 打印顺序；任何单项内部异常都折成 fail，本函数不抛。"""
+    state = load_state(cfg, semester)
     checks: list[Check] = [
         _safe("version", _check_version),
         _safe("session", _check_session, cfg),
@@ -475,9 +482,8 @@ def run_checks(
         _safe("schedule_config", _check_schedule_config, cfg),
         _safe("snapshot", _check_snapshot, cfg, semester),
         _safe("exam_snapshot", _check_exam_snapshot, cfg, semester),
-        _safe("render", _check_render, cfg, semester),
+        _safe("render", _check_render, cfg, semester, state),
     ]
-    state = load_state(cfg, semester)
     # 校历事件这一格排在订阅之前：它自己就要读留底，与 `push` 那道门读同一份证据。
     checks.append(
         _safe("calendar_events", _check_calendar_events, cfg, semester, include_calendar_events)

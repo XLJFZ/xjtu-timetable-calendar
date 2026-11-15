@@ -246,6 +246,43 @@ def test_render_reports_event_and_exam_counts(tmp_path: Path) -> None:
     assert "考试" in check.detail
 
 
+def test_render_preview_passes_revive_salts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """体检的预览构建必须带状态里的换号盐值。
+
+    与 `subscribe push` 共用 `build_ics_for_semester`；漏传 `revive_salts` 时，换号课会按
+    旧 UID 重新算，台账里那批旧 UID 立刻变成撤销候选，体检报出一串假的「无法安全下发
+    撤销」。这里钉住 `run_checks` 确实把状态里的表递进了构建。
+    """
+    from types import SimpleNamespace
+
+    import xjtu_calendar.doctor as doctor_module
+    from xjtu_calendar.subscribe import SubscriptionState
+
+    cfg = make_home(tmp_path)
+    _write_session(cfg)
+    state = SubscriptionState(
+        semester=SEMESTER,
+        repo_url="https://example.invalid/r.git",
+        branch="cal",
+        token="t" * 32,
+        url_base="https://example.invalid/cal",
+        revive_salts={"COMP401827": 1},
+    )
+    captured: dict[str, object] = {}
+
+    def fake_build(*args: object, **kwargs: object) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(info={"events": 100, "exam_events": 0})
+
+    monkeypatch.setattr(doctor_module, "load_state", lambda *a, **k: state)
+    monkeypatch.setattr(doctor_module, "build_ics_for_semester", fake_build)
+    check = by_name(run_checks(cfg, SEMESTER))["render"]
+    assert check.status == STATUS_OK
+    assert captured.get("revive_salts") == {"COMP401827": 1}
+
+
 def test_subscription_reads_the_local_copy_byte_exact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
